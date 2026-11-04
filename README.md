@@ -11,6 +11,7 @@
 - [Дорожная карта](docs/roadmap.md)
 - [Ориентиры и открытые проекты](docs/research.md)
 - [Кандидаты для проверки майнеров](docs/miners.md)
+- [Матрица Stratum V1 и испытаний](docs/protocol.md)
 - [Границы безопасности](docs/security.md)
 - [Тестовый пул и его ограничения](docs/lab.md)
 
