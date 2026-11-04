@@ -19,10 +19,14 @@ translations.ru["Avg. share response time"] = "Среднее время отв�
 translations["zh-CN"]["Avg. share response time"] = "份额平均响应时间";
 translations.ru.ms = "мс";
 translations["zh-CN"].ms = "毫秒";
+translations.ru["TLS · certificate verification enabled"] = "TLS · проверка сертификата включена";
+translations["zh-CN"]["TLS · certificate verification enabled"] = "TLS · 已启用证书验证";
 translations.ru["Pool requested miner reconnection. Requests are not blocked and a miner may bypass the proxy."] = "Пул запросил переподключение майнера. Эти запросы не блокируются; майнер может обойти прокси.";
 translations["zh-CN"]["Pool requested miner reconnection. Requests are not blocked and a miner may bypass the proxy."] = "矿池请求矿机重新连接。此类请求不会被阻止，矿机可能绕过代理。";
 translations.ru["View diagnostics"] = "К диагностике";
 translations["zh-CN"]["View diagnostics"] = "查看诊断";
+translations.ru["Idle sessions closed"] = "Закрыто неактивных сеансов";
+translations["zh-CN"]["Idle sessions closed"] = "已关闭的空闲会话";
 const locales = {en: "en-US", ru: "ru-RU", "zh-CN": "zh-CN"};
 let language = "en";
 try { const saved = localStorage.getItem("kontur-language"); if (Object.prototype.hasOwnProperty.call(locales, saved)) language = saved; } catch (_) { /* storage can be disabled */ }

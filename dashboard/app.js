@@ -74,12 +74,13 @@ function renderSnapshot() {
   $("limits-loops").textContent = `${number(metrics.refused_capacity)} / ${number(metrics.blocked_loops)}`;
   $("refused-network").textContent = number(metrics.refused_network);
   $("redirect-notices").textContent = number(metrics.redirect_notices);
+  $("idle-timeouts").textContent = number(metrics.idle_timeouts);
   $("redirect-alert").hidden = !(metrics.redirect_notices > 0);
   $("share-rtt").textContent = metrics.share_rtt_samples > 0
     ? `${number(Math.round(metrics.share_rtt_total_ms / metrics.share_rtt_samples * 10) / 10)} ${t("ms")}` : "—";
   $("primary-pool").textContent = endpoint(status.primary);
   $("backup-pool").textContent = endpoint(status.backup);
-  $("tls-label").textContent = t(status.tls ? "TLS · certificate verified" : "TCP · no TLS");
+  $("tls-label").textContent = t(status.tls ? "TLS · certificate verification enabled" : "TCP · no TLS");
   $("listener").textContent = status.listeners?.join(", ") || "—";
   renderSessions();
 }

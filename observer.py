@@ -11,6 +11,7 @@ class Metrics:
         self.connections = 0
         self.refused_capacity = 0
         self.refused_network = 0
+        self.idle_timeouts = 0
         self.blocked_loops = 0
         self.backup_connections = 0
         self.closed_by_miner = 0

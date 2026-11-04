@@ -13,6 +13,8 @@ class CLITests(unittest.TestCase):
                       ["--max-connections", "0"],
                       ["--connect-timeout", "nan"],
                       ["--connect-timeout", "0"],
+                      ["--idle-timeout", "nan"],
+                      ["--idle-timeout", "-1"],
                       ["--allow-cidr", "192.168.0.1/24"],
                       ["--allow-cidr", "invalid"],
                       ["--listen-host", "0.0.0.0"],

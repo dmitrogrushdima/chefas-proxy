@@ -13,6 +13,7 @@ class ProtocolTransparencyTests(unittest.IsolatedAsyncioTestCase):
             b'{"version-rolling.mask":"1fffe000","future-ext.value":"opaque"}]}\n'
             b'{"id":2,"method":"mining.subscribe","params":["synthetic-miner/1.0"]}\n'
             b'{"id":3,"method":"mining.authorize","params":["acct.worker","secret"]}\n'
+            b'{"id":5,"method":"mining.extranonce.subscribe","params":[]}\n'
             b'{"id":4,"method":"mining.submit","params":["acct.worker","job",'
             b'"00000000","65000000","00000001","00002000"],"custom": 7}\n'
         )
@@ -20,6 +21,7 @@ class ProtocolTransparencyTests(unittest.IsolatedAsyncioTestCase):
             b'{"id":1,"result":{"version-rolling":true,"version-rolling.mask":"1fffe000"},"error":null}\n'
             b'{"id":2,"result":[[["mining.notify","1"]],"12345678",4],"error":null}\n'
             b'{"id":3,"result":true,"error":null}\n'
+            b'{"id":5,"result":true,"error":null}\n'
             b'{"id":null,"method":"mining.set_extranonce","params":["87654321",4]}\n'
             b'{"id":null,"method":"mining.set_version_mask","params":["1fffe000"]}\n'
             b'{"id":null,"method":"client.reconnect","params":["backup.example",3333,0]}\n'
