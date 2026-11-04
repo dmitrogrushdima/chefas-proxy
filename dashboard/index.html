@@ -33,6 +33,7 @@
       <main id="overview">
         <div class="page-title"><div><div class="eyebrow"><span></span> CONTROL CENTER</div><h1>Proxy overview<span class="title-dot">.</span></h1><p>Connections and pool activity in one place.</p></div><div class="refresh-wrap"><span id="last-update">Waiting for data</span><button id="refresh" type="button" aria-label="Refresh data">↻ <span>Refresh</span></button></div></div>
         <div id="offline-notice" class="offline-notice" hidden>Proxy connection lost. The last data may be out of date.</div>
+        <div id="redirect-alert" class="redirect-alert" role="status" hidden><span aria-hidden="true">!</span><p>Pool requested miner reconnection. Requests are not blocked and a miner may bypass the proxy.</p><a href="#diagnostics">View diagnostics</a></div>
         <section class="summary-grid" aria-label="Overview metrics">
           <article class="metric-card"><div class="metric-top"><span>Active connections</span><span class="metric-symbol blue">◉</span></div><div class="metric-value" id="active">—</div><div class="metric-foot"><span class="foot-dot"></span> <span id="active-hint">Waiting for data</span></div></article>
           <article class="metric-card"><div class="metric-top"><span>Accepted shares</span><span class="metric-symbol green">↗</span></div><div class="metric-value" id="accepted">—</div><div class="metric-foot">Since proxy start</div></article>
