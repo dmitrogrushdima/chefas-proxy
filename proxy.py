@@ -9,6 +9,7 @@ import math
 import socket
 import errno
 import ipaddress
+from pathlib import Path
 from observer import Metrics, Observer
 
 LOG = logging.getLogger("mining_proxy")
@@ -175,6 +176,12 @@ class Relay:
                  "pending": item["observer"].pending_shares()}
                 for item in self.sessions.values()]
 
+    def status_snapshot(self):
+        return {"primary": {"host": self.host, "port": self.port},
+                "backup": {"host": self.backup[0], "port": self.backup[1]} if self.backup else None,
+                "tls": self.tls, "limit": self.limit,
+                "listeners": [str(item[1][1]) for item in self.listeners]}
+
     async def shutdown(self):
         tasks = list(self.tasks)
         for task in tasks:
@@ -189,7 +196,7 @@ async def run(args):
     server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512)
     relay.set_listeners(server)
     try:
-        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot),
+        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot),
                                                "127.0.0.1", args.dashboard_port)
     except BaseException:
         server.close()
@@ -208,7 +215,7 @@ async def run(args):
         await relay.shutdown()
 
 
-async def dashboard_request(reader, writer, metrics, sessions=lambda: []):
+async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}):
     try:
         request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
         first = request.split(b"\r\n", 1)[0].split()
@@ -223,12 +230,17 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: []):
             status, body, content_type = b"200 OK", json.dumps(metrics.snapshot()).encode(), b"application/json"
         elif first[1] == b"/api/sessions":
             status, body, content_type = b"200 OK", json.dumps(sessions()).encode(), b"application/json"
+        elif first[1] == b"/api/status":
+            status, body, content_type = b"200 OK", json.dumps(status_snapshot()).encode(), b"application/json"
+        elif first[1] in ASSETS:
+            body, content_type = ASSETS[first[1]]
+            status = b"200 OK"
         elif first[1] == b"/":
-            status, body, content_type = b"200 OK", DASHBOARD, b"text/html; charset=utf-8"
+            status, body, content_type = b"200 OK", ASSETS[b"/index.html"][0], b"text/html; charset=utf-8"
         else:
             status, body, content_type = b"404 Not Found", b"Not found", b"text/plain"
         writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Type: " + content_type +
-                     b"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: " +
+                     b"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nContent-Length: " +
                      str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
         await writer.drain()
     except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
@@ -241,28 +253,10 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: []):
             pass
 
 
-DASHBOARD = """<!doctype html><html lang="ru"><meta charset="utf-8">
-<title>Mining Proxy — тестовый стенд</title><body>
-<h1>Mining Proxy — тестовый стенд</h1>
-<p>Данные приблизительные, только за время работы процесса. Не использовать для расчёта выплат.</p>
-<pre id="metrics">Загрузка…</pre><h2>Подключения</h2>
-<p>Имя показано после успешного ответа на авторизацию. Несколько воркеров в одном соединении пока не отображаются отдельно.</p>
-<pre id="sessions">Загрузка…</pre><script>
-async function refresh(){try {let r=await fetch('/api/metrics');
-let m=await r.json(), labels={active:'Активных подключений', connections:'Всего подключений',
-refused_capacity:'Отклонено из-за лимита подключений',
-blocked_loops:'Предотвращено очевидных петель',
-backup_connections:'Подключений к резервному пулу',closed_by_miner:'Закрыто со стороны майнера',
-closed_by_pool:'Закрыто со стороны пула',closed_ambiguous:'Одновременных закрытий',transport_errors:'Ошибок передачи',
-upstream_failures:'Ошибок подключения к пулу',submitted:'Отправлено шар',accepted:'Принято шар',
-rejected:'Отклонено шар',unmatched:'Ответ не сопоставлен',observation_errors:'Ошибки наблюдения'};
-document.getElementById('metrics').textContent=Object.keys(labels).map(k=>labels[k]+': '+m[k]).join('\\n');
-let s=await (await fetch('/api/sessions')).json();
-document.getElementById('sessions').textContent=s.length?s.map(x=>
-'#'+x.id+' | '+(x.worker||'ожидание авторизации')+' | '+x.state+' / '+(x.pool||'—')+
-' | принято '+x.accepted+', отклонено '+x.rejected+', ожидают '+x.pending+', не сопоставлено '+x.unmatched).join('\\n'):'Нет подключений';}
-catch(e){document.getElementById('metrics').textContent='Нет связи'} }
-refresh();setInterval(refresh,3000);</script></body></html>""".encode("utf-8")
+ASSET_DIR = Path(__file__).resolve().parent / "dashboard"
+ASSETS = {b"/index.html": ((ASSET_DIR / "index.html").read_bytes(), b"text/html; charset=utf-8"),
+          b"/app.css": ((ASSET_DIR / "app.css").read_bytes(), b"text/css; charset=utf-8"),
+          b"/app.js": ((ASSET_DIR / "app.js").read_bytes(), b"application/javascript; charset=utf-8")}
 
 
 def main():

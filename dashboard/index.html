@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Контур — Mining Proxy</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="Контур — обзор">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span><b>КОНТУР</b><small>MINING PROXY</small></span>
+      </a>
+      <p class="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</p>
+      <nav aria-label="Разделы">
+        <a class="nav-link selected" href="#overview"><span class="nav-icon">◫</span> Обзор <span class="nav-indicator"></span></a>
+        <a class="nav-link" href="#connections"><span class="nav-icon">▦</span> Подключения</a>
+        <a class="nav-link" href="#pools"><span class="nav-icon">⌁</span> Пулы</a>
+        <a class="nav-link" href="#diagnostics"><span class="nav-icon">◈</span> Диагностика</a>
+      </nav>
+      <div class="sidebar-bottom"><span class="sidebar-signal"></span><div><b>Локальная панель</b><small>Данные остаются здесь</small></div></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb">РАБОЧЕЕ ПРОСТРАНСТВО <span>/</span> <strong>ОБЗОР</strong></div>
+        <div class="top-actions"><span class="test-badge">ТЕСТОВАЯ ВЕРСИЯ</span><span class="live-status" id="connection-status" role="status"><i></i> Подключение</span></div>
+      </header>
+      <main id="overview">
+        <div class="page-title"><div><div class="eyebrow"><span></span> ЦЕНТР УПРАВЛЕНИЯ</div><h1>Обзор прокси<span class="title-dot">.</span></h1><p>Состояние подключений и работы с пулами в одном месте.</p></div><div class="refresh-wrap"><span id="last-update">Ожидание данных</span><button id="refresh" type="button" aria-label="Обновить данные">↻ <span>Обновить</span></button></div></div>
+        <div id="offline-notice" class="offline-notice" hidden>Нет связи с прокси. Последние данные могут быть неактуальны.</div>
+        <section class="summary-grid" aria-label="Общие показатели">
+          <article class="metric-card"><div class="metric-top"><span>Активные подключения</span><span class="metric-symbol blue">◉</span></div><div class="metric-value" id="active">—</div><div class="metric-foot"><span class="foot-dot"></span> <span id="active-hint">Ожидание данных</span></div></article>
+          <article class="metric-card"><div class="metric-top"><span>Принято шар</span><span class="metric-symbol green">↗</span></div><div class="metric-value" id="accepted">—</div><div class="metric-foot">За время работы прокси</div></article>
+          <article class="metric-card"><div class="metric-top"><span>Отклонено шар</span><span class="metric-symbol amber">↘</span></div><div class="metric-value" id="rejected">—</div><div class="metric-foot">По ответам пула</div></article>
+          <article class="metric-card"><div class="metric-top"><span>Ошибки подключения</span><span class="metric-symbol violet">⌁</span></div><div class="metric-value" id="upstream-failures">—</div><div class="metric-foot">При подключении к пулу</div></article>
+        </section>
+        <div class="content-grid">
+          <div class="main-column">
+            <section class="panel connections" id="connections">
+              <div class="panel-header"><div><div class="section-kicker">МОНИТОРИНГ <span> / 01</span></div><h2>Подключения</h2><p>Активные сеансы майнеров</p></div><span class="count-pill" id="session-count">—</span></div>
+              <div class="table-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Поиск воркера" aria-label="Поиск воркера"></label><label class="filter-label"><span class="sr-only">Фильтр состояния</span><select id="filter"><option value="all">Все сеансы</option><option value="connected">Подключены</option><option value="connecting">Подключаются</option></select></label></div>
+              <div class="table-scroll"><table><thead><tr><th>ВОРКЕР</th><th>СОСТОЯНИЕ</th><th>МАРШРУТ</th><th>ПРИНЯТО</th><th>ОТКЛОНЕНО</th><th>ВРЕМЯ</th></tr></thead><tbody id="sessions"></tbody></table></div>
+              <div class="empty" id="empty"><span class="empty-icon">⌁</span><b>Подключений пока нет</b><p>Здесь появятся майнеры, подключённые к прокси.</p></div>
+              <div class="panel-footer"><span>Данные текущих сеансов</span><span>Автообновление · 3 сек</span></div>
+            </section>
+            <section class="panel diagnostic-panel" id="diagnostics"><div class="panel-header"><div><div class="section-kicker">СОСТОЯНИЕ <span> / 02</span></div><h2>Диагностика</h2><p>Счётчики за время работы процесса</p></div><span class="subtle-icon">↗</span></div><div class="diagnostic-grid"><div><span>Всего подключений</span><b id="connections-total">—</b></div><div><span>Переходов на резерв</span><b id="backup-connections">—</b></div><div><span>Ожидают ответа / не сопоставлены</span><b id="pending-unmatched">—</b></div><div><span>Лимит / очевидные петли</span><b id="limits-loops">—</b></div></div><div class="information"><span>i</span><p>Счётчики основаны на наблюдаемых ответах пула и могут отличаться от его статистики. Это не расчёт дохода.</p></div></section>
+          </div>
+          <aside class="right-column">
+            <section class="panel route-panel" id="pools"><div class="panel-header"><div><div class="section-kicker">МАРШРУТ <span> / 03</span></div><h2>Пулы</h2><p>Текущая конфигурация</p></div><span class="subtle-icon">⌁</span></div><div class="route"><div class="route-point"><span class="route-dot main-dot"></span><div><small>ОСНОВНОЙ ПУЛ</small><b id="primary-pool">—</b><span id="tls-label">—</span></div></div><div class="route-line"></div><div class="route-point"><span class="route-dot backup-dot"></span><div><small>РЕЗЕРВНЫЙ ПУЛ</small><b id="backup-pool">—</b><span>При ошибке подключения</span></div></div></div><div class="route-footer"><span>Порт прокси</span><strong id="listener">—</strong></div></section>
+            <section class="note-card"><div class="note-top"><span class="note-icon">✳</span><span>НА ЗАМЕТКУ</span></div><h3>Прозрачно по делу</h3><p>Показываем только то, что можем наблюдать. Хешрейт, доход и DevFee появятся после их реализации и проверки.</p><a href="#diagnostics">О счётчиках <span>↗</span></a></section>
+            <div class="version"><span>КОНТУР / MINING PROXY</span><span>ПРОТОТИП 01</span></div>
+          </aside>
+        </div>
+        <footer>Создано для тех, кто держит процесс под контролем. <span>Локальный мониторинг · BTC / Stratum V1</span></footer>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
