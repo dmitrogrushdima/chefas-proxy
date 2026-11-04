@@ -16,7 +16,7 @@ LOG = logging.getLogger("mining_proxy")
 
 
 class Relay:
-    def __init__(self, host, port, *, tls=False, limit=512, timeout=10, backup=None, tls_context=None):
+    def __init__(self, host, port, *, tls=False, limit=512, timeout=10, backup=None, tls_context=None, allowed_networks=()):
         if not host or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("invalid primary pool")
         if not isinstance(limit, int) or not 1 <= limit <= 10000:
@@ -34,6 +34,7 @@ class Relay:
         self.sessions = {}
         self.next_session_id = 0
         self.listeners = []
+        self.allowed_networks = tuple(ipaddress.ip_network(network, strict=True) for network in allowed_networks)
         if tls_context is not None and not tls:
             raise ValueError("TLS context provided while TLS is disabled")
         self.tls_context = (tls_context or ssl.create_default_context()) if tls else None
@@ -42,6 +43,14 @@ class Relay:
             raise ValueError("TLS requires hostname and certificate verification")
 
     async def handle(self, reader, writer):
+        if not self.peer_allowed(writer.get_extra_info("peername")):
+            self.metrics.refused_network += 1
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return
         if self.active >= self.limit:
             self.metrics.refused_capacity += 1
             writer.close()
@@ -139,6 +148,17 @@ class Relay:
     def set_listeners(self, server):
         self.listeners = [(item.family, item.getsockname()) for item in server.sockets]
 
+    def peer_allowed(self, peer):
+        if not self.allowed_networks:
+            return True
+        try:
+            address = ipaddress.ip_address(peer[0].split("%", 1)[0])
+            candidates = (address, address.ipv4_mapped) if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped else (address,)
+            return any(candidate.version == network.version and candidate in network
+                       for candidate in candidates for network in self.allowed_networks)
+        except (ValueError, TypeError, IndexError, AttributeError):
+            return False
+
     async def is_self_route(self, endpoint):
         relevant = [(family, address) for family, address in self.listeners if address[1] == endpoint[1]]
         if not relevant:
@@ -192,7 +212,7 @@ class Relay:
 async def run(args):
     backup = (args.backup_host, args.backup_port) if args.backup_host else None
     relay = Relay(args.pool_host, args.pool_port, tls=args.tls, backup=backup,
-                  limit=args.max_connections, timeout=args.connect_timeout)
+                  limit=args.max_connections, timeout=args.connect_timeout, allowed_networks=args.allow_cidr)
     server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512)
     relay.set_listeners(server)
     try:
@@ -272,6 +292,8 @@ def main():
     parser.add_argument("--dashboard-port", type=int, default=8080, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--max-connections", type=int, default=512, metavar="N")
     parser.add_argument("--connect-timeout", type=float, default=10, metavar="SECONDS")
+    parser.add_argument("--allow-cidr", action="append", default=[], metavar="NETWORK",
+                        help="Allow miner source network (repeatable, e.g. 192.168.10.0/24)")
     args = parser.parse_args()
     if bool(args.backup_host) != bool(args.backup_port):
         parser.error("--backup-host and --backup-port must be supplied together")
@@ -279,6 +301,10 @@ def main():
         parser.error("--max-connections must be in 1..10000")
     if not math.isfinite(args.connect_timeout) or not 0.1 <= args.connect_timeout <= 120:
         parser.error("--connect-timeout must be in 0.1..120 seconds")
+    try:
+        args.allow_cidr = [ipaddress.ip_network(value, strict=True) for value in args.allow_cidr]
+    except ValueError as exc:
+        parser.error(f"invalid --allow-cidr: {exc}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
         asyncio.run(run(args))

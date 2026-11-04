@@ -12,7 +12,9 @@ class CLITests(unittest.TestCase):
         for extra in (["--backup-host", "example.invalid"],
                       ["--max-connections", "0"],
                       ["--connect-timeout", "nan"],
-                      ["--connect-timeout", "0"]):
+                      ["--connect-timeout", "0"],
+                      ["--allow-cidr", "192.168.0.1/24"],
+                      ["--allow-cidr", "invalid"]):
             with self.subTest(extra=extra):
                 result = subprocess.run([sys.executable, PROXY, "--pool-host", "example.invalid",
                                          "--pool-port", "3333", *extra],

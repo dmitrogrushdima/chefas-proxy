@@ -11,6 +11,8 @@ const translations = {
   }
 };
 
+translations.ru["Blocked by IP filter"] = "Отклонено IP-фильтром";
+translations["zh-CN"]["Blocked by IP filter"] = "IP 筛选拒绝";
 const locales = {en: "en-US", ru: "ru-RU", "zh-CN": "zh-CN"};
 let language = "en";
 try { const saved = localStorage.getItem("kontur-language"); if (Object.prototype.hasOwnProperty.call(locales, saved)) language = saved; } catch (_) { /* storage can be disabled */ }

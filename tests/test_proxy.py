@@ -96,6 +96,43 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.relay.active, 1)
         last.close()
 
+    async def test_unlisted_network_is_rejected_before_pool_connection(self):
+        connected = asyncio.Event()
+        async def pool(reader, writer):
+            connected.set()
+            writer.close()
+            await writer.wait_closed()
+        pool_port = await self.start_server(pool)
+        self.relay = Relay("127.0.0.1", pool_port, allowed_networks=("192.0.2.0/24",))
+        port = await self.start_server(self.relay.handle)
+        reader, _ = await self.connect(port)
+        self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+        self.assertFalse(connected.is_set())
+        self.assertEqual(self.relay.metrics.refused_network, 1)
+        self.assertEqual(self.relay.metrics.connections, 0)
+
+    async def test_listed_network_connects_normally(self):
+        async def pool(reader, writer):
+            writer.write(await reader.readline())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+        pool_port = await self.start_server(pool)
+        self.relay = Relay("127.0.0.1", pool_port, allowed_networks=("192.0.2.0/24", "127.0.0.0/8"))
+        port = await self.start_server(self.relay.handle)
+        reader, writer = await self.connect(port)
+        writer.write(b"allowed\n")
+        await writer.drain()
+        self.assertEqual(await asyncio.wait_for(reader.readline(), 2), b"allowed\n")
+        self.assertEqual(self.relay.metrics.refused_network, 0)
+
+    async def test_network_filter_handles_ipv6_and_unavailable_peer(self):
+        relay = Relay("localhost", 3333, allowed_networks=("192.0.2.0/24", "2001:db8::/32"))
+        self.assertTrue(relay.peer_allowed(("::ffff:192.0.2.1", 123)))
+        self.assertTrue(relay.peer_allowed(("2001:db8::1", 123, 0, 0)))
+        self.assertFalse(relay.peer_allowed(("2001:db9::1", 123, 0, 0)))
+        self.assertFalse(relay.peer_allowed(None))
+
     async def test_backup_on_initial_connect_failure(self):
         async def pool(reader, writer):
             writer.write(await reader.read(100))
