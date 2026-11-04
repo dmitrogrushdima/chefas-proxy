@@ -15,6 +15,10 @@ translations.ru["Blocked by IP filter"] = "Отклонено IP-фильтро�
 translations["zh-CN"]["Blocked by IP filter"] = "IP 筛选拒绝";
 translations.ru["Pool redirect requests (not blocked)"] = "Запросы перенаправления пула (не блокируются)";
 translations["zh-CN"]["Pool redirect requests (not blocked)"] = "矿池重定向请求（未阻止）";
+translations.ru["Avg. share response time"] = "Среднее время ответа на шару";
+translations["zh-CN"]["Avg. share response time"] = "份额平均响应时间";
+translations.ru.ms = "мс";
+translations["zh-CN"].ms = "毫秒";
 const locales = {en: "en-US", ru: "ru-RU", "zh-CN": "zh-CN"};
 let language = "en";
 try { const saved = localStorage.getItem("kontur-language"); if (Object.prototype.hasOwnProperty.call(locales, saved)) language = saved; } catch (_) { /* storage can be disabled */ }

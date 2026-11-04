@@ -85,6 +85,8 @@ class LabChainTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(response["result"])
             self.assertEqual((pool.accepted, pool.rejected), (1, 3))
             self.assertEqual((relay.metrics.submitted, relay.metrics.accepted, relay.metrics.rejected), (4, 1, 3))
+            self.assertEqual(relay.metrics.share_rtt_samples, 4)
+            self.assertGreaterEqual(relay.metrics.share_rtt_total_ms, 0)
             current = relay.session_snapshot()[0]
             self.assertEqual((current["submitted"], current["accepted"], current["rejected"]), (4, 1, 3))
         finally:

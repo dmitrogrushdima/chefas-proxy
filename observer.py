@@ -1,5 +1,6 @@
 """Best-effort, passive Stratum V1 observations; never controls forwarding."""
 import json
+import time
 from collections import OrderedDict
 
 
@@ -17,6 +18,8 @@ class Metrics:
         self.closed_ambiguous = 0
         self.transport_errors = 0
         self.redirect_notices = 0
+        self.share_rtt_samples = 0
+        self.share_rtt_total_ms = 0.0
         self.upstream_failures = 0
         self.submitted = 0
         self.accepted = 0
@@ -38,9 +41,10 @@ class Observer:
     MAX_LINE = 65536
     MAX_PENDING = 1024
 
-    def __init__(self, metrics, on_authorized=None):
+    def __init__(self, metrics, on_authorized=None, clock=time.monotonic):
         self.metrics = metrics
         self.on_authorized = on_authorized
+        self.clock = clock
         self.buffers = [bytearray(), bytearray()]
         self.discard = [False, False]
         self.pending = OrderedDict()
@@ -90,7 +94,7 @@ class Observer:
                     self.pending[ident] = ("ambiguous", None)
                 else:
                     kind = "share" if is_share else "other"
-                    name = None
+                    name = self.clock() if is_share else None
                     params = msg.get("params")
                     if msg["method"] == "mining.authorize" and isinstance(params, list) and params and isinstance(params[0], str):
                         kind = "authorize"
@@ -115,6 +119,10 @@ class Observer:
                     self.metrics.rejected += 1
                 else:
                     self.metrics.unmatched += 1
+                    return
+                elapsed = max(0.0, (self.clock() - name) * 1000)
+                self.metrics.share_rtt_total_ms += elapsed
+                self.metrics.share_rtt_samples += 1
         except (ValueError, UnicodeDecodeError, TypeError, RecursionError):
             self.metrics.observation_errors += 1
 

@@ -79,6 +79,19 @@ class ObserverTests(unittest.TestCase):
         self.observer.feed(1, notice[10:])
         self.assertEqual(self.metrics.redirect_notices, 1)
 
+    def test_share_response_time_only_for_unambiguous_pool_responses(self):
+        now = [100.0]
+        observer = Observer(self.metrics, clock=lambda: now[0])
+        observer.feed(0, message({"id": 1, "method": "mining.submit"}))
+        now[0] += 0.125
+        observer.feed(1, message({"id": 1, "result": True, "error": None}))
+        self.assertEqual(self.metrics.share_rtt_samples, 1)
+        self.assertAlmostEqual(self.metrics.share_rtt_total_ms, 125.0)
+        observer.feed(0, message({"id": 2, "method": "mining.submit"}) * 2)
+        now[0] += 10
+        observer.feed(1, message({"id": 2, "result": True, "error": None}))
+        self.assertEqual(self.metrics.share_rtt_samples, 1)
+
     def test_session_metrics_update_global_totals(self):
         child = Metrics(parent=self.metrics)
         observer = Observer(child)
@@ -86,4 +99,5 @@ class ObserverTests(unittest.TestCase):
         observer.feed(1, message({"id": 1, "result": True, "error": None}))
         self.assertEqual((child.submitted, child.accepted), (1, 1))
         self.assertEqual((self.metrics.submitted, self.metrics.accepted), (1, 1))
+        self.assertEqual((child.share_rtt_samples, self.metrics.share_rtt_samples), (1, 1))
         self.assertNotIn("_parent", child.snapshot())
