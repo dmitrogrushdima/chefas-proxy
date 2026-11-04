@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+import socket
 from unittest.mock import AsyncMock, patch
 
 from proxy import Relay
@@ -82,6 +83,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         rejected, _ = await self.connect(port)
         self.assertEqual(await asyncio.wait_for(rejected.read(), 2), b"")
+        self.assertEqual(self.relay.metrics.refused_capacity, 1)
         first.close()
         await first.wait_closed()
         for _ in range(100):
@@ -109,6 +111,91 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         self.assertEqual(await asyncio.wait_for(reader.read(), 3), b"worker\n")
         self.assertEqual(self.relay.metrics.upstream_failures, 1)
+        self.assertEqual(self.relay.metrics.backup_connections, 1)
+
+    async def test_disconnect_then_reconnect_uses_backup(self):
+        first_connected = asyncio.Event()
+        close_first = asyncio.Event()
+
+        async def primary(reader, writer):
+            first_connected.set()
+            await close_first.wait()
+            writer.close()
+            await writer.wait_closed()
+
+        async def backup(reader, writer):
+            writer.write(await reader.readline())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        primary_port = await self.start_server(primary)
+        primary_server = self.servers[-1]
+        backup_port = await self.start_server(backup)
+        self.relay = Relay("127.0.0.1", primary_port, backup=("127.0.0.1", backup_port), timeout=1)
+        port = await self.start_server(self.relay.handle)
+        reader, _ = await self.connect(port)
+        await asyncio.wait_for(first_connected.wait(), 2)
+        primary_server.close()
+        await primary_server.wait_closed()
+        close_first.set()
+        self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+        reader2, writer2 = await self.connect(port)
+        writer2.write(b"reconnected\n")
+        await writer2.drain()
+        self.assertEqual(await asyncio.wait_for(reader2.readline(), 3), b"reconnected\n")
+        self.assertEqual(self.relay.metrics.upstream_failures, 1)
+        self.assertEqual(self.relay.metrics.backup_connections, 1)
+
+    async def test_shutdown_closes_sessions_and_releases_counters(self):
+        async def pool(reader, writer):
+            await reader.read()
+            writer.close()
+            await writer.wait_closed()
+        port = await self.start_relay(await self.start_server(pool))
+        reader, _ = await self.connect(port)
+        for _ in range(100):
+            if self.relay.session_snapshot() and self.relay.session_snapshot()[0]["state"] == "connected":
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.relay.active, 1)
+        await self.relay.shutdown()
+        self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+        self.assertEqual(self.relay.active, 0)
+        self.assertEqual(self.relay.metrics.active, 0)
+        self.assertEqual(self.relay.session_snapshot(), [])
+
+    async def test_own_listener_as_pool_is_blocked_without_spawn_loop(self):
+        self.relay = Relay("localhost", 1, limit=10, timeout=1)
+        server = await asyncio.start_server(self.relay.handle, "127.0.0.1", 0)
+        self.servers.append(server)
+        self.relay.port = server.sockets[0].getsockname()[1]
+        self.relay.set_listeners(server)
+        reader, _ = await self.connect(self.relay.port)
+        self.assertEqual(await asyncio.wait_for(reader.read(), 3), b"")
+        self.assertEqual(self.relay.metrics.blocked_loops, 1)
+        self.assertEqual(self.relay.metrics.connections, 1)
+
+    async def test_wildcard_listener_blocks_local_pool_address(self):
+        self.relay = Relay("127.0.0.1", 1, limit=10, timeout=1)
+        server = await asyncio.start_server(self.relay.handle, "0.0.0.0", 0)
+        self.servers.append(server)
+        self.relay.port = server.sockets[0].getsockname()[1]
+        self.relay.set_listeners(server)
+        reader, _ = await self.connect(self.relay.port)
+        self.assertEqual(await asyncio.wait_for(reader.read(), 3), b"")
+        self.assertEqual(self.relay.metrics.blocked_loops, 1)
+
+    async def test_same_port_on_external_address_is_not_identified_as_loop(self):
+        self.relay = Relay("external.test", 1, timeout=1)
+        server = await asyncio.start_server(self.relay.handle, "0.0.0.0", 0)
+        self.servers.append(server)
+        port = server.sockets[0].getsockname()[1]
+        self.relay.set_listeners(server)
+        answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))]
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "getaddrinfo", new=AsyncMock(return_value=answer)):
+            self.assertFalse(await self.relay.is_self_route(("external.test", port)))
 
     async def test_many_clients_keep_traffic_separate(self):
         async def pool(reader, writer):

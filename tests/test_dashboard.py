@@ -29,6 +29,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'"active": 0', await self.request("/api/metrics", host))
         self.assertIn(b"200 OK", await self.request("/", host))
         self.assertIn(b"404 Not Found", await self.request("/missing", host))
+        self.assertIn(b"[]", await self.request("/api/sessions", host))
 
     async def test_rejects_unexpected_host(self):
         self.assertIn(b"403 Forbidden", await self.request("/api/metrics", "attacker.example"))

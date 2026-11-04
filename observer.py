@@ -4,9 +4,17 @@ from collections import OrderedDict
 
 
 class Metrics:
-    def __init__(self):
+    def __init__(self, parent=None):
+        self._parent = parent
         self.active = 0
         self.connections = 0
+        self.refused_capacity = 0
+        self.blocked_loops = 0
+        self.backup_connections = 0
+        self.closed_by_miner = 0
+        self.closed_by_pool = 0
+        self.closed_ambiguous = 0
+        self.transport_errors = 0
         self.upstream_failures = 0
         self.submitted = 0
         self.accepted = 0
@@ -15,15 +23,22 @@ class Metrics:
         self.observation_errors = 0
 
     def snapshot(self):
-        return dict(vars(self))
+        return {key: value for key, value in vars(self).items() if not key.startswith("_")}
+
+    def __setattr__(self, key, value):
+        parent = self.__dict__.get("_parent")
+        if parent is not None and not key.startswith("_") and key in self.__dict__:
+            setattr(parent, key, getattr(parent, key) + value - self.__dict__[key])
+        object.__setattr__(self, key, value)
 
 
 class Observer:
     MAX_LINE = 65536
     MAX_PENDING = 1024
 
-    def __init__(self, metrics):
+    def __init__(self, metrics, on_authorized=None):
         self.metrics = metrics
+        self.on_authorized = on_authorized
         self.buffers = [bytearray(), bytearray()]
         self.discard = [False, False]
         self.pending = OrderedDict()
@@ -54,22 +69,41 @@ class Observer:
             ident = msg.get("id")
             if not isinstance(ident, (int, str)) or isinstance(ident, bool):
                 return
+            if (isinstance(ident, str) and len(ident) > 128) or (isinstance(ident, int) and ident.bit_length() > 256):
+                if direction == 0 and msg.get("method") == "mining.submit":
+                    self.metrics.submitted += 1
+                    self.metrics.unmatched += 1
+                self.metrics.observation_errors += 1
+                return
             if direction == 0 and isinstance(msg.get("method"), str):
                 is_share = msg["method"] == "mining.submit"
                 if is_share:
                     self.metrics.submitted += 1
                 # Reused request IDs make both replies ambiguous.
                 if ident in self.pending:
-                    previous = self.pending.pop(ident)
+                    previous, _ = self.pending.pop(ident)
                     self.metrics.unmatched += int(previous == "share") + int(is_share)
-                    self.pending[ident] = "ambiguous"
+                    self.pending[ident] = ("ambiguous", None)
                 else:
-                    self.pending[ident] = "share" if is_share else "other"
+                    kind = "share" if is_share else "other"
+                    name = None
+                    params = msg.get("params")
+                    if msg["method"] == "mining.authorize" and isinstance(params, list) and params and isinstance(params[0], str):
+                        kind = "authorize"
+                        name = params[0][:128]
+                    self.pending[ident] = (kind, name)
                 if len(self.pending) > self.MAX_PENDING:
-                    _, kind = self.pending.popitem(last=False)
+                    _, (kind, _) = self.pending.popitem(last=False)
                     self.metrics.unmatched += int(kind == "share")
             elif direction == 1 and "method" not in msg and ident in self.pending:
-                if self.pending.pop(ident) != "share":
+                kind, name = self.pending[ident]
+                # Once an ID is ambiguous, later replies cannot safely identify a request.
+                if kind == "ambiguous":
+                    return
+                self.pending.pop(ident)
+                if kind == "authorize" and msg.get("result") is True and msg.get("error") is None and self.on_authorized:
+                    self.on_authorized(name)
+                if kind != "share":
                     return
                 if msg.get("result") is True and msg.get("error") is None:
                     self.metrics.accepted += 1
@@ -81,5 +115,8 @@ class Observer:
             self.metrics.observation_errors += 1
 
     def close(self):
-        self.metrics.unmatched += sum(kind == "share" for kind in self.pending.values())
+        self.metrics.unmatched += sum(kind == "share" for kind, _ in self.pending.values())
         self.pending.clear()
+
+    def pending_shares(self):
+        return sum(kind == "share" for kind, _ in self.pending.values())

@@ -27,6 +27,7 @@ class LabChainTests(unittest.IsolatedAsyncioTestCase):
             extranonce1 = response["result"][1]
             response = await request({"id": 2, "method": "mining.authorize", "params": ["alice.worker", "x"]})
             self.assertTrue(response["result"])
+            self.assertEqual(relay.session_snapshot()[0]["worker"], "alice.worker")
             difficulty = json.loads(await reader.readline())
             self.assertEqual(difficulty["method"], "mining.set_difficulty")
             job = json.loads(await reader.readline())
@@ -47,6 +48,8 @@ class LabChainTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(response["result"])
             self.assertEqual((pool.accepted, pool.rejected), (1, 3))
             self.assertEqual((relay.metrics.submitted, relay.metrics.accepted, relay.metrics.rejected), (4, 1, 3))
+            current = relay.session_snapshot()[0]
+            self.assertEqual((current["submitted"], current["accepted"], current["rejected"]), (4, 1, 3))
         finally:
             writer.close()
             await writer.wait_closed()
