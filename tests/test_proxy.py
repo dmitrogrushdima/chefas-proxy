@@ -4,10 +4,17 @@ import unittest
 import socket
 from unittest.mock import AsyncMock, patch
 
-from proxy import Relay
+from proxy import Relay, is_loopback_bind
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    def test_loopback_bind_detection_is_conservative(self):
+        self.assertTrue(is_loopback_bind("127.0.0.1"))
+        self.assertTrue(is_loopback_bind("::1"))
+        self.assertTrue(is_loopback_bind("localhost"))
+        self.assertFalse(is_loopback_bind("0.0.0.0"))
+        self.assertFalse(is_loopback_bind("unresolved.example"))
+
     async def asyncSetUp(self):
         self.servers = []
         self.writers = []

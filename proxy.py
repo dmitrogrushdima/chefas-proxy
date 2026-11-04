@@ -15,6 +15,16 @@ from observer import Metrics, Observer
 LOG = logging.getLogger("mining_proxy")
 
 
+def is_loopback_bind(host):
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # Unknown hostnames are not treated as loopback for security purposes.
+        return False
+
+
 class Relay:
     def __init__(self, host, port, *, tls=False, limit=512, timeout=10, backup=None, tls_context=None, allowed_networks=()):
         if not host or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -294,6 +304,8 @@ def main():
     parser.add_argument("--connect-timeout", type=float, default=10, metavar="SECONDS")
     parser.add_argument("--allow-cidr", action="append", default=[], metavar="NETWORK",
                         help="Allow miner source network (repeatable, e.g. 192.168.10.0/24)")
+    parser.add_argument("--allow-any-miner", action="store_true",
+                        help="Explicitly allow all miner source addresses on a non-loopback listener")
     args = parser.parse_args()
     if bool(args.backup_host) != bool(args.backup_port):
         parser.error("--backup-host and --backup-port must be supplied together")
@@ -305,6 +317,10 @@ def main():
         args.allow_cidr = [ipaddress.ip_network(value, strict=True) for value in args.allow_cidr]
     except ValueError as exc:
         parser.error(f"invalid --allow-cidr: {exc}")
+    if args.allow_any_miner and args.allow_cidr:
+        parser.error("--allow-any-miner cannot be combined with --allow-cidr")
+    if not is_loopback_bind(args.listen_host) and not args.allow_cidr and not args.allow_any_miner:
+        parser.error("non-loopback listeners require --allow-cidr or explicit --allow-any-miner")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
         asyncio.run(run(args))

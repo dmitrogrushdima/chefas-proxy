@@ -14,7 +14,9 @@ class CLITests(unittest.TestCase):
                       ["--connect-timeout", "nan"],
                       ["--connect-timeout", "0"],
                       ["--allow-cidr", "192.168.0.1/24"],
-                      ["--allow-cidr", "invalid"]):
+                      ["--allow-cidr", "invalid"],
+                      ["--listen-host", "0.0.0.0"],
+                      ["--allow-cidr", "127.0.0.0/8", "--allow-any-miner"]):
             with self.subTest(extra=extra):
                 result = subprocess.run([sys.executable, PROXY, "--pool-host", "example.invalid",
                                          "--pool-port", "3333", *extra],
