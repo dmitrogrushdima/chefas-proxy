@@ -22,7 +22,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             await self.relay.shutdown()
 
     async def start_server(self, callback):
-        server = await asyncio.start_server(callback, "127.0.0.1", 0)
+        server = await asyncio.start_server(callback, "127.0.0.1", 0, backlog=512)
         self.servers.append(server)
         return server.sockets[0].getsockname()[1]
 
@@ -60,6 +60,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(await reader.readline())["method"], "mining.notify")
         self.assertEqual(received, encoded)
         self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+        self.assertEqual(self.relay.metrics.submitted, 1)
+        self.assertEqual(self.relay.metrics.accepted, 0)
 
     async def test_unavailable_pool_closes_miner_connection(self):
         proxy_port = await self.start_relay(1)
@@ -91,3 +93,38 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         self.assertEqual(self.relay.active, 1)
         last.close()
+
+    async def test_backup_on_initial_connect_failure(self):
+        async def pool(reader, writer):
+            writer.write(await reader.read(100))
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        backup_port = await self.start_server(pool)
+        self.relay = Relay("127.0.0.1", 1, backup=("127.0.0.1", backup_port), timeout=1)
+        port = await self.start_server(self.relay.handle)
+        reader, writer = await self.connect(port)
+        writer.write(b"worker\n")
+        await writer.drain()
+        self.assertEqual(await asyncio.wait_for(reader.read(), 3), b"worker\n")
+        self.assertEqual(self.relay.metrics.upstream_failures, 1)
+
+    async def test_many_clients_keep_traffic_separate(self):
+        async def pool(reader, writer):
+            line = await reader.readline()
+            writer.write(line)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        port = await self.start_relay(await self.start_server(pool), limit=512)
+        clients = []
+        for i in range(400):
+            clients.append(await self.connect(port))
+        async def client(i, reader, writer):
+            data = ("worker-%s\n" % i).encode()
+            writer.write(data)
+            await writer.drain()
+            return await asyncio.wait_for(reader.readline(), 20) == data
+        self.assertTrue(all(await asyncio.gather(*(client(i, *pair) for i, pair in enumerate(clients)))))
