@@ -8,6 +8,43 @@ from proxy import Relay
 
 
 class LabChainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backup_pool_receives_original_authorization(self):
+        pool = LabPool()
+        pool_server = await asyncio.start_server(pool.handle, "127.0.0.1", 0)
+        backup = ("127.0.0.1", pool_server.sockets[0].getsockname()[1])
+        relay = Relay("127.0.0.1", 1, backup=backup, timeout=1)
+        proxy_server = await asyncio.start_server(relay.handle, "127.0.0.1", 0)
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy_server.sockets[0].getsockname()[1])
+
+        async def request(value):
+            writer.write(json.dumps(value).encode() + b"\n")
+            await writer.drain()
+            return json.loads(await asyncio.wait_for(reader.readline(), 3))
+
+        try:
+            subscribe = await request({"id": 1, "method": "mining.subscribe", "params": []})
+            extranonce = subscribe["result"][1]
+            auth = await request({"id": 2, "method": "mining.authorize", "params": ["alice.worker", "x"]})
+            self.assertTrue(auth["result"])
+            self.assertEqual(relay.session_snapshot()[0]["pool"], "backup")
+            self.assertEqual(relay.session_snapshot()[0]["worker"], "alice.worker")
+            await reader.readline()  # difficulty
+            job = json.loads(await reader.readline())
+            nonce = find_nonce(extranonce)
+            share = await request({"id": 3, "method": "mining.submit", "params":
+                                   ["alice.worker", job["params"][0], "00000000", NTIME, nonce]})
+            self.assertTrue(share["result"])
+            self.assertEqual(pool.accepted, 1)
+            self.assertEqual(relay.metrics.backup_connections, 1)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            proxy_server.close()
+            pool_server.close()
+            await proxy_server.wait_closed()
+            await pool_server.wait_closed()
+            await relay.shutdown()
+
     async def test_real_sha256d_share_through_proxy(self):
         pool = LabPool()
         pool_server = await asyncio.start_server(pool.handle, "127.0.0.1", 0)
