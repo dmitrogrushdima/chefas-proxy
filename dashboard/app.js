@@ -73,6 +73,7 @@ function renderSnapshot() {
   $("pending-unmatched").textContent = `${number(sessions.reduce((sum, item) => sum + (item.pending || 0), 0))} / ${number(metrics.unmatched)}`;
   $("limits-loops").textContent = `${number(metrics.refused_capacity)} / ${number(metrics.blocked_loops)}`;
   $("refused-network").textContent = number(metrics.refused_network);
+  $("redirect-notices").textContent = number(metrics.redirect_notices);
   $("primary-pool").textContent = endpoint(status.primary);
   $("backup-pool").textContent = endpoint(status.backup);
   $("tls-label").textContent = t(status.tls ? "TLS · certificate verified" : "TCP · no TLS");

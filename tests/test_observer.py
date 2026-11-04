@@ -71,6 +71,14 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(self.metrics.observation_errors, 1)
         self.assertFalse(self.observer.pending)
 
+    def test_pool_redirect_notification_is_observed_but_not_counted_for_miners(self):
+        notice = message({"id": None, "method": "client.reconnect", "params": ["pool.example", 3333, 0]})
+        self.observer.feed(0, notice)
+        self.assertEqual(self.metrics.redirect_notices, 0)
+        self.observer.feed(1, notice[:10])
+        self.observer.feed(1, notice[10:])
+        self.assertEqual(self.metrics.redirect_notices, 1)
+
     def test_session_metrics_update_global_totals(self):
         child = Metrics(parent=self.metrics)
         observer = Observer(child)

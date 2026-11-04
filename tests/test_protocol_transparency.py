@@ -22,6 +22,7 @@ class ProtocolTransparencyTests(unittest.IsolatedAsyncioTestCase):
             b'{"id":3,"result":true,"error":null}\n'
             b'{"id":null,"method":"mining.set_extranonce","params":["87654321",4]}\n'
             b'{"id":null,"method":"mining.set_version_mask","params":["1fffe000"]}\n'
+            b'{"id":null,"method":"client.reconnect","params":["backup.example",3333,0]}\n'
             b'{"id":null,"method":"mining.notify","params":["job","opaque"],"extra":true}\n'
             b'{"id":4,"result":false,"error":[21,"stale",null]}\n'
         )
@@ -54,6 +55,7 @@ class ProtocolTransparencyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result, upstream)
             self.assertEqual(relay.metrics.submitted, 1)
             self.assertEqual(relay.metrics.rejected, 1)
+            self.assertEqual(relay.metrics.redirect_notices, 1)
         finally:
             writer.close()
             await writer.wait_closed()

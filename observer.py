@@ -16,6 +16,7 @@ class Metrics:
         self.closed_by_pool = 0
         self.closed_ambiguous = 0
         self.transport_errors = 0
+        self.redirect_notices = 0
         self.upstream_failures = 0
         self.submitted = 0
         self.accepted = 0
@@ -67,6 +68,8 @@ class Observer:
             msg = json.loads(line)
             if not isinstance(msg, dict):
                 return
+            if direction == 1 and msg.get("method") == "client.reconnect":
+                self.metrics.redirect_notices += 1
             ident = msg.get("id")
             if not isinstance(ident, (int, str)) or isinstance(ident, bool):
                 return
