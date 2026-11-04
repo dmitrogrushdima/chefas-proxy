@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 
 from observer import Metrics
@@ -43,3 +44,33 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejects_unexpected_host(self):
         self.assertIn(b"403 Forbidden", await self.request("/api/metrics", "attacker.example"))
+
+    async def test_diagnostic_export_does_not_invent_fee_or_difficulty(self):
+        response = await self.request("/api/audit-export", f"127.0.0.1:{self.port}")
+        headers, body = response.split(b"\r\n\r\n", 1)
+        self.assertIn(b"Content-Disposition: attachment", headers)
+        data = json.loads(body)
+        self.assertFalse(data["devfee_enabled"])
+        self.assertIsNone(data["accepted_difficulty"])
+        self.assertIsNone(data["fee_percentage"])
+        self.assertIn("not a financial audit", data["scope"])
+
+    async def test_diagnostic_export_excludes_protocol_details_and_extra_fields(self):
+        sample = [{"id": 1, "worker": "alice.worker", "state": "connected",
+                   "protocol_observation": {"extranonce1": "secret-marker"}, "password": "password-marker"}]
+        server = await asyncio.start_server(
+            lambda r, w: dashboard_request(r, w, Metrics(), lambda: sample), "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(f"GET /api/audit-export HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+            await writer.drain()
+            response = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            self.assertIn(b"alice.worker", response)
+            self.assertNotIn(b"secret-marker", response)
+            self.assertNotIn(b"password-marker", response)
+        finally:
+            server.close()
+            await server.wait_closed()

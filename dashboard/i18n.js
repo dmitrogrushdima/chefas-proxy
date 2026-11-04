@@ -27,6 +27,8 @@ translations.ru["View diagnostics"] = "К диагностике";
 translations["zh-CN"]["View diagnostics"] = "查看诊断";
 translations.ru["Idle sessions closed"] = "Закрыто неактивных сеансов";
 translations["zh-CN"]["Idle sessions closed"] = "已关闭的空闲会话";
+translations.ru["Export JSON"] = "Выгрузить JSON";
+translations["zh-CN"]["Export JSON"] = "导出 JSON";
 const locales = {en: "en-US", ru: "ru-RU", "zh-CN": "zh-CN"};
 let language = "en";
 try { const saved = localStorage.getItem("kontur-language"); if (Object.prototype.hasOwnProperty.call(locales, saved)) language = saved; } catch (_) { /* storage can be disabled */ }

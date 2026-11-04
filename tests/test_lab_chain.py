@@ -69,6 +69,11 @@ class LabChainTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(difficulty["method"], "mining.set_difficulty")
             job = json.loads(await reader.readline())
             self.assertEqual(job["method"], "mining.notify")
+            observed = relay.session_snapshot()[0]["protocol_observation"]
+            self.assertTrue(observed["subscribed"])
+            self.assertEqual(observed["extranonce1"], extranonce1)
+            self.assertEqual(observed["authorized_workers"], ["alice.worker"])
+            self.assertGreater(observed["observed_difficulty"], 0)
             nonce = find_nonce(extranonce1)
             params = ["alice.worker", job["params"][0], "00000000", NTIME, nonce]
             response = await request({"id": 3, "method": "mining.submit", "params": params})

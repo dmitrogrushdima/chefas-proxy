@@ -1,11 +1,13 @@
 """Local read-only dashboard HTTP handler and static assets."""
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}):
     try:
+        disposition = b""
         request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
         first = request.split(b"\r\n", 1)[0].split()
         # An absolute URL or another Host can indicate a cross-site request.
@@ -21,6 +23,15 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
             status, body, content_type = b"200 OK", json.dumps(sessions()).encode(), b"application/json"
         elif first[1] == b"/api/status":
             status, body, content_type = b"200 OK", json.dumps(status_snapshot()).encode(), b"application/json"
+        elif first[1] == b"/api/audit-export":
+            allowed = ("id", "state", "worker", "pool", "duration_seconds", "submitted", "accepted", "rejected", "unmatched", "pending")
+            safe_sessions = [{key: item.get(key) for key in allowed} for item in sessions()]
+            report = {"schema_version": 1, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                      "scope": "approximate process-lifetime observations; not a financial audit",
+                      "devfee_enabled": False, "accepted_difficulty": None, "fee_difficulty": None,
+                      "fee_percentage": None, "metrics": metrics.snapshot(), "sessions": safe_sessions}
+            status, body, content_type = b"200 OK", json.dumps(report).encode(), b"application/json"
+            disposition = b"\r\nContent-Disposition: attachment; filename=kontur-diagnostics.json"
         elif first[1] in ASSETS:
             body, content_type = ASSETS[first[1]]
             status = b"200 OK"
@@ -29,7 +40,7 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
         else:
             status, body, content_type = b"404 Not Found", b"Not found", b"text/plain"
         writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Type: " + content_type +
-                     b"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nContent-Length: " +
+                     b"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" + disposition + b"\r\nContent-Length: " +
                      str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
         await writer.drain()
     except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):

@@ -205,7 +205,8 @@ class Relay:
                  "pool": item["pool"], "duration_seconds": max(0, int(now - item["started"])),
                  "submitted": item["metrics"].submitted, "accepted": item["metrics"].accepted,
                  "rejected": item["metrics"].rejected, "unmatched": item["metrics"].unmatched,
-                 "pending": item["observer"].pending_shares()}
+                 "pending": item["observer"].pending_shares(),
+                 "protocol_observation": dict(item["observer"].protocol)}
                 for item in self.sessions.values()]
 
     def status_snapshot(self):
