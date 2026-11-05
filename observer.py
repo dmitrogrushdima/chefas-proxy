@@ -3,7 +3,48 @@ import json
 import time
 import math
 import string
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from fractions import Fraction
+
+
+class WorkAudit:
+    """Pool-confirmed accepted work, bucketed by monotonic second."""
+
+    def __init__(self, ledger, clock=time.monotonic):
+        self.ledger, self.clock = ledger, clock
+        self.started = clock()
+        self.buckets = deque()
+
+    def record(self, target, difficulty):
+        second = int(self.clock())
+        if not self.buckets or self.buckets[-1][0] != second:
+            self.buckets.append([second, Fraction(0), Fraction(0)])
+        self.buckets[-1][1 if target == "user" else 2] += Fraction(str(difficulty))
+        self._trim(second)
+
+    def _trim(self, now):
+        while self.buckets and self.buckets[0][0] <= now - 3600:
+            self.buckets.popleft()
+
+    def snapshot(self):
+        now = self.clock()
+        self._trim(int(now))
+        result = self.ledger.snapshot()
+        result["scope"] = "pool-confirmed difficulty since process start; resets on restart"
+        result["hashrate_windows"] = {}
+        elapsed = max(0.0, now - self.started)
+        for label, window in (("5m", 300), ("15m", 900), ("1h", 3600)):
+            measured = min(elapsed, window)
+            work = sum((item[1] + item[2] for item in self.buckets if item[0] > int(now) - window), Fraction(0))
+            try:
+                rate = float(work * (2 ** 32)) / measured if measured else None
+                if rate is not None and not math.isfinite(rate):
+                    rate = None
+            except OverflowError:
+                rate = None
+            result["hashrate_windows"][label] = {"hashrate_hs": rate, "measured_seconds": measured,
+                                                  "warmup": elapsed < window}
+        return result
 
 
 class Metrics:
@@ -29,9 +70,17 @@ class Metrics:
         self.rejected = 0
         self.unmatched = 0
         self.observation_errors = 0
+        self.invalid_local = 0
+        self.duplicate_local = 0
+        self.low_diff_local = 0
+        self.unknown_job_local = 0
+        self.malformed_local = 0
 
     def snapshot(self):
-        return {key: value for key, value in vars(self).items() if not key.startswith("_")}
+        result = {key: value for key, value in vars(self).items() if not key.startswith("_")}
+        if getattr(self, "_audit", None) is not None:
+            result["audit"] = self._audit.snapshot()
+        return result
 
     def __setattr__(self, key, value):
         parent = self.__dict__.get("_parent")

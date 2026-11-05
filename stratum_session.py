@@ -11,6 +11,7 @@ import time
 from observer import Metrics, Observer
 from router import copy_stream
 from upstream_manager import connect_upstream
+from devfee_scheduler import AcceptedWorkLedger
 
 LOG = logging.getLogger("mining_proxy")
 HALF_CLOSE_GRACE = 3.0
@@ -39,6 +40,10 @@ class Relay:
         self.next_session_id = 0
         self.listeners = []
         self.allowed_networks = tuple(ipaddress.ip_network(network, strict=True) for network in allowed_networks)
+        self.active_router = False
+        self.fee = None
+        self.fee_owner = None
+        self.ledger = AcceptedWorkLedger()
         if tls_context is not None and not tls:
             raise ValueError("TLS context provided while TLS is disabled")
         self.tls_context = (tls_context or ssl.create_default_context()) if tls else None
@@ -80,6 +85,10 @@ class Relay:
         upstream = None
         pumps = []
         try:
+            if self.active_router:
+                from router import StatefulRouter
+                await StatefulRouter(self, reader, writer, session).run()
+                return
             remote_reader, upstream, index = await connect_upstream(
                 (self.host, self.port), self.backup, self.tls_context, self.timeout,
                 self.is_self_route, self.metrics
@@ -205,7 +214,7 @@ class Relay:
                  "pool": item["pool"], "duration_seconds": max(0, int(now - item["started"])),
                  "submitted": item["metrics"].submitted, "accepted": item["metrics"].accepted,
                  "rejected": item["metrics"].rejected, "unmatched": item["metrics"].unmatched,
-                 "pending": item["observer"].pending_shares(),
+                 "pending": item.get("pending", item["observer"].pending_shares()),
                  "protocol_observation": dict(item["observer"].protocol)}
                 for item in self.sessions.values()]
 

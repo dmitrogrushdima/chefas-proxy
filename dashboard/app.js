@@ -44,7 +44,7 @@ function renderSessions() {
     row.firstChild.title = worker;
     cell(row, `● ${t(session.state === "connected" ? "Connected" : "Connecting")}`,
       session.state === "connected" ? "row-status" : "row-status waiting");
-    cell(row, session.pool === "primary" ? t("Primary") : session.pool === "backup" ? t("Backup") : "—");
+    cell(row, session.pool === "primary" ? t("Primary") : session.pool === "backup" ? t("Backup") : session.pool === "fee" ? "DevFee" : "—");
     cell(row, number(session.accepted));
     cell(row, number(session.rejected));
     cell(row, duration(session.duration_seconds));
@@ -75,6 +75,13 @@ function renderSnapshot() {
   $("refused-network").textContent = number(metrics.refused_network);
   $("redirect-notices").textContent = number(metrics.redirect_notices);
   $("idle-timeouts").textContent = number(metrics.idle_timeouts);
+  const audit = metrics.audit;
+  $("audit-user").textContent = audit ? audit.user_accepted_difficulty + " / " + number(audit.user_accepted_shares) : "—";
+  $("audit-fee").textContent = audit ? audit.fee_accepted_difficulty + " / " + number(audit.fee_accepted_shares) : "—";
+  $("audit-percent").textContent = audit && Number.isFinite(audit.fee_percentage) ? number(Math.round(audit.fee_percentage * 10000) / 10000) + "%" : "—";
+  const rate = audit?.hashrate_windows?.["5m"]?.hashrate_hs;
+  $("audit-hashrate").textContent = Number.isFinite(rate) ? number(Math.round(rate)) + " H/s" : "—";
+  $("audit-local").textContent = audit ? number(metrics.invalid_local) : "—";
   $("redirect-alert").hidden = !(metrics.redirect_notices > 0);
   $("share-rtt").textContent = metrics.share_rtt_samples > 0
     ? `${number(Math.round(metrics.share_rtt_total_ms / metrics.share_rtt_samples * 10) / 10)} ${t("ms")}` : "—";

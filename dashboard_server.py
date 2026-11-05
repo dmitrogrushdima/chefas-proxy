@@ -30,6 +30,15 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
                       "scope": "approximate process-lifetime observations; not a financial audit",
                       "devfee_enabled": False, "accepted_difficulty": None, "fee_difficulty": None,
                       "fee_percentage": None, "metrics": metrics.snapshot(), "sessions": safe_sessions}
+            ledger = getattr(metrics, "_ledger", None)
+            if ledger is not None:
+                tracker = getattr(metrics, "_audit", None)
+                audit = tracker.snapshot() if tracker is not None else ledger.snapshot()
+                report.update({"scope": "pool-confirmed work since process start; resets on restart; not a financial audit",
+                               "devfee_enabled": bool(getattr(metrics, "_devfee_enabled", False)),
+                               "accepted_difficulty": audit["user_accepted_difficulty"],
+                               "fee_difficulty": audit["fee_accepted_difficulty"],
+                               "fee_percentage": audit["fee_percentage"], "audit": audit})
             status, body, content_type = b"200 OK", json.dumps(report).encode(), b"application/json"
             disposition = b"\r\nContent-Disposition: attachment; filename=kontur-diagnostics.json"
         elif first[1] in ASSETS:

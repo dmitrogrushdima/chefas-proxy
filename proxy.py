@@ -10,9 +10,10 @@ import socket
 import errno
 import ipaddress
 from pathlib import Path
-from observer import Metrics, Observer
+from observer import Metrics, Observer, WorkAudit
 from stratum_session import Relay, HALF_CLOSE_GRACE
 from dashboard_server import dashboard_request, ASSET_DIR, ASSETS
+from devfee_scheduler import AcceptedWorkLedger
 
 LOG = logging.getLogger("mining_proxy")
 
@@ -52,6 +53,17 @@ async def run(args):
     relay = Relay(args.pool_host, args.pool_port, tls=args.tls, backup=backup,
                   limit=args.max_connections, timeout=args.connect_timeout, allowed_networks=args.allow_cidr,
                   idle_timeout=args.idle_timeout)
+    relay.active_router = args.active_router
+    relay.validate_pow = args.validate_pow
+    relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
+    relay.fee_worker = args.devfee_worker
+    relay.fee_password = args.devfee_password
+    relay.reconnect_min_seconds = args.reconnect_min_seconds
+    relay.ledger = AcceptedWorkLedger(args.fee_min_work)
+    if args.active_router:
+        relay.metrics._ledger = relay.ledger
+        relay.metrics._devfee_enabled = bool(relay.fee)
+        relay.metrics._audit = WorkAudit(relay.ledger)
     server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512)
     relay.set_listeners(server)
     try:
@@ -84,6 +96,14 @@ def main():
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--tls", action="store_true", help="Verify TLS certificate on upstream connection")
+    parser.add_argument("--active-router", "--stateful", action="store_true", help="Enable experimental stateful Stratum router")
+    parser.add_argument("--validate-pow", action="store_true")
+    parser.add_argument("--devfee-host")
+    parser.add_argument("--devfee-port", type=int, choices=range(1, 65536), metavar="PORT")
+    parser.add_argument("--devfee-worker")
+    parser.add_argument("--devfee-password", default="x")
+    parser.add_argument("--fee-min-work", type=float, default=0)
+    parser.add_argument("--reconnect-min-seconds", type=float, default=5940)
     parser.add_argument("--backup-host", help="Backup pool, used when initial connection fails")
     parser.add_argument("--backup-port", type=int, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--dashboard-port", type=int, default=8080, choices=range(1, 65536), metavar="PORT")
@@ -96,6 +116,14 @@ def main():
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
     args = parser.parse_args()
+    if any((args.devfee_host, args.devfee_port, args.devfee_worker)) and not all((args.devfee_host, args.devfee_port, args.devfee_worker)):
+        parser.error("--devfee-host, --devfee-port and --devfee-worker must be supplied together")
+    if (args.devfee_host or args.validate_pow) and not args.active_router:
+        parser.error("DevFee and PoW validation require --active-router")
+    if args.active_router and args.idle_timeout:
+        parser.error("--idle-timeout is not yet supported with --active-router")
+    if not math.isfinite(args.fee_min_work) or args.fee_min_work < 0 or not math.isfinite(args.reconnect_min_seconds) or args.reconnect_min_seconds < 0:
+        parser.error("fee work and reconnect interval must be finite and non-negative")
     if bool(args.backup_host) != bool(args.backup_port):
         parser.error("--backup-host and --backup-port must be supplied together")
     if not 1 <= args.max_connections <= 10000:
