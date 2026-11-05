@@ -15,3 +15,18 @@
 ## Принцип работы с источниками
 
 Изучаем требования, публичную документацию и способы проверки. Собственные решения фиксируем своими словами и реализуем самостоятельно. Внешние библиотеки добавляются только после проверки происхождения, версии, лицензии, поддержки и безопасности; обязанности лицензии сохраняются. Не устанавливаем посторонние бинарные файлы на рабочую ферму ради анализа.
+
+
+## Product review, 2026-11-06
+
+The linked repositories were reviewed as published project interfaces/documentation, not as a successful reverse engineering or independent audit of their binaries. Stars, a Rust/Go label and broad README claims do not establish memory usage, safe fees or firmware compatibility.
+
+| Primary reference | Useful lesson | Action for our product |
+| --- | --- | --- |
+| [RustMinerSystem / EvilGenius-dot](https://github.com/EvilGenius-dot/RustMinerSystem), [zhahitech listing](https://github.com/zhahitech/RustMinerSystem) | Pool/worker management and packaging are operator-facing features | Short operator README, local UI and a clear qualification matrix; do not execute vendor installers or claim source completeness |
+| [KTMinerProxy](https://github.com/kt007007/KTMinerProxy) | Published per-device statistics and forwarding workflows | Prioritize useful status/reject accounting; published scale claims remain unverified |
+| [TCMinerProxy](https://github.com/MinerProxyPro/TCMinerProxy) | Installation and lifecycle instructions are part of the product | Separate native deployment from source development; retain local, reviewable launch scripts |
+| [Braiins configuration](https://academy.braiins.com/farm-proxy/configuration) | Explicit extranonce constraints and device-dependent caveats | Conserve nonce bytes, expose bounds, qualify hardware instead of guessing vendor behavior |
+| [BIP310](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki) | Negotiated masks affect reconstruction of the submitted header | Require an identical negotiated mask on alternate pools, test PoW after translation |
+
+No claim that a $5 host can run 50,000 ASICs in 50 MB has been adopted. Our 400-session echo regression is not a capacity guarantee. Similarly, NiceHash product/service fees must be compared on the same fee base and current terms; our 1% accepted-work target alone does not prove a better total return.

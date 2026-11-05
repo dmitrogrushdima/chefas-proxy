@@ -28,7 +28,7 @@ def reserve_distinct_ports(count):
 class CLISmokeTests(unittest.TestCase):
     def test_real_entrypoint_serves_dashboard(self):
         listener, dashboard, upstream = reserve_distinct_ports(3)
-        process = subprocess.Popen([sys.executable, str(ROOT / "proxy.py"), "--pool-host", "127.0.0.1",
+        process = subprocess.Popen([sys.executable, str(ROOT / "launch.py"), "--pool-host", "127.0.0.1",
                                     "--pool-port", str(upstream), "--listen-port", str(listener),
                                     "--dashboard-port", str(dashboard)], cwd=ROOT,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

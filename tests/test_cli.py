@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-PROXY = str(Path(__file__).resolve().parent.parent / "proxy.py")
+PROXY = str(Path(__file__).resolve().parent.parent / "launch.py")
 
 
 class CLITests(unittest.TestCase):

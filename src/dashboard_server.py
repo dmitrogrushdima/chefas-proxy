@@ -154,6 +154,8 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
 
 
 ASSET_DIR = Path(__file__).resolve().parent / "dashboard"
+if not ASSET_DIR.is_dir():
+    ASSET_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 ASSETS = {b"/index.html": ((ASSET_DIR / "index.html").read_bytes(), b"text/html; charset=utf-8"),
           b"/app.css": ((ASSET_DIR / "app.css").read_bytes(), b"text/css; charset=utf-8"),
           b"/i18n.js": ((ASSET_DIR / "i18n.js").read_bytes(), b"application/javascript; charset=utf-8"),

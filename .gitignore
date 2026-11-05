@@ -16,3 +16,6 @@ logs/
 build/
 *.pyd
 *.so
+bin/*
+!bin/.gitkeep
+.pytest_cache/

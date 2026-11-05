@@ -11,6 +11,9 @@ const translations = {
   }
 };
 
+Object.assign(translations.ru, {"Estimated hashrate":"Оценочный хешрейт", "Active workers":"Активные воркеры", "DevFee debt":"Задолженность DevFee", "Accepted difficulty · 5 minute window":"Принятая сложность · окно 5 минут", "Authorized worker identities online":"Авторизованные воркеры на связи", "Accepted difficulty · target 1%":"Принятая сложность · цель 1%", "Farm performance":"Показатели фермы"});
+Object.assign(translations["zh-CN"], {"Estimated hashrate":"估算算力", "Active workers":"在线矿工", "DevFee debt":"开发费待计难度", "Accepted difficulty · 5 minute window":"已接受难度 · 5分钟窗口", "Authorized worker identities online":"在线已授权矿工", "Accepted difficulty · target 1%":"已接受难度 · 目标1%", "Farm performance":"矿场概况"});
+
 translations.ru["Blocked by IP filter"] = "Отклонено IP-фильтром";
 translations["zh-CN"]["Blocked by IP filter"] = "IP 筛选拒绝";
 translations.ru["Pool redirect requests (not blocked)"] = "Запросы перенаправления пула (не блокируются)";

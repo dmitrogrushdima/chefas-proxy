@@ -33,7 +33,7 @@ All outbound paths use `open_upstream`: active routing, transparent relay, backu
 `--tls-ca-file PATH` selects a trusted CA PEM for private-CA pilots; it does not enable TLS on plain routes or disable verification. Default URL contexts reuse the system trust store; load a new process to refresh trust configuration. Invalid CA files fail startup. Verification errors log only the target, session and numeric verification code. Certificate names, account secrets and exception payloads are not dumped by that event.
 
 ```sh
-python proxy.py --pool-host stratum+ssl://pool.example:443 --active-router --validate-pow
+python launch.py --pool-host stratum+ssl://pool.example:443 --active-router --validate-pow
 ```
 
 For a mixed deployment, use a bare user host/port and an SSL-prefixed DevFee host/port, without the global `--tls` flag. KONTUR renders scheme-bearing endpoints correctly and reports the primary route's effective TLS setting separately from the global force flag. TLS encrypts payloads; it does not make destination IP/port or ordinary SNI invisible, nor guarantee passage through a particular provider's DPI.

@@ -17,6 +17,7 @@ from devfee_scheduler import AcceptedWorkLedger, FeeConnectionGate
 from pilot_logging import event
 # Public framing types are re-exported here for session-level integrations.
 from stratum_codec import PacketReader, StratumDecoder
+from hardware_compatibility import CompatibilityRegistry
 
 LOG = logging.getLogger("mining_proxy")
 HALF_CLOSE_GRACE = 3.0
@@ -80,6 +81,10 @@ class Relay:
         self.job_ttl = 900
         self.job_gc_interval = 60
         self.url_tls_context = None
+        self.compatibility = CompatibilityRegistry()
+        self.hot_switch_mode = 'auto'
+        self.asic_extranonce2_min = 0
+        self.asic_extranonce2_max = 4
         self.ledger = AcceptedWorkLedger()
         self.events = deque(maxlen=500)
         self.workers = WorkerRegistry()
@@ -268,6 +273,13 @@ class Relay:
         relevant = [(family, address) for family, address in self.listeners if address[1] == endpoint[1]]
         if not relevant:
             return False
+        # Reserved localhost must never require a DNS executor round-trip to
+        # reject a loop into our own local/wildcard listener.
+        if host.lower() == 'localhost' and any(
+                ipaddress.ip_address(address[0].split('%',1)[0]).is_loopback or
+                ipaddress.ip_address(address[0].split('%',1)[0]).is_unspecified
+                for _,address in relevant):
+            return True
         loop = asyncio.get_running_loop()
         addresses = await asyncio.wait_for(loop.getaddrinfo(endpoint[0], endpoint[1], type=socket.SOCK_STREAM), self.timeout)
         for family, _, _, _, remote in addresses:

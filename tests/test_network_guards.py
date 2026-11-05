@@ -23,10 +23,29 @@ class Writer:
 
 
 class NetworkGuardsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reset_during_difficulty_drain_is_a_peer_failure(self):
+        router = self.router()
+        channel = self.channel('user')
+        router.current = channel
+        router.auth['worker'] = 'x'
+        router.last_client_difficulty = 1
+        async def broken_drain():
+            raise ConnectionResetError('synthetic peer reset')
+        router.writer.drain = broken_drain
+        router.writer.close = lambda: None
+        with self.assertRaises(ConnectionResetError):
+            await router.send_current(channel,{'id':None,'method':'mining.set_difficulty','params':[2]})
+        self.assertTrue(router.client_disconnected)
+        self.assertEqual(router.last_transition[1],'difficulty')
+        router.close_client()
+        self.assertFalse(router.intentional_close)
+
     def router(self):
         relay = Relay('localhost',3333)
         session = {'id':1,'worker':'worker','observer':SimpleNamespace(protocol={})}
-        return StatefulRouter(relay,asyncio.StreamReader(),Writer(),session)
+        router = StatefulRouter(relay,asyncio.StreamReader(),Writer(),session)
+        router.hot = True
+        return router
 
     def channel(self, target='fee', difficulty=Decimal('0.000000000123456789')):
         ready = asyncio.Event()

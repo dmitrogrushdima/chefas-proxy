@@ -16,7 +16,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 MODULES = ('proxy','router','devfee_scheduler','pow_validator','history_store','stratum_session',
-           'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec')
+           'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec','hardware_compatibility')
 LAUNCHER = '''"""Launch the compiled KONTUR runtime; source fallback is rejected."""
 import importlib
 from importlib.machinery import EXTENSION_SUFFIXES
@@ -37,7 +37,7 @@ if __name__ == '__main__':
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', default=str(ROOT/'dist'/'kontur'))
+    parser.add_argument('--output', default=str(ROOT/'bin'/'kontur'))
     parser.add_argument('--generate-only', action='store_true', help='Validate Cython translation without invoking the native compiler')
     args = parser.parse_args()
     output = Path(args.output).resolve()
@@ -54,7 +54,7 @@ def main():
         raise RuntimeError('Unexpected staging path')
     (build/'sources').mkdir(exist_ok=True)
     for name in MODULES:
-        source, destination = ROOT/(name+'.py'), build/'sources'/(name+'.py')
+        source, destination = ROOT/'src'/(name+'.py'), build/'sources'/(name+'.py')
         if not destination.exists() or source.read_bytes() != destination.read_bytes():
             shutil.copyfile(source, destination)
     # Short relative C/object paths avoid MSVC MAX_PATH duplication of the
@@ -77,6 +77,10 @@ def main():
         shutil.copyfile(ROOT/'dashboard'/asset, stage/'dashboard'/asset)
     for filename in ('requirements.txt','.env.example'):
         shutil.copyfile(ROOT/filename,stage/filename)
+    for filename in ('start.sh','start.bat'):
+        shutil.copy2(ROOT/filename,stage/filename)
+    if os.name != 'nt':
+        (stage/'start.sh').chmod(0o755)
     manifest = {'python':platform.python_version(),'platform':platform.platform(),'modules':list(MODULES),
                 'Cython':importlib.metadata.version('Cython'),
                 'source_sha256':{name:hashlib.sha256((build/'sources'/(name+'.py')).read_bytes()).hexdigest() for name in MODULES},

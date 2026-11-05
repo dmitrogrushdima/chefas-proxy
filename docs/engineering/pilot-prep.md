@@ -32,7 +32,7 @@ Reference: [Fernet authenticated encryption](https://cryptography.io/en/latest/f
 ## Logs
 
 ```sh
-python proxy.py --pool-host POOL --pool-port PORT --active-router --log-dir logs --log-level INFO
+python launch.py --pool-host POOL --pool-port PORT --active-router --log-dir logs --log-level INFO
 ```
 
 The named application logger uses a bounded 2048-record QueueHandler and a single QueueListener thread; disk I/O and rotation happen outside the asyncio loop. Files are UTF-8 JSON lines at `logs/proxy.log`, with a 50 MiB rotation threshold and three archives (approximately 200 MiB total plus a final record). Use a separate log directory per process. Queue overflow drops log records instead of blocking mining; `logging_dropped` in the process metrics and minute summary reports the count. These counters are not persisted. Disk-full/stalled storage can still cause lost logs.

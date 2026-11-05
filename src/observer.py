@@ -321,6 +321,7 @@ class Metrics:
         self.handshake_timeouts = 0
         self.zombie_reaped = 0
         self.keepalive_unavailable = 0
+        self.compatibility_fallbacks = 0
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}

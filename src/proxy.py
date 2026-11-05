@@ -22,6 +22,7 @@ from pilot_logging import PilotLogging, SafeQueueHandler, event
 from shutdown_signals import ShutdownSignals
 from upstream_manager import parse_endpoint
 from devfee_scheduler import FeeConnectionGate
+from hardware_compatibility import CompatibilityRegistry
 
 LOG = logging.getLogger("mining_proxy")
 
@@ -68,6 +69,11 @@ async def run(args, stop_event=None):
                   tls_context=url_tls_context if args.tls else None)
     relay.url_tls_context = url_tls_context
     relay.active_router = args.active_router
+    relay.compatibility = CompatibilityRegistry(getattr(args, 'compatibility_state', 'state/compatibility.json'))
+    relay.compatibility.load()
+    relay.hot_switch_mode = getattr(args, 'hot_switch_mode', 'auto')
+    relay.asic_extranonce2_min = getattr(args, 'asic_extranonce2_min', 0)
+    relay.asic_extranonce2_max = getattr(args, 'asic_extranonce2_max', 4)
     relay.fee_jitter_seconds = getattr(args, 'devfee_jitter_seconds', 180)
     relay.fee_connection_gate = FeeConnectionGate(getattr(args, 'devfee_connect_interval', .25))
     relay.job_ttl = getattr(args, 'job_ttl', 900)
@@ -170,6 +176,10 @@ def main():
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--tls", action="store_true", help="Verify TLS certificate on upstream connection")
     parser.add_argument('--tls-ca-file', help='Optional trusted CA PEM for TLS URLs and --tls; verification remains mandatory')
+    parser.add_argument('--hot-switch-mode', choices=('auto','reconnect'), default='auto')
+    parser.add_argument('--compatibility-state', default='state/compatibility.json')
+    parser.add_argument('--asic-extranonce2-min', type=int, default=0)
+    parser.add_argument('--asic-extranonce2-max', type=int, default=4)
     parser.add_argument("--active-router", "--stateful", action="store_true", help="Enable experimental stateful Stratum router")
     parser.add_argument("--validate-pow", action="store_true")
     parser.add_argument("--devfee-host")
@@ -195,6 +205,8 @@ def main():
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
     args = parser.parse_args()
+    if not 0 <= args.asic_extranonce2_min <= args.asic_extranonce2_max <= 32:
+        parser.error('ASIC extranonce2 bounds must satisfy 0 <= min <= max <= 32')
     for role in ('pool', 'backup', 'devfee'):
         host, port = getattr(args, role+'_host'), getattr(args, role+'_port')
         if host:

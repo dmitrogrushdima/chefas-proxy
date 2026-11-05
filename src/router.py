@@ -25,6 +25,8 @@ from pow_validator import (validate_stratum_share, target_from_difficulty,
 from devfee_scheduler import FeeHealth, FeeJitter
 from pilot_logging import event, stratum_trace, remember_secret
 from stratum_codec import PacketReader
+from hardware_compatibility import (ClientCapabilities, validate_config, negotiated_mask,
+                                    upstream_config, mask_value, merge_config)
 
 
 class StatefulRouter:
@@ -49,6 +51,13 @@ class StatefulRouter:
         self.hot = False
         self.jobs, self.duplicates = OrderedDict(), OrderedDict()
         self.job_times = {}
+        self.job_layouts = {}
+        self.capabilities = ClientCapabilities(getattr(relay,'asic_extranonce2_min',0),
+                                               getattr(relay,'asic_extranonce2_max',4))
+        self.last_client_difficulty = None
+        self.last_transition = None
+        self.client_disconnected = False
+        self.intentional_close = False
         self.sequence = 0
         self.write_lock = asyncio.Lock()
         self.switch_lock = asyncio.Lock()
@@ -74,6 +83,7 @@ class StatefulRouter:
         for key in expired:
             self.jobs.pop(key, None)
             self.job_times.pop(key, None)
+            self.job_layouts.pop(key, None)
         for key, (job_id, created) in list(self.duplicates.items()):
             if job_id not in self.jobs or now - created >= ttl:
                 self.duplicates.pop(key, None)
@@ -125,6 +135,41 @@ class StatefulRouter:
             if transport is not None:
                 transport.abort()
 
+    def close_client(self):
+        if not self.client_disconnected:
+            self.intentional_close = True
+        self.writer.close()
+
+    def write_client(self, packet):
+        try:
+            self.writer.write(encode_packet(packet))
+        except (ConnectionResetError, BrokenPipeError):
+            self.client_disconnected = True
+            raise
+
+    async def drain_client(self):
+        try:
+            await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+        except (ConnectionResetError, BrokenPipeError):
+            self.client_disconnected = True
+            raise
+
+    def can_hot_switch(self):
+        return (self.hot and getattr(self.relay,'hot_switch_mode','auto') != 'reconnect' and
+                not self.relay.compatibility.requires_reconnect(self.session.get('ip',''), self.auth,
+                                                                self.capabilities.agent))
+
+    async def request_reconnect(self):
+        try:
+            await self.send({'id':None,'method':'client.reconnect','params':[]})
+        finally:
+            self.close_client()
+
+    def note_difficulty(self, difficulty):
+        if self.auth and self.last_client_difficulty is not None and difficulty != self.last_client_difficulty:
+            self.last_transition = (time.monotonic(), 'difficulty')
+        self.last_client_difficulty = difficulty
+
     async def watch_miner(self):
         while True:
             if not self.auth:
@@ -138,6 +183,7 @@ class StatefulRouter:
                 counter = "zombie_reaped"
             if remaining <= 0:
                 setattr(self.relay.metrics, counter, getattr(self.relay.metrics, counter) + 1)
+                self.intentional_close = True
                 self.abort(self.writer)
                 for channel in list(self.channels.values()):
                     self.abort(channel.writer)
@@ -153,19 +199,28 @@ class StatefulRouter:
 
     async def miner_packets(self, first):
         yield first
-        while (packet := await self.packets.read_packet()) is not None:
-            yield packet
+        try:
+            while (packet := await self.packets.read_packet()) is not None:
+                yield packet
+            self.client_disconnected = True
+        except (ConnectionResetError, BrokenPipeError):
+            self.client_disconnected = True
+            raise
 
     async def send(self, packet):
         async with self.write_lock:
-            self.writer.write(encode_packet(packet))
-            await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+            self.write_client(packet)
+            await self.drain_client()
 
     async def send_current(self, channel, packet):
         async with self.write_lock:
             if self.current is channel and not channel.closed:
-                self.writer.write(encode_packet(packet))
-                await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+                if packet.get('method') == 'mining.set_difficulty':
+                    self.note_difficulty(packet['params'][0])
+                elif packet.get('method') == 'mining.set_extranonce':
+                    self.last_transition = (time.monotonic(), 'extranonce')
+                self.write_client(packet)
+                await self.drain_client()
 
     def check_fee_policy(self):
         if not getattr(self.relay, "require_devfee", False):
@@ -177,7 +232,7 @@ class StatefulRouter:
             for session in self.relay.sessions.values():
                 router = session.get("router")
                 if router:
-                    router.writer.close()
+                    router.close_client()
             raise ProtocolError("required DevFee health expired")
 
     async def watch_fee(self):
@@ -223,19 +278,15 @@ class StatefulRouter:
                 self.start_fee_policy()
         ch = await self.connect(name, endpoint)
         if self.config is not None:
-            response = await ch.request("mining.configure", self.config)
+            params = upstream_config(self.config, self.mask)
+            response = await ch.request("mining.configure", params)
             if self.mask is not None:
-                result = response.get("result")
-                try:
-                    compatible = (isinstance(result, dict) and result.get("version-rolling") is True
-                                  and int(self.mask, 16) & ~int(result["version-rolling.mask"], 16) == 0)
-                except (KeyError, TypeError, ValueError):
-                    compatible = False
-                if not compatible:
+                if negotiated_mask(params, response) != self.mask:
                     raise ProtocolError("incompatible version rolling mask")
         if self.subscription is not None:
             response = await ch.request("mining.subscribe", self.subscription)
             self.subscription_result(ch, response.get("result"))
+            self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
             ch.subscription_result = response["result"]
         for worker, password in list(self.auth.items()):
             response = await ch.request("mining.authorize", [self.fee_worker if fee else (self.user_worker or worker),
@@ -276,15 +327,23 @@ class StatefulRouter:
             ch.job_extra_size = ch.extranonce2_size
         elif method == "mining.set_extranonce":
             self.subscription_result(ch, [None] + params)
+            self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
             ch.job = None
             ch.ready.clear()
             if self.current is ch:
-                self.session["observer"].protocol.update(extranonce1=ch.extranonce1,
-                                                         extranonce2_size=ch.extranonce2_size)
+                extra, size, _ = self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
+                self.session["observer"].protocol.update(extranonce1=extra, extranonce2_size=size,
+                    upstream_extranonce1=ch.extranonce1, upstream_extranonce2_size=ch.extranonce2_size)
         elif method == "mining.set_version_mask":
-            # Dynamic masks need renegotiation with every upstream; never send
-            # shares under a mask that another connection has not accepted.
-            self.writer.close()
+            if len(params) != 1:
+                raise ProtocolError('invalid version mask notification')
+            mask_value(params[0])
+            if self.current is ch:
+                await self.request_reconnect()
+            else:
+                ch.ready.clear()
+                ch.authorized = False
+                await ch.close()
             return
         elif method == "client.reconnect":
             self.session["metrics"].redirect_notices += 1
@@ -293,8 +352,13 @@ class StatefulRouter:
             return
         if method == "mining.notify" and ch.difficulty is not None:
             await self.publish(ch, False)
-        elif method == "mining.set_extranonce" and not self.hot:
-            self.writer.close()
+        elif method == "mining.set_extranonce":
+            if not self.can_hot_switch():
+                await self.request_reconnect()
+            else:
+                extra, size, _ = self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
+                await self.send_current(ch, dict(msg,params=[extra,size]))
+                self.last_transition = (time.monotonic(),'extranonce')
         elif method != "mining.notify":
             await self.send_current(ch, msg)
 
@@ -309,9 +373,11 @@ class StatefulRouter:
         self.jobs[local_id] = (ch, upstream_id, list(ch.job), ch.job_extranonce,
                                ch.job_extra_size, ch.job_difficulty, self.mask)
         self.job_times[local_id] = (time.monotonic(), set())
+        self.job_layouts[local_id] = self.capabilities.layout(ch.job_extranonce, ch.job_extra_size)
         while len(self.jobs) > self.MAX_JOBS:
             expired, _ = self.jobs.popitem(last=False)
             self.job_times.pop(expired, None)
+            self.job_layouts.pop(expired, None)
         self.prune_jobs()
         return {"id": None, "method": "mining.notify", "params": params}
 
@@ -324,33 +390,42 @@ class StatefulRouter:
             if getattr(self.relay, "trace_stratum", False):
                 stratum_trace("proxy_to_asic", self.session["id"], ch.target, packet,
                               (self.user_password, self.fee_password, *self.auth.values()))
-            self.writer.write(encode_packet({"id": None, "method": "mining.set_difficulty", "params": [ch.job_difficulty]}))
-            self.writer.write(encode_packet(packet))
-            await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+            self.note_difficulty(ch.job_difficulty)
+            self.write_client({"id": None, "method": "mining.set_difficulty", "params": [ch.job_difficulty]})
+            self.write_client(packet)
+            await self.drain_client()
         if self.current is ch and self.logged_channel is not ch:
             self.relay.event(self.session, ch.target, kind="assignment")
             self.logged_channel = ch
 
     async def activate(self, ch):
         self.check_fee_policy()
+        if not self.can_hot_switch():
+            await self.request_reconnect()
+            return False
         async with self.switch_lock:
             if ch.closed or not ch.ready.is_set() or ch.job is None or ch.job_difficulty is None:
                 return False
             async with self.write_lock:
+                extra, size, _ = self.capabilities.layout(ch.job_extranonce, ch.job_extra_size)
                 self.current = ch
                 self.session["pool"] = "primary" if ch.target == "user" else ch.target
-                self.session["observer"].protocol.update(extranonce1=ch.extranonce1,
-                    extranonce2_size=ch.job_extra_size, observed_difficulty=float(ch.job_difficulty))
+                self.session["observer"].protocol.update(extranonce1=extra,
+                    extranonce2_size=size, observed_difficulty=float(ch.job_difficulty),
+                    upstream_extranonce1=ch.job_extranonce, upstream_extranonce2_size=ch.job_extra_size)
+                self.last_transition = (time.monotonic(), 'extranonce')
                 for packet in (
-                    {"id": None, "method": "mining.set_extranonce", "params": [ch.job_extranonce, ch.job_extra_size]},
+                    {"id": None, "method": "mining.set_extranonce", "params": [extra, size]},
                     {"id": None, "method": "mining.set_difficulty", "params": [ch.job_difficulty]},
                     self.make_job(ch, True),
                 ):
                     if getattr(self.relay, "trace_stratum", False):
                         stratum_trace("proxy_to_asic", self.session["id"], ch.target, packet,
                                       (self.user_password, self.fee_password, *self.auth.values()))
-                    self.writer.write(encode_packet(packet))
-                await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+                    self.write_client(packet)
+                await self.drain_client()
+                self.last_transition = (time.monotonic(), 'extranonce')
+                self.last_client_difficulty = ch.job_difficulty
             self.relay.event(self.session, ch.target)
             self.logged_channel = ch
             return True
@@ -378,10 +453,10 @@ class StatefulRouter:
                 await asyncio.wait_for(target.ready.wait(), self.relay.timeout)
             else:
                 target = None
-            if target is None or target.closed or not self.hot or not await self.activate(target):
-                self.writer.close()
+            if target is None or target.closed or not self.can_hot_switch() or not await self.activate(target):
+                self.close_client()
         except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
-            self.writer.close()
+            self.close_client()
         finally:
             if self.relay.fee_owner is self and (ch.target == "fee" or
                                                   self.current is not None and self.current.target != "fee"):
@@ -396,25 +471,25 @@ class StatefulRouter:
         available = bool(fee and not fee.closed and fee.ready.is_set())
         want = self.relay.ledger.should_fee(fee_available=available)
         if self.current.target == "fee" and not want:
-            if self.hot and user and not user.closed:
+            if self.can_hot_switch() and user and not user.closed:
                 await self.activate(user)
                 self.jitter.defer()
                 if self.relay.fee_owner is self:
                     self.relay.fee_owner = None
-            elif not self.hot:
+            elif not self.can_hot_switch():
                 await self.send({"id": None, "method": "client.reconnect", "params": []})
-                self.writer.close()
+                self.close_client()
             else:
                 # Fail closed rather than mine indefinitely to the fee account.
-                self.writer.close()
+                self.close_client()
         elif (self.current.target != "fee" and want and self.jitter.remaining() == 0 and
               self.relay.fee_owner in (None, self)):
-            if self.hot:
+            if self.can_hot_switch():
                 self.relay.fee_owner = self
                 await self.activate(fee)
             elif time.monotonic() - self.started >= self.relay.reconnect_min_seconds:
                 await self.send({"id": None, "method": "client.reconnect", "params": []})
-                self.writer.close()
+                self.close_client()
 
     async def reply(self, ident, response):
         await self.send({"id": ident, "result": response.get("result"), "error": response.get("error")})
@@ -436,24 +511,28 @@ class StatefulRouter:
             if timing is not None and received_at - timing[0] >= getattr(self.relay, 'job_ttl', 900):
                 self.jobs.pop(params[1], None)
                 self.job_times.pop(params[1], None)
+                self.job_layouts.pop(params[1], None)
             if params[0] not in self.auth or params[1] not in self.jobs:
                 category = "unknown_job_local"
                 raise ValueError("unknown worker or job")
             ch, upstream_id, job, extra, size, difficulty, mask = self.jobs[params[1]]
+            client_extra, client_size, prefix = self.job_layouts.get(params[1], (extra, size, ''))
+            if len(params[2]) != client_size * 2 or any(c not in string.hexdigits for c in params[2]):
+                raise ValueError('invalid extranonce2 width')
             if ch.closed or ch.extranonce1 != extra or ch.extranonce2_size != size:
                 category = "unknown_job_local"
                 raise ValueError("job session is no longer valid")
-            key = (id(ch), upstream_id, extra, *params[2:])
+            key = (id(ch), upstream_id, extra, prefix + params[2], *params[3:])
             if key in self.duplicates:
                 category = "duplicate_local"
                 raise ValueError("duplicate")
             if self.relay.validate_pow:
-                valid = validate_stratum_share(job, extra, params[2], params[3], params[4],
-                    params[5] if len(params) == 6 else None, mask, difficulty, extranonce2_size=size)
+                valid = validate_stratum_share(job, client_extra, params[2], params[3], params[4],
+                    params[5] if len(params) == 6 else None, mask, difficulty, extranonce2_size=client_size)
                 if not valid:
                     # Never suppress a potential network block when a pool has
                     # assigned difficulty above the network target.
-                    header = build_stratum_header(job, extra, params[2], params[3], params[4],
+                    header = build_stratum_header(job, client_extra, params[2], params[3], params[4],
                         params[5] if len(params) == 6 else None, mask)
                     if not meets_target(header, compact_target(int(job[6], 16))):
                         category = "low_diff_local"
@@ -472,6 +551,7 @@ class StatefulRouter:
             return
         outbound = list(params)
         outbound[1] = upstream_id
+        outbound[2] = prefix + params[2]
         if ch.target == "fee":
             outbound[0] = self.fee_worker
         elif self.user_worker:
@@ -497,6 +577,7 @@ class StatefulRouter:
                 elif response.get("result") is False or response.get("error") is not None:
                     self.health.share_result(False)
             if response.get("result") is True and response.get("error") is None:
+                self.last_transition = None
                 metrics.accepted += 1
                 timing = self.job_times.get(params[1])
                 if timing is not None and params[0] not in timing[1]:
@@ -570,27 +651,28 @@ class StatefulRouter:
                 if (isinstance(ident, str) and len(ident) > 128) or (isinstance(ident, int) and ident.bit_length() > 256):
                     raise ProtocolError("request identifier too large")
                 if method == "mining.configure":
-                    self.config = params
+                    validate_config(params)
+                    self.config = merge_config(self.config, params, getattr(self.relay,'max_miner_message',4096))
                     response = await user.request(method, params)
                     result = response.get("result")
-                    if isinstance(result, dict) and result.get("version-rolling") is True:
-                        self.mask = result.get("version-rolling.mask")
-                        try:
-                            if not isinstance(self.mask, str) or len(self.mask) != 8:
-                                raise ValueError("invalid mask")
-                            mask_value = int(self.mask, 16)
-                            requested = params[1].get("version-rolling.mask", "ffffffff")
-                            if not isinstance(requested, str) or len(requested) != 8 or mask_value & ~int(requested, 16):
-                                raise ValueError("mask exceeds request")
-                        except (IndexError, AttributeError, TypeError, ValueError) as exc:
-                            raise ProtocolError("invalid version rolling mask") from exc
+                    old_mask = self.mask
+                    if 'version-rolling' in params[0]:
+                        self.mask = negotiated_mask(params, response)
+                    if self.auth and old_mask != self.mask:
+                        await self.reply(ident, response)
+                        await self.request_reconnect()
+                        continue
+                    if 'subscribe-extranonce' in params[0] and response.get('error') is None:
+                        response = dict(response, result=dict(result or {}, **{'subscribe-extranonce': True}))
+                        result = response['result']
+                        self.hot = True
+                        self.session['observer'].protocol['extranonce_subscribed'] = True
                     fee = self.channels.get("fee")
                     if fee is not None:
                         try:
-                            fee_result = (await fee.request(method, params)).get("result")
-                            compatible = (self.mask is None or
-                                (isinstance(fee_result, dict) and fee_result.get("version-rolling") is True and
-                                 int(self.mask, 16) & ~int(fee_result["version-rolling.mask"], 16) == 0))
+                            fee_params = upstream_config(self.config, self.mask)
+                            fee_response = await fee.request(method, fee_params)
+                            compatible = self.mask is None or negotiated_mask(fee_params, fee_response) == self.mask
                         except (KeyError, TypeError, ValueError, OSError, asyncio.TimeoutError):
                             compatible = False
                         if not compatible:
@@ -600,10 +682,14 @@ class StatefulRouter:
                             await fee.close()
                     if isinstance(result, dict) and response.get("error") is None:
                         self.session["observer"].protocol.update(configured=True,
-                            version_rolling=result.get("version-rolling"), version_mask=self.mask)
+                            version_rolling=self.mask is not None, version_mask=self.mask)
+                        if self.mask is not None:
+                            self.session['observer'].protocol['version_rolling_degraded'] = (
+                                mask_value(self.mask).bit_count() < self.config[1].get('version-rolling.min-bit-count',0))
                     await self.reply(ident, response)
                 elif method == "mining.subscribe":
                     self.subscription = params
+                    self.capabilities.agent = params[0][:128] if params and isinstance(params[0],str) else ''
                     response = await user.request(method, params)
                     self.subscription_result(user, response.get("result"))
                     if self.fee and (not self.jitter.maximum or self.prefer_fee):
@@ -618,8 +704,11 @@ class StatefulRouter:
                                 await fee.close()
                             if self.relay.fee_owner is self:
                                 self.relay.fee_owner = None
+                    response = dict(response, result=self.capabilities.subscription(response['result']))
                     self.session["observer"].protocol.update(subscribed=True,
-                        extranonce1=self.current.extranonce1, extranonce2_size=self.current.extranonce2_size)
+                        extranonce1=response['result'][1], extranonce2_size=response['result'][2],
+                        upstream_extranonce1=self.current.extranonce1,
+                        upstream_extranonce2_size=self.current.extranonce2_size)
                     await self.reply(ident, response)
                 elif method == "mining.extranonce.subscribe":
                     self.hot = True
@@ -644,6 +733,7 @@ class StatefulRouter:
                         user.authorized = True
                         self.session["worker"] = "".join(c if c.isprintable() else "?" for c in params[0][:128])
                         self.session["observer"].protocol["authorized_workers"] = list(self.auth)
+                        self.session['observer'].protocol['switch_policy'] = 'hot' if self.can_hot_switch() else 'reconnect'
                         fee = self.channels.get("fee")
                         if fee:
                             try:
@@ -672,11 +762,20 @@ class StatefulRouter:
                 else:
                     await self.reply(ident, await self.current.request(method, params))
         except ProtocolError:
+            self.intentional_close = True
             self.relay.metrics.protocol_drops += 1
             self.abort(self.writer)
         except (OSError, ValueError, TypeError, asyncio.TimeoutError):
             self.relay.metrics.transport_errors += 1
         finally:
+            if (self.client_disconnected and not self.intentional_close and self.last_transition and
+                    self.auth and time.monotonic() - self.last_transition[0] <= 3):
+                try:
+                    await self.relay.compatibility.remember(self.session.get('ip',''), self.auth,
+                        self.capabilities.agent, self.last_transition[1])
+                    self.relay.metrics.compatibility_fallbacks += 1
+                except (OSError, ValueError):
+                    event(logging.WARNING, 'compatibility_checkpoint_failed', session_id=self.session['id'])
             self.stopping = True
             if self.relay.fee_owner is self:
                 self.relay.fee_owner = None
@@ -690,4 +789,5 @@ class StatefulRouter:
             self.packets.decoder.buffer.clear()
             self.jobs.clear()
             self.job_times.clear()
+            self.job_layouts.clear()
             self.duplicates.clear()

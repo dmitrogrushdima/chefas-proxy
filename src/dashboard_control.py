@@ -86,6 +86,8 @@ class DashboardControl:
 
     async def _reconnect(self, session):
         router = session.get('router')
+        if router:
+            router.intentional_close = True
         try:
             if router:
                 await asyncio.wait_for(router.send({'id': None, 'method': 'client.reconnect', 'params': []}), 1)
@@ -139,6 +141,8 @@ class DashboardControl:
                 raise ValueError('session_id, worker_id or worker required')
             selected = [item for item in self.relay.sessions.values() if item['id'] in ids]
             for item in selected:
+                if item.get('router'):
+                    item['router'].intentional_close = True
                 item['writer'].close()
             return {'disconnected_sessions': [item['id'] for item in selected]}
         if path == '/api/observer-links':

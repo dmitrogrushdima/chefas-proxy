@@ -99,6 +99,11 @@ function renderSnapshot() {
   $("redirect-notices").textContent = number(metrics.redirect_notices);
   $("idle-timeouts").textContent = number(metrics.idle_timeouts);
   const audit = metrics.audit;
+  $("kpi-hashrate").textContent = hashrate(audit?.hashrate_windows?.["5m"]?.hashrate_hs);
+  $("kpi-workers").textContent = number(latestRegistry.workers.filter(w => w.status === "online").length);
+  const debt = audit?.outstanding_fee_difficulty ?? "—";
+  $("kpi-fee-debt").textContent = debt.length > 24 ? debt.slice(0, 21) + "…" : debt;
+  $("kpi-fee-debt").title = debt;
   $("audit-debt").textContent = audit?.outstanding_fee_difficulty ?? "—";
   $("audit-user").textContent = audit ? audit.user_accepted_difficulty + " / " + number(audit.user_accepted_shares) : "—";
   $("audit-fee").textContent = audit ? audit.fee_accepted_difficulty + " / " + number(audit.fee_accepted_shares) : "—";
@@ -185,7 +190,7 @@ function renderWorkers() {
     cell(row, worker.worker);
     row.firstChild.title = worker.worker;
     cell(row, worker.ip);
-    cell(row, "● " + t(worker.status === "online" ? "Online" : "Offline"), worker.status === "online" ? "row-status" : "row-status offline");
+    cell(row, t(worker.status === "online" ? "Online" : "Offline"), worker.status === "online" ? "worker-status online" : "worker-status offline");
     for (const window of ["15m", "1h", "24h"]) {
       const estimate = worker.hashrate_windows?.[window];
       cell(row, hashrate(estimate?.hashrate_hs) + (estimate?.warmup ? " *" : ""));

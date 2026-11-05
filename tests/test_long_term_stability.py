@@ -64,6 +64,7 @@ class StabilityTests(unittest.IsolatedAsyncioTestCase):
             router.duplicates[(ident,)] = (ident,time.monotonic())
         self.assertLessEqual(len(router.jobs),128)
         self.assertEqual(set(router.job_times),set(router.jobs))
+        self.assertEqual(set(router.job_layouts),set(router.jobs))
         self.assertLessEqual(len(router.duplicates),128)
         del channel
         self.assertIsNotNone(ref())
@@ -71,6 +72,7 @@ class StabilityTests(unittest.IsolatedAsyncioTestCase):
         gc.collect()
         self.assertFalse(router.jobs)
         self.assertFalse(router.job_times)
+        self.assertFalse(router.job_layouts)
         self.assertFalse(router.duplicates)
         self.assertIsNone(ref())
 

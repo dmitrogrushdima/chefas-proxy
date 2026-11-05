@@ -5,6 +5,7 @@ The pools are deliberately local and synthetic. They validate each submitted
 """
 import asyncio
 import json
+import hashlib
 import os
 import socket
 import ssl
@@ -31,7 +32,10 @@ def encode(value):
 
 def checked_header(extra, ex2, nonce, version_bits=None):
     """Independent fixture construction, including the negotiated BIP310 mask."""
-    header = build_header(extra, ex2, nonce)
+    coinbase = bytes.fromhex(COINB1 + extra + ex2 + COINB2)
+    root = hashlib.sha256(hashlib.sha256(coinbase).digest()).digest()
+    header = (bytes.fromhex(VERSION)[::-1] + bytes.fromhex(PREVHASH) + root +
+              bytes.fromhex(NTIME)[::-1] + bytes.fromhex(NBITS)[::-1] + bytes.fromhex(nonce)[::-1])
     if version_bits is None:
         return header
     bits = int(version_bits, 16)
@@ -70,6 +74,8 @@ class CheckedPool:
         self.configure_requests = []
         self.reject_submits = False
         self.submit_delay = 0
+        self.extra_size = 4
+        self.version_mask = '1fffe000'
 
     async def start(self, ssl_context=None):
         self.server = await asyncio.start_server(self.handle, "127.0.0.1", 0, ssl=ssl_context)
@@ -106,10 +112,11 @@ class CheckedPool:
                     requested = params[0] if params else []
                     response["result"] = {name: name == "version-rolling" for name in requested}
                     if "version-rolling" in requested:
-                        response["result"]["version-rolling.mask"] = "1fffe000"
+                        requested_mask = params[1].get('version-rolling.mask','ffffffff')
+                        response["result"]["version-rolling.mask"] = f'{int(requested_mask,16) & int(self.version_mask,16):08x}'
                 elif method == "mining.subscribe":
                     subscribed = True
-                    response["result"] = [[["mining.notify", "session"]], extra, 4]
+                    response["result"] = [[["mining.notify", "session"]], extra, self.extra_size]
                 elif method == "mining.extranonce.subscribe":
                     response["result"] = True
                 elif method == "mining.authorize":
@@ -121,7 +128,7 @@ class CheckedPool:
                     # Only routing and the original session extranonce differ.
                     worker, job, ex2, ntime, nonce = params[:5]
                     key = (job, ex2, ntime, nonce, *params[5:])
-                    valid = (not self.reject_submits and worker in authorized and job == "shared-job" and
+                    valid = (not self.reject_submits and len(ex2) == self.extra_size * 2 and worker in authorized and job == "shared-job" and
                              ntime == NTIME and key not in seen and
                              meets_target(checked_header(extra, ex2, nonce, params[5] if len(params) > 5 else None), SHARE_TARGET))
                     response["result"] = valid
@@ -163,6 +170,7 @@ class Miner:
         self.pending = {}
         self.notifications = []
         self.extra = None
+        self.extra_size = 4
         self.difficulty = None
         self.job = None
         self.job_event = asyncio.Event()
@@ -179,13 +187,14 @@ class Miner:
         if self.configure:
             configured = await self.request("mining.configure", [["version-rolling"], {
                 "version-rolling.mask": "1fffe000", "version-rolling.min-bit-count": 2}])
-            if configured.get("result", {}).get("version-rolling.mask") != "1fffe000":
+            if configured.get("error") or configured.get('result',{}).get('version-rolling') is not True:
                 raise AssertionError(configured)
             self.version_bits = "00002000"
         subscribed = await self.request("mining.subscribe", ["kontur-integration/1"])
         if subscribed.get("error"):
             raise AssertionError(subscribed)
         self.extra = subscribed["result"][1]
+        self.extra_size = subscribed['result'][2]
         if self.hot:
             extension = await self.request("mining.extranonce.subscribe", [])
             if extension.get("result") is not True:
@@ -206,10 +215,11 @@ class Miner:
                     params = msg.get("params", [])
                     if method == "mining.set_extranonce":
                         self.extra = params[0]
+                        self.extra_size = params[1]
                     elif method == "mining.set_difficulty":
                         self.difficulty = params[0]
                     elif method == "mining.notify":
-                        self.job = {"params": params, "extra": self.extra, "diff": self.difficulty}
+                        self.job = {"params": params, "extra": self.extra, "diff": self.difficulty, 'size': self.extra_size}
                         self.job_event.set()
                     elif method == "client.reconnect":
                         self.reconnect.set()
@@ -238,15 +248,16 @@ class Miner:
         job = job or self.job
         extra = job["extra"]
         start = self.nonces.get(extra, 0)
-        if self.version_bits is None:
+        ex2 = '00' * job.get('size',4)
+        if self.version_bits is None and len(extra) == 8 and len(ex2) == 8:
             nonce = find_nonce(extra, start=start)
         else:
             nonce = next((f"{number:08x}" for number in range(start, start + 100000)
-                          if meets_target(checked_header(extra, "00000000", f"{number:08x}", self.version_bits), SHARE_TARGET)), None)
+                          if meets_target(checked_header(extra, ex2, f"{number:08x}", self.version_bits), SHARE_TARGET)), None)
             if nonce is None:
                 raise AssertionError("No test share found")
         self.nonces[extra] = int(nonce, 16) + 1
-        params = ["user.worker", job["params"][0], "00000000", NTIME, nonce]
+        params = ["user.worker", job["params"][0], ex2, NTIME, nonce]
         if self.version_bits is not None:
             params.append(self.version_bits)
         return params
@@ -298,25 +309,31 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
 
     async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None, debug=False,
                      miner_timeout=600, handshake_timeout=30, jitter=0, connect_interval=0,
-                     job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False):
+                     job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False,
+                     user_extra_size=4, fee_extra_size=4, user_mask='1fffe000', asic_min=0):
         self.admin_token = admin_token
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT/'tests'/'fixtures'/'lab-cert.pem', ROOT/'tests'/'fixtures'/'lab-key.pem')
         self.user_pool = await self.pool("11111111", "user.worker", context if ssl_user else None)
+        self.user_pool.extra_size = user_extra_size
+        self.user_pool.version_mask = user_mask
         if fee:
             self.fee_pool = await self.pool("22222222", "fee.worker", context if ssl_fee else None)
+            self.fee_pool.extra_size = fee_extra_size
         self.port, self.dashboard = unused_ports(2)
-        entrypoint = os.environ.get("KONTUR_TEST_ENTRYPOINT", str(ROOT / "proxy.py"))
+        entrypoint = os.environ.get("KONTUR_TEST_ENTRYPOINT", str(ROOT / "launch.py"))
         args = [sys.executable, entrypoint, "--active-router", "--validate-pow",
                 "--env-file", "", "--log-dir", str(Path(self.history.name) / "logs"),
                 "--history-file", str(Path(self.history.name) / "history.json"),
                 "--control-state", str(Path(self.history.name) / "control.json"),
+                '--compatibility-state', str(Path(self.history.name)/'compatibility.json'),
                 "--pool-host", "stratum+ssl://localhost" if ssl_user else "127.0.0.1", "--pool-port", str(self.user_pool.port),
                 "--listen-port", str(self.port), "--dashboard-port", str(self.dashboard),
                 "--connect-timeout", "3" if ssl_user or ssl_fee else "1", "--reconnect-min-seconds", "0",
                 "--miner-timeout", str(miner_timeout), "--handshake-timeout", str(handshake_timeout),
                 "--devfee-jitter-seconds", str(jitter), '--devfee-connect-interval', str(connect_interval),
                 '--job-ttl', str(job_ttl), '--job-gc-interval', str(job_gc_interval)]
+        args += ['--asic-extranonce2-min',str(asic_min)]
         if fee:
             args += ["--devfee-host", "stratum+ssl://localhost" if ssl_fee else "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
                      "--devfee-worker", "fee.worker", "--fee-min-work", "0"]
@@ -385,6 +402,62 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.user_pool.connections, 0)
         metrics = await self.api('/api/metrics')
         self.assertEqual(metrics['protocol_drops'], 4)
+
+    async def test_extranonce_width_translation_preserves_pow_across_pools(self):
+        await self.launch(user_extra_size=6,fee_extra_size=8)
+        miner = await self.miner(configure=True)
+        self.assertEqual(miner.extra_size,4)
+        for _ in range(100):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(99,1))
+        self.assertEqual(self.user_pool.rejected+self.fee_pool.rejected,0)
+        self.assertEqual(miner.extra_size,4)
+        self.assertFalse(miner.closed.is_set())
+
+    async def test_incompatible_fee_nonce_width_keeps_optional_user_mining(self):
+        await self.launch(fee_extra_size=2,asic_min=4)
+        miner = await self.miner()
+        for _ in range(5):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual(self.user_pool.accepted,5)
+        self.assertEqual(self.fee_pool.accepted,0)
+        self.assertFalse(miner.closed.is_set())
+
+    async def test_fee_negotiates_exact_user_mask_instead_of_wider_superset(self):
+        await self.launch(user_mask='00006000')
+        miner = await self.miner(configure=True)
+        for _ in range(100):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual(self.fee_pool.configure_requests[0][1]['version-rolling.mask'],'00006000')
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(99,1))
+        self.assertEqual(self.user_pool.rejected+self.fee_pool.rejected,0)
+
+    async def test_minimum_difficulty_reconfigure_does_not_forget_version_rolling(self):
+        await self.launch()
+        miner = await self.miner(configure=True)
+        await miner.request('mining.configure',[['minimum-difficulty'],{'minimum-difficulty.value':1}])
+        for _ in range(100):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(99,1))
+        self.assertEqual(self.user_pool.rejected+self.fee_pool.rejected,0)
+        self.assertFalse(miner.closed.is_set())
+
+    async def test_client_disconnect_after_hot_switch_learns_persistent_reconnect(self):
+        await self.launch()
+        miner = await self.miner()
+        self.assertTrue((await miner.submit())['result'])
+        self.assertTrue(miner.extra.startswith('222222'))
+        await miner.close()
+        for _ in range(100):
+            if (await self.api('/api/metrics'))['compatibility_fallbacks']:
+                break
+            await asyncio.sleep(.02)
+        self.assertEqual((await self.api('/api/metrics'))['compatibility_fallbacks'],1)
+        self.assertTrue((Path(self.history.name)/'compatibility.json').exists())
+        replacement = await self.miner()
+        self.assertTrue((await replacement.submit())['result'])
+        await asyncio.wait_for(replacement.reconnect.wait(),3)
+        self.assertTrue(replacement.reconnect.is_set())
 
     async def test_jitter_warmup_keeps_user_mining_and_replays_version_rolling(self):
         await self.launch(jitter=.5, connect_interval=.05, require_fee=True)
