@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 from dashboard_control import DashboardControl
 from dashboard_server import DashboardStream, dashboard_request
 from stratum_session import Relay
@@ -91,3 +91,39 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['disconnected_sessions'],[1])
         first.close.assert_called_once()
         second.close.assert_not_called()
+
+    async def test_config_persists_credentials_but_never_returns_passwords(self):
+        self.relay.active_router = True
+        self.control._probe = AsyncMock()
+        headers, data = await self.request('/api/config', 'A'*32, {
+            'user_pool': {'host':'127.0.0.1','port':5555,'worker':'wallet','password':'user-secret'},
+            'devfee_pool': {'host':'127.0.0.1','port':6666,'worker':'fee','password':'fee-secret'}})
+        self.assertIn(b'200 OK', headers)
+        self.assertNotIn('user-secret', json.dumps(data))
+        self.assertNotIn('fee-secret', json.dumps(data))
+        restored = Relay('127.0.0.1',4444)
+        DashboardControl(restored, self.stream, 'A'*32, self.path)
+        self.assertEqual((restored.host,restored.port,restored.user_worker,restored.user_password),
+                         ('127.0.0.1',5555,'wallet','user-secret'))
+        self.assertEqual((restored.fee,restored.fee_worker,restored.fee_password),
+                         (('127.0.0.1',6666),'fee','fee-secret'))
+        headers, _ = await self.request('/api/config','A'*32,{'generation':0,'reconnect':False})
+        self.assertIn(b'400 Bad Request',headers)
+        self.assertEqual(self.relay.route_generation,1)
+
+    async def test_required_fee_cannot_be_disabled_by_config(self):
+        self.relay.active_router = True
+        self.relay.require_devfee = True
+        self.relay.fee = ('127.0.0.1',5555)
+        self.relay.fee_worker, self.relay.fee_password = 'fee','x'
+        headers,_ = await self.request('/api/config','A'*32,{'devfee_pool':None})
+        self.assertIn(b'400 Bad Request',headers)
+        self.assertEqual(self.relay.fee,('127.0.0.1',5555))
+        self.assertFalse(self.path.exists())
+
+    async def test_concurrent_blacklist_additions_do_not_lose_updates(self):
+        responses = await asyncio.gather(
+            self.request('/api/blacklist','A'*32,{'add':'192.0.2.1'}),
+            self.request('/api/blacklist','A'*32,{'add':'192.0.2.2'}))
+        self.assertTrue(all(b'200 OK' in headers for headers,_ in responses))
+        self.assertEqual({str(item) for item in self.relay.blacklist},{'192.0.2.1/32','192.0.2.2/32'})

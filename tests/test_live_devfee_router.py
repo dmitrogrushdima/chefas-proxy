@@ -5,6 +5,7 @@ The pools are deliberately local and synthetic. They validate each submitted
 """
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -266,6 +267,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.miners = []
         self.process = None
         self.stderr = tempfile.TemporaryFile()
+        self.history = tempfile.TemporaryDirectory()
 
     async def asyncTearDown(self):
         for miner in self.miners:
@@ -281,18 +283,22 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             await pool.close()
             self.assertEqual(pool.errors, [], "Pool fixture failed")
         self.stderr.close()
+        self.history.cleanup()
 
     async def pool(self, extra, worker):
         pool = await CheckedPool(extra, worker).start()
         self.pools.append(pool)
         return pool
 
-    async def launch(self, *, fee=True, backup=None, require_fee=False):
+    async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None):
+        self.admin_token = admin_token
         self.user_pool = await self.pool("11111111", "user.worker")
         if fee:
             self.fee_pool = await self.pool("22222222", "fee.worker")
         self.port, self.dashboard = unused_ports(2)
         args = [sys.executable, str(ROOT / "proxy.py"), "--active-router", "--validate-pow",
+                "--history-file", str(Path(self.history.name) / "history.json"),
+                "--control-state", str(Path(self.history.name) / "control.json"),
                 "--pool-host", "127.0.0.1", "--pool-port", str(self.user_pool.port),
                 "--listen-port", str(self.port), "--dashboard-port", str(self.dashboard),
                 "--connect-timeout", "1", "--reconnect-min-seconds", "0"]
@@ -305,7 +311,11 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             args += ["--require-devfee", "--fee-grace-seconds", "2"]
         if backup:
             args += ["--backup-host", "127.0.0.1", "--backup-port", str(backup.port)]
-        self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr)
+        environment = dict(os.environ)
+        environment.pop("KONTUR_ADMIN_TOKEN", None)
+        if admin_token:
+            environment["KONTUR_ADMIN_TOKEN"] = admin_token
+        self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr, env=environment)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
@@ -318,14 +328,16 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(.05)
         self.fail("Live proxy did not start")
 
-    async def api(self, path):
+    async def api(self, path, data=None, expected=200):
         reader, writer = await asyncio.open_connection("127.0.0.1", self.dashboard)
         try:
-            writer.write(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.dashboard}\r\n\r\n".encode())
+            body = json.dumps(data).encode() if data is not None else b""
+            auth = f"Authorization: Bearer {self.admin_token}\r\n" if self.admin_token else ""
+            writer.write(f"{'POST' if data is not None else 'GET'} {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.dashboard}\r\n{auth}Content-Length: {len(body)}\r\n\r\n".encode() + body)
             await writer.drain()
             raw = await asyncio.wait_for(reader.read(), 5)
             headers, body = raw.split(b"\r\n\r\n", 1)
-            self.assertIn(b"200 OK", headers)
+            self.assertIn(str(expected).encode() + b" ", headers)
             return json.loads(body)
         finally:
             writer.close()
@@ -535,6 +547,10 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             else:
                 self.fail("SSE did not publish the accepted share")
             self.assertEqual(state["registry"]["workers"][0]["id"], worker_id)
+            self.assertTrue((await miner.submit())["result"])
+            measured = (await self.api("/api/workers"))["workers"][0]
+            self.assertEqual(measured["notify_to_first_share_samples"], 1)
+            self.assertGreaterEqual(measured["notify_to_first_share_ema_ms"], 0)
             await miner.close()
             for _ in range(10):
                 frame = await asyncio.wait_for(reader.readuntil(b"\n\n"), 5)
@@ -546,10 +562,95 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             replacement = await self.miner()
             self.assertTrue((await replacement.submit())["result"])
             row = (await self.api("/api/workers"))["workers"][0]
-            self.assertEqual((row["id"], row["accepted"], row["status"]), (worker_id, 2, "online"))
+            self.assertEqual((row["id"], row["accepted"], row["status"]), (worker_id, 3, "online"))
+            self.assertEqual(row["notify_to_first_share_samples"], 2)
         finally:
             writer.close()
             await writer.wait_closed()
+
+    async def test_route_reload_freezes_old_credentials_and_reconnects_to_new_pools(self):
+        await self.launch(fee=False, admin_token="A" * 32)
+        old = await self.miner()
+        self.assertTrue((await old.submit())["result"])
+        new_user = await self.pool("33333333", "custom.wallet")
+        new_fee = await self.pool("44444444", "new.fee")
+        config = {"user_pool": {"host": "127.0.0.1", "port": new_user.port, "worker": "custom.wallet", "password": "private-password"},
+                  "reconnect": False}
+        result = await self.api("/api/config", config)
+        self.assertNotIn("private-password", json.dumps(result))
+        self.assertTrue((await old.submit())["result"])
+        self.assertFalse(old.closed.is_set())
+        fresh = await self.miner()
+        self.assertTrue((await fresh.submit())["result"])
+        self.assertEqual((self.user_pool.accepted, new_user.accepted), (2, 1))
+        result = await self.api("/api/config", {"devfee_pool": {"host": "127.0.0.1", "port": new_fee.port,
+                                                              "worker": "new.fee", "password": "fee-secret"}})
+        await asyncio.wait_for(asyncio.gather(old.closed.wait(), fresh.closed.wait()), 5)
+        self.assertTrue(old.reconnect.is_set())
+        self.assertTrue(fresh.reconnect.is_set())
+        replacement = await self.miner()
+        self.assertTrue((await replacement.submit())["result"])
+        self.assertTrue((await replacement.submit())["result"])
+        self.assertEqual(new_fee.accepted, 1)
+        self.assertEqual((new_fee.rejected, new_user.rejected), (0, 0))
+        config = await self.api("/api/config")
+        self.assertEqual(config["devfee_pool"]["worker"], "new.fee")
+        self.assertNotIn("fee-secret", json.dumps(config))
+
+    async def test_unreachable_route_does_not_commit_or_disconnect(self):
+        await self.launch(fee=False, admin_token="A" * 32)
+        miner = await self.miner()
+        generation = (await self.api("/api/config"))["generation"]
+        port = unused_ports(1)[0]
+        await self.api("/api/config", {"user_pool": {"host": "127.0.0.1", "port": port}}, expected=503)
+        config = await self.api("/api/config")
+        self.assertEqual(config["generation"], generation)
+        self.assertEqual(config["user_pool"]["port"], self.user_pool.port)
+        self.assertFalse(miner.closed.is_set())
+        self.assertTrue((await miner.submit())["result"])
+
+    async def test_graceful_proxy_shutdown_saves_worker_history(self):
+        from types import SimpleNamespace
+        from proxy import run
+        from observer import WorkerRegistry
+        from history_store import HistoryStore
+        pool = await self.pool("11111111", "user.worker")
+        self.port, self.dashboard = unused_ports(2)
+        self.admin_token = os.environ.get("KONTUR_ADMIN_TOKEN")
+        path = Path(self.history.name) / "shutdown-history.json"
+        args = SimpleNamespace(pool_host="127.0.0.1", pool_port=pool.port, tls=False,
+            backup_host=None, backup_port=None, max_connections=10, connect_timeout=1,
+            allow_cidr=[], idle_timeout=0, active_router=True, validate_pow=True,
+            devfee_host=None, devfee_port=None, devfee_worker=None, devfee_password="x",
+            reconnect_min_seconds=0, require_devfee=False, fee_grace_seconds=180,
+            fee_min_work=0, history_file=str(path), control_state=str(Path(self.history.name)/"shutdown-control.json"),
+            listen_host="127.0.0.1", listen_port=self.port, dashboard_port=self.dashboard)
+        running = asyncio.create_task(run(args))
+        try:
+            for _ in range(100):
+                try:
+                    await self.api("/api/status")
+                    break
+                except OSError:
+                    await asyncio.sleep(.02)
+            miner = await self.miner()
+            self.assertTrue((await miner.submit())["result"])
+            running.cancel()
+            # Simulate Python 3.10 runner cancelling background jobs as well.
+            for task in asyncio.all_tasks():
+                if task.get_coro().__qualname__ == "HistoryStore._run":
+                    task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await running
+            restored = WorkerRegistry()
+            HistoryStore(restored, path).load()
+            row = restored.snapshot()["workers"][0]
+            self.assertEqual((row["accepted"], row["status"]), (1, "offline"))
+            self.assertEqual(row["notify_to_first_share_samples"], 1)
+        finally:
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
 
 
 if __name__ == "__main__":

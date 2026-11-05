@@ -139,3 +139,55 @@ async def connect_upstream(primary, backup, tls_context, timeout, is_self_route,
         except (OSError, asyncio.TimeoutError, ssl.SSLError):
             metrics.upstream_failures += 1
     return None, None, None
+
+# Configuration snapshots are immutable so a live session never mixes credentials.
+from dataclasses import dataclass, field
+import re
+
+
+@dataclass(frozen=True)
+class PoolRoute:
+    host: str
+    port: int
+    worker: str = ''
+    password: str = field(default='x', repr=False)
+
+    @classmethod
+    def parse(cls, value, previous=None):
+        if not isinstance(value, dict) or set(value) - {'host', 'port', 'worker', 'password'}:
+            raise ValueError('invalid pool route')
+        host, port = value.get('host'), value.get('port')
+        worker = value.get('worker', previous.worker if previous else '')
+        password = value.get('password', previous.password if previous else 'x')
+        if not isinstance(host, str) or not 1 <= len(host) <= 253 or not re.fullmatch(r'[A-Za-z0-9._:-]+', host):
+            raise ValueError('invalid pool host')
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError('invalid pool port')
+        if not isinstance(worker, str) or len(worker) > 128 or any(ord(c) < 32 for c in worker):
+            raise ValueError('invalid worker')
+        if not isinstance(password, str) or len(password) > 1024:
+            raise ValueError('invalid password')
+        return cls(host, port, worker, password)
+
+    def export(self, secrets=False):
+        result = {'host': self.host, 'port': self.port, 'worker': self.worker}
+        if secrets:
+            result['password'] = self.password
+        else:
+            result['password_configured'] = bool(self.password)
+        return result
+
+
+def current_pool_routes(relay):
+    user = PoolRoute(relay.host, relay.port, getattr(relay, 'user_worker', ''), getattr(relay, 'user_password', 'x'))
+    fee = PoolRoute(*relay.fee, getattr(relay, 'fee_worker', ''), getattr(relay, 'fee_password', 'x')) if relay.fee else None
+    return user, fee
+
+
+def apply_pool_routes(relay, user, fee):
+    # No awaits: all listener callbacks observe one complete generation.
+    relay.host, relay.port, relay.user_worker, relay.user_password = user.host, user.port, user.worker, user.password
+    relay.fee = (fee.host, fee.port) if fee else None
+    relay.fee_worker, relay.fee_password = (fee.worker, fee.password) if fee else ('', 'x')
+    relay.route_generation = getattr(relay, 'route_generation', 0) + 1
+    relay.metrics._devfee_enabled = fee is not None

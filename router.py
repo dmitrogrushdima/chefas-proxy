@@ -31,6 +31,11 @@ class StatefulRouter:
 
     def __init__(self, relay, reader, writer, session):
         self.relay, self.reader, self.writer, self.session = relay, reader, writer, session
+        self.fee = relay.fee
+        self.fee_worker = getattr(relay, 'fee_worker', '')
+        self.fee_password = getattr(relay, 'fee_password', 'x')
+        self.user_worker = getattr(relay, 'user_worker', '')
+        self.user_password = getattr(relay, 'user_password', 'x')
         self.channels = {}
         self.current = None
         self.config = self.subscription = None
@@ -38,6 +43,7 @@ class StatefulRouter:
         self.auth = {}
         self.hot = False
         self.jobs, self.duplicates = OrderedDict(), OrderedDict()
+        self.job_times = {}
         self.sequence = 0
         self.write_lock = asyncio.Lock()
         self.switch_lock = asyncio.Lock()
@@ -118,8 +124,8 @@ class StatefulRouter:
             self.subscription_result(ch, response.get("result"))
             ch.subscription_result = response["result"]
         for worker, password in self.auth.items():
-            response = await ch.request("mining.authorize", [self.relay.fee_worker if fee else worker,
-                                        self.relay.fee_password if fee else password])
+            response = await ch.request("mining.authorize", [self.fee_worker if fee else (self.user_worker or worker),
+                                        self.fee_password if fee else (self.user_password if self.user_worker else password)])
             if response.get("result") is not True or response.get("error") is not None:
                 raise ProtocolError("upstream authorization failed")
             ch.authorized = True
@@ -185,8 +191,10 @@ class StatefulRouter:
             params[8] = True
         self.jobs[local_id] = (ch, upstream_id, list(ch.job), ch.job_extranonce,
                                ch.job_extra_size, ch.job_difficulty, self.mask)
+        self.job_times[local_id] = (time.monotonic(), set())
         while len(self.jobs) > self.MAX_JOBS:
-            self.jobs.popitem(last=False)
+            expired, _ = self.jobs.popitem(last=False)
+            self.job_times.pop(expired, None)
         return {"id": None, "method": "mining.notify", "params": params}
 
     async def publish(self, ch, clean):
@@ -251,7 +259,7 @@ class StatefulRouter:
                 self.relay.fee_owner = None
 
     async def reconcile(self):
-        if self.route_updating or not self.relay.fee or self.current is None:
+        if self.route_updating or not self.fee or self.current is None:
             return
         fee = self.channels.get("fee")
         user = next((item for name in ("user", "backup")
@@ -281,6 +289,7 @@ class StatefulRouter:
         await self.send({"id": ident, "result": response.get("result"), "error": response.get("error")})
 
     async def submit(self, ident, params):
+        received_at = time.monotonic()
         self.check_fee_policy()
         metrics = self.session["metrics"]
         metrics.submitted += 1
@@ -323,7 +332,9 @@ class StatefulRouter:
         outbound = list(params)
         outbound[1] = upstream_id
         if ch.target == "fee":
-            outbound[0] = self.relay.fee_worker
+            outbound[0] = self.fee_worker
+        elif self.user_worker:
+            outbound[0] = self.user_worker
         fee = self.channels.get("fee")
         fee_available = bool(fee and not fee.closed and fee.ready.is_set())
         responded = False
@@ -342,6 +353,11 @@ class StatefulRouter:
                     self.health.share_result(False)
             if response.get("result") is True and response.get("error") is None:
                 metrics.accepted += 1
+                timing = self.job_times.get(params[1])
+                if timing is not None and params[0] not in timing[1]:
+                    timing[1].add(params[0])
+                    self.relay.workers.first_share(self.session["id"], params[0],
+                                                  max(0, received_at - timing[0]) * 1000)
                 self.relay.ledger.record("fee" if ch.target == "fee" else "user", difficulty,
                                          fee_available=fee_available)
                 self.relay.metrics._audit.record("fee" if ch.target == "fee" else "user", difficulty)
@@ -366,6 +382,11 @@ class StatefulRouter:
             metrics.unmatched += 1
             self.relay.workers.record(self.session["id"], params[0], "unknown")
             await self.reply(ident, {"result": None, "error": [20, "Upstream unavailable", None]})
+        except asyncio.CancelledError:
+            if not responded:
+                metrics.unmatched += 1
+                self.relay.workers.record(self.session["id"], params[0], "unknown")
+            raise
         finally:
             self.session["pending"] -= 1
 
@@ -429,9 +450,9 @@ class StatefulRouter:
                     self.subscription = params
                     response = await user.request(method, params)
                     self.subscription_result(user, response.get("result"))
-                    if self.relay.fee:
+                    if self.fee:
                         try:
-                            fee = await self.prepare("fee", self.relay.fee, fee=True)
+                            fee = await self.prepare("fee", self.fee, fee=True)
                             if self.prefer_fee:
                                 self.current = fee
                                 response = dict(response, result=fee.subscription_result)
@@ -449,7 +470,8 @@ class StatefulRouter:
                     self.session["observer"].protocol["extranonce_subscribed"] = True
                     await self.reply(ident, {"result": True, "error": None})
                 elif method == "mining.authorize":
-                    response = await user.request(method, params)
+                    upstream_params = [self.user_worker, self.user_password] if self.user_worker else params
+                    response = await user.request(method, upstream_params)
                     accepted = response.get("result") is True and response.get("error") is None
                     if accepted and len(params) >= 2 and all(isinstance(x, str) for x in params[:2]):
                         if len(self.auth) >= 32 and params[0] not in self.auth:
@@ -464,7 +486,7 @@ class StatefulRouter:
                         fee = self.channels.get("fee")
                         if fee:
                             try:
-                                fee_response = await fee.request(method, [self.relay.fee_worker, self.relay.fee_password])
+                                fee_response = await fee.request(method, [self.fee_worker, self.fee_password])
                                 fee.authorized = fee_response.get("result") is True and fee_response.get("error") is None
                             except (OSError, asyncio.TimeoutError):
                                 fee.authorized = False

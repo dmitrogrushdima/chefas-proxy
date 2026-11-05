@@ -104,6 +104,7 @@ class WorkerRegistry:
         self.entries = OrderedDict()
         self.sessions = {}
         self.dropped_observations = 0
+        self.persistence = {"enabled": False, "loaded": False, "last_saved_utc": None, "error": None}
 
     @staticmethod
     def normalize_ip(value):
@@ -132,6 +133,7 @@ class WorkerRegistry:
                 "ip": key[1], "sessions": set(), "accepted": 0, "rejected": 0,
                 "stale": 0, "invalid_local": 0, "unknown": 0,
                 "rtt_total_ms": 0.0, "rtt_samples": 0, "work": DeviceWork(self.clock),
+                "first_share_ema_ms": None, "first_share_samples": 0,
                 "difficulty_known": False, "touched": self.clock(), "last_seen_utc": None}
         self.entries[key]["sessions"].add(session_id)
         self.sessions.setdefault(session_id, set()).add(key)
@@ -168,6 +170,16 @@ class WorkerRegistry:
                 self._touch(key)
         self._prune()
 
+    def first_share(self, session_id, name, milliseconds):
+        if not math.isfinite(milliseconds) or milliseconds < 0:
+            return
+        key = next((key for key in self.sessions.get(session_id, ()) if key[0] == name), None)
+        if key is not None and key in self.entries:
+            row = self.entries[key]
+            previous = row["first_share_ema_ms"]
+            row["first_share_ema_ms"] = milliseconds if previous is None else .2 * milliseconds + .8 * previous
+            row["first_share_samples"] += 1
+
     def snapshot(self):
         self._prune()
         rows = []
@@ -179,11 +191,102 @@ class WorkerRegistry:
                           hashrate_windows=row["work"].snapshot() if row["difficulty_known"] else None,
                           pool_response_ms=row["rtt_total_ms"] / row["rtt_samples"] if row["rtt_samples"] else None,
                           asic_ping_ms=None, stale_basis="pool error code 21; subset of rejected",
+                          notify_to_first_share_ema_ms=row["first_share_ema_ms"],
+                          notify_to_first_share_samples=row["first_share_samples"],
+                          latency_basis="notify queued to first pool-accepted submit received; EMA alpha=0.2; not TCP RTT",
                           scope="worker name + source IP; can combine multiple physical devices")
             rows.append(result)
         return {"workers": rows, "limit": self.max_workers,
                 "retention_seconds": self.retention, "dropped_observations": self.dropped_observations,
-                "resets_on_restart": True}
+                "resets_on_restart": not self.persistence["enabled"],
+                "persistence": dict(self.persistence)}
+
+    def dump_history(self, wall_now=None):
+        self._prune()
+        wall_now = time.time() if wall_now is None else wall_now
+        mono = self.clock()
+        rows = []
+        for (name, ip), row in self.entries.items():
+            values = {key: row[key] for key in ("accepted", "rejected", "stale", "invalid_local", "unknown",
+                "rtt_total_ms", "rtt_samples", "difficulty_known", "last_seen_utc",
+                "first_share_ema_ms", "first_share_samples")}
+            values.update(name=name, ip=ip, touched_utc=wall_now - (mono - row["touched"]),
+                          started_utc=wall_now - (mono - row["work"].started),
+                          buckets=[[wall_now - (mono - minute * 60), str(work)]
+                                   for minute, work in row["work"].buckets])
+            rows.append(values)
+        return {"version": 1, "saved_utc": wall_now, "workers": rows}
+
+    def restore_history(self, data, wall_now=None):
+        wall_now = time.time() if wall_now is None else wall_now
+        if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("workers"), list):
+            raise ValueError("unsupported history schema")
+        if len(data["workers"]) > self.max_workers:
+            raise ValueError("history worker limit exceeded")
+        restored = WorkerRegistry(self.max_workers, self.retention, self.clock)
+        mono = self.clock()
+        for saved in data["workers"]:
+            name, ip = saved["name"], saved["ip"]
+            if not isinstance(name, str) or len(name) > 128 or not isinstance(ip, str):
+                raise ValueError("invalid history identity")
+            touched = float(saved["touched_utc"])
+            started = float(saved["started_utc"])
+            if not math.isfinite(touched) or not math.isfinite(started) or max(touched, started) > wall_now + 300:
+                raise ValueError("invalid history timestamp")
+            if wall_now - touched >= self.retention:
+                continue
+            if (name, restored.normalize_ip(ip)) in restored.entries:
+                raise ValueError("duplicate history identity")
+            restored.authorize(0, name, ip)
+            row = restored.entries[(name, restored.normalize_ip(ip))]
+            for key in ("accepted", "rejected", "stale", "invalid_local", "unknown", "rtt_samples", "first_share_samples"):
+                value = saved[key]
+                if type(value) is not int or not 0 <= value <= 2**63 - 1:
+                    raise ValueError("invalid history counter")
+                row[key] = value
+            for key in ("rtt_total_ms", "first_share_ema_ms"):
+                value = saved[key]
+                if key == "rtt_total_ms" and value is None:
+                    raise ValueError("invalid history latency")
+                if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+                    raise ValueError("invalid history latency")
+                row[key] = value
+            row["difficulty_known"] = saved["difficulty_known"] is True
+            row["last_seen_utc"] = saved["last_seen_utc"]
+            row["touched"] = mono - max(0, wall_now - touched)
+            row["sessions"].clear()
+            work = row["work"]
+            work.started = mono - min(86400, max(0, wall_now - started))
+            buckets = saved["buckets"]
+            if not isinstance(buckets, list) or len(buckets) > 1440:
+                raise ValueError("history bucket limit exceeded")
+            previous = None
+            for utc, value in buckets:
+                if type(utc) not in (int, float) or not math.isfinite(utc) or utc > wall_now + 60:
+                    raise ValueError("invalid bucket timestamp")
+                if wall_now - utc >= 86460:
+                    continue
+                if not isinstance(value, str) or len(value) > 4096:
+                    raise ValueError("invalid bucket work")
+                amount = Fraction(value)
+                if amount < 0 or max(amount.numerator.bit_length(), amount.denominator.bit_length()) > 4096:
+                    raise ValueError("invalid bucket work")
+                minute = min(int(mono // 60), int((mono - (wall_now - utc)) // 60))
+                if previous is not None and minute < previous:
+                    raise ValueError("unordered history")
+                if previous == minute:
+                    bucket[1] += amount
+                else:
+                    bucket = [minute, amount]
+                    for _, window in work.windows.values():
+                        window.append(bucket)
+                for label in work.totals:
+                    work.totals[label] += amount
+                previous = minute
+            work._trim(int(mono // 60))
+        self.entries = restored.entries
+        self.sessions.clear()
+        self.persistence["loaded"] = True
 
 
 class Metrics:

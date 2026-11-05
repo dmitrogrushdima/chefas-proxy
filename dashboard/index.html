@@ -10,6 +10,8 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
+  <dialog id="login-dialog"><form id="login-form"><h2>Administrator sign in</h2><p>Enter the KONTUR_ADMIN_TOKEN configured on the server.</p><label>Admin token<input id="admin-token" type="password" required minlength="32" maxlength="512" autocomplete="off"></label><p id="login-error" role="alert"></p><button type="submit">Sign in</button><button id="login-cancel" type="button">Cancel</button></form></dialog>
+
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="#overview" aria-label="Kontur — overview">
@@ -21,6 +23,7 @@
         <a class="nav-link selected" href="#overview"><span class="nav-icon">◫</span> Overview <span class="nav-indicator"></span></a>
         <a class="nav-link" href="#workers"><span class="nav-icon">▦</span> Workers</a>
         <a class="nav-link" href="#connections"><span class="nav-icon">▦</span> Connections</a>
+        <a class="nav-link admin-only" href="#routes" hidden><span class="nav-icon">⌁</span> Routes</a>
         <a class="nav-link" href="#pools"><span class="nav-icon">⌁</span> Pools</a>
         <a class="nav-link" href="#diagnostics"><span class="nav-icon">◈</span> Diagnostics</a>
       </nav>
@@ -29,7 +32,7 @@
     <div class="workspace">
       <header class="topbar">
         <div class="breadcrumb">WORKSPACE <span>/</span> <strong>OVERVIEW</strong></div>
-        <div class="top-actions"><label class="language-control"><span id="language-label">Language</span><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option><option value="zh-CN">简体中文</option></select></label><span class="test-badge">TEST VERSION</span><span class="live-status" id="connection-status" role="status"><i></i> Connecting</span></div>
+        <div class="top-actions"><button id="login-open" type="button">Sign in</button><button id="logout" type="button" hidden>Sign out</button><label class="language-control"><span id="language-label">Language</span><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option><option value="zh-CN">简体中文</option></select></label><span class="test-badge">TEST VERSION</span><span class="live-status" id="connection-status" role="status"><i></i> Connecting</span></div>
       </header>
       <main id="overview">
         <div class="page-title"><div><div class="eyebrow"><span></span> CONTROL CENTER</div><h1>Proxy overview<span class="title-dot">.</span></h1><p>Connections and pool activity in one place.</p></div><div class="refresh-wrap"><span id="last-update">Waiting for data</span><button id="refresh" type="button" aria-label="Refresh data">↻ <span>Refresh</span></button></div></div>
@@ -51,13 +54,19 @@
               <div class="panel-footer"><span>Current session data</span><span>Live updates · 1 sec</span></div>
             </section>
             <section class="panel" id="workers">
-              <div class="panel-header"><div><div class="section-kicker">LIVE OBSERVER</div><h2>Workers</h2><p>Grouped by worker name and source IP. History resets on restart.</p></div><span class="count-pill" id="worker-count">—</span></div>
+              <div class="panel-header"><div><div class="section-kicker">LIVE OBSERVER</div><h2>Workers</h2><p>Grouped by worker name and source IP. Worker history can survive restarts.</p></div><span class="count-pill" id="worker-count">—</span></div>
               <div class="table-toolbar"><label class="search"><input id="worker-search" type="search" placeholder="Search worker or IP" aria-label="Search worker or IP"></label><select id="worker-filter" aria-label="Worker status"><option value="all">All workers</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
-              <p class="worker-notice" id="worker-limit" hidden>Worker history limit reached. Some observations are unavailable.</p>
-              <div class="table-scroll"><table class="worker-table"><thead><tr><th>WORKER</th><th>IP</th><th>STATUS</th><th>HASHRATE 15m</th><th>HASHRATE 1h</th><th>HASHRATE 24h</th><th>ACCEPTED</th><th>REJECTED</th><th>STALE</th><th>LOCAL</th><th>POOL RESPONSE</th><th>ASIC PING</th></tr></thead><tbody id="worker-rows"></tbody></table></div>
+              <p class="worker-notice" id="history-status"></p><p class="worker-notice" id="worker-limit" hidden>Worker history limit reached. Some observations are unavailable.</p>
+              <div class="table-scroll"><table class="worker-table"><thead><tr><th>WORKER</th><th>IP</th><th>STATUS</th><th>HASHRATE 15m</th><th>HASHRATE 1h</th><th>HASHRATE 24h</th><th>ACCEPTED</th><th>REJECTED</th><th>STALE</th><th>LOCAL</th><th>POOL RESPONSE</th><th>FIRST SHARE EMA</th><th class="admin-only" hidden>ACTIONS</th></tr></thead><tbody id="worker-rows"></tbody></table></div>
               <div class="empty" id="workers-empty"><b>No worker data yet</b><p>Statistics appear after pool authorization.</p></div>
               <p class="worker-notice">* Incomplete window. Stale shares are included in rejected.</p><div class="panel-footer"><span>Hashrate is estimated from accepted difficulty; 1-minute buckets.</span><span id="stream-label">Connecting</span></div>
             </section>
+            <section class="panel admin-only" id="routes" hidden><div class="panel-header"><div><h2>Routes</h2><p>Settings apply to new connections. Active miners can reconnect automatically.</p></div></div>
+              <form id="route-form" class="management-form"><fieldset><legend>User Pool</legend><label>Host<input id="user-host" required maxlength="253"></label><label>Port<input id="user-port" type="number" required min="1" max="65535"></label><label>User / Wallet<input id="user-worker" maxlength="128" placeholder="Forward ASIC credentials"></label><label>Password<input id="user-password" type="password" maxlength="1024" placeholder="Leave blank to keep" autocomplete="off"></label></fieldset>
+              <label class="check-label"><input id="fee-enabled" type="checkbox">Enable DevFee Pool</label><fieldset id="fee-fields"><legend>DevFee Pool</legend><label>Host<input id="fee-host" required maxlength="253"></label><label>Port<input id="fee-port" type="number" required min="1" max="65535"></label><label>User / Wallet<input id="fee-worker" required maxlength="128"></label><label>Password<input id="fee-password" type="password" maxlength="1024" placeholder="Leave blank to keep" autocomplete="off"></label></fieldset>
+              <label class="check-label"><input id="route-reconnect" type="checkbox" checked>Reconnect active miners</label><button type="submit">Save routes</button><button id="route-reload" type="button">Reload routes</button><button id="observer-create" type="button">Create Observer Link</button><input id="observer-link" type="text" readonly hidden aria-label="Observer Link"><p id="management-result" role="status"></p></form>
+            </section>
+            <section class="panel admin-only" id="blacklist" hidden><div class="panel-header"><div><h2>IP Blacklist</h2><p>Blocks new connections. Use Kick to disconnect an active worker.</p></div></div><form id="ban-form" class="management-form"><label>IP / CIDR<input id="ban-address" required maxlength="64" placeholder="192.0.2.1"></label><button type="submit">Ban IP</button></form><div class="table-scroll"><table><thead><tr><th>IP / CIDR</th><th>ACTIONS</th></tr></thead><tbody id="blacklist-rows"></tbody></table></div></section>
             <section class="panel" id="fee-log"><div class="panel-header"><div><div class="section-kicker">DEVFEE LEDGER</div><h2>Session transitions</h2><p>Latest 500 events in memory. This is not a persistent audit log.</p></div></div><div class="table-scroll"><table><thead><tr><th>TIME</th><th>WORKER</th><th>TARGET</th><th>EVENT</th></tr></thead><tbody id="fee-events"></tbody></table></div><div class="empty" id="events-empty"><b>No transitions yet</b></div></section>
             <section class="panel diagnostic-panel" id="diagnostics"><div class="panel-header"><div><div class="section-kicker">STATUS <span> / 02</span></div><h2>Diagnostics</h2><p>Counters since process start</p></div><a class="export-link" href="/api/audit-export" download>Export JSON</a></div><div class="diagnostic-grid"><div><span>Total connections</span><b id="connections-total">—</b></div><div><span>Backup connections</span><b id="backup-connections">—</b></div><div><span>Pending / unmatched</span><b id="pending-unmatched">—</b></div><div><span>Capacity limit / obvious loops</span><b id="limits-loops">—</b></div><div><span>Blocked by IP filter</span><b id="refused-network">—</b></div><div><span>Pool redirect requests (not blocked)</span><b id="redirect-notices">—</b></div><div><span>Avg. share response time</span><b id="share-rtt">—</b></div><div><span>Idle sessions closed</span><b id="idle-timeouts">—</b></div></div><div class="information"><span>i</span><p>Counters are based on observed pool responses and may differ from pool statistics. They do not calculate revenue.</p></div></section>
           </div>

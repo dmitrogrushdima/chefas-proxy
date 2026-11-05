@@ -16,6 +16,7 @@ from stratum_session import Relay, HALF_CLOSE_GRACE
 from dashboard_server import dashboard_request, ASSET_DIR, ASSETS, DashboardStream
 from devfee_scheduler import AcceptedWorkLedger
 from dashboard_control import DashboardControl
+from history_store import HistoryStore
 
 LOG = logging.getLogger("mining_proxy")
 
@@ -65,6 +66,9 @@ async def run(args):
     relay.fee_grace_seconds = args.fee_grace_seconds
     relay.fee_blocked = False
     relay.ledger = AcceptedWorkLedger(args.fee_min_work)
+    history = HistoryStore(relay.workers, args.history_file) if args.history_file else None
+    if history:
+        history.load()
     stream = DashboardStream(relay.live_snapshot)
     control = DashboardControl(relay, stream, os.environ.get("KONTUR_ADMIN_TOKEN"), args.control_state)
     if args.active_router:
@@ -82,6 +86,8 @@ async def run(args):
         raise
     LOG.warning("Experimental relay only; not for production. Listening on %s", server.sockets[0].getsockname())
     LOG.info("Dashboard: http://127.0.0.1:%s", args.dashboard_port)
+    if history:
+        history.start()
     try:
         async with server, dashboard:
             await server.serve_forever()
@@ -93,6 +99,8 @@ async def run(args):
         await stream.close()
         await control.observer_stream.close()
         await relay.shutdown()
+        if history:
+            await history.close()
 
 
 
@@ -102,6 +110,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool-host", required=True)
     parser.add_argument("--control-state", default="state/control.json")
+    parser.add_argument("--history-file", default="state/history.json", help="Worker history checkpoint path; empty disables persistence")
     parser.add_argument("--pool-port", type=int, required=True, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")
