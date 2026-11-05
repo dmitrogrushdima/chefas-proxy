@@ -15,13 +15,34 @@ from router import copy_stream
 from upstream_manager import connect_upstream
 from devfee_scheduler import AcceptedWorkLedger
 from pilot_logging import event
+# Public framing types are re-exported here for session-level integrations.
+from stratum_codec import PacketReader, StratumDecoder
 
 LOG = logging.getLogger("mining_proxy")
 HALF_CLOSE_GRACE = 3.0
 
 
+def enable_tcp_keepalive(writer):
+    """Best effort kernel probes; the application deadline remains authoritative."""
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return False
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except (OSError, AttributeError):
+        return False
+    for name, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 15), ("TCP_KEEPCNT", 3)):
+        option = getattr(socket, name, None)
+        if option is not None:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+            except OSError:
+                pass
+    return True
+
+
 class Relay:
-    def __init__(self, host, port, *, tls=False, limit=512, timeout=10, backup=None, tls_context=None, allowed_networks=(), idle_timeout=0):
+    def __init__(self, host, port, *, tls=False, limit=512, timeout=10, backup=None, tls_context=None, allowed_networks=(), idle_timeout=0, miner_timeout=600, handshake_timeout=30, max_miner_message=4096):
         if not host or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("invalid primary pool")
         if not isinstance(limit, int) or not 1 <= limit <= 10000:
@@ -35,6 +56,14 @@ class Relay:
         self.host, self.port, self.tls = host, port, tls
         self.limit, self.timeout = limit, timeout
         self.idle_timeout = idle_timeout
+        if not isinstance(miner_timeout, (int,float)) or not math.isfinite(miner_timeout) or (miner_timeout != 0 and not .1 <= miner_timeout <= 86400):
+            raise ValueError("miner timeout must be 0 or .1..86400")
+        if not isinstance(handshake_timeout, (int,float)) or not math.isfinite(handshake_timeout) or not .1 <= handshake_timeout <= 300:
+            raise ValueError("handshake timeout must be .1..300")
+        if type(max_miner_message) is not int or not 512 <= max_miner_message <= 65536:
+            raise ValueError("miner frame limit must be 512..65536")
+        self.miner_timeout, self.handshake_timeout = miner_timeout, handshake_timeout
+        self.max_miner_message = max_miner_message
         self.active = 0
         self.tasks = set()
         self.metrics = Metrics()
@@ -72,6 +101,8 @@ class Relay:
             writer.close()
             await writer.wait_closed()
             return
+        if not enable_tcp_keepalive(writer):
+            self.metrics.keepalive_unavailable += 1
         self.active += 1
         self.metrics.active += 1
         self.metrics.connections += 1
@@ -81,10 +112,11 @@ class Relay:
         session = {"id": session_id, "state": "connecting", "worker": None,
                    "pool": None, "started": time.monotonic(), "metrics": session_metrics,
                    "writer": writer, "ip": writer.get_extra_info("peername")[0],
-                   "route_id": route_id}
+                   "route_id": route_id, "protocol_started": not self.active_router}
         session["endpoint"] = self.route_configs.get(route_id, {}).get("endpoint", (self.host, self.port))
         self.sessions[session_id] = session
-        event(logging.INFO, "session_started", session_id=session_id, active_router=self.active_router)
+        if not self.active_router:
+            event(logging.INFO, "session_started", session_id=session_id, active_router=False)
 
         def authorized(name):
             session["worker"] = "".join(c if c.isprintable() else "?" for c in name)
@@ -115,12 +147,18 @@ class Relay:
             session["pool"] = "primary" if index == 0 else "backup"
 
             last_activity = time.monotonic()
+            last_miner_activity = last_activity
 
             def mark_activity():
                 nonlocal last_activity
                 last_activity = time.monotonic()
 
-            pumps = [asyncio.create_task(copy_stream(reader, upstream, 0, observer, self.metrics, mark_activity)),
+            def mark_miner_activity():
+                nonlocal last_miner_activity
+                last_miner_activity = time.monotonic()
+                mark_activity()
+
+            pumps = [asyncio.create_task(copy_stream(reader, upstream, 0, observer, self.metrics, mark_miner_activity)),
                      asyncio.create_task(copy_stream(remote_reader, writer, 1, observer, self.metrics, mark_activity))]
             watchdog = None
             if self.idle_timeout:
@@ -132,12 +170,23 @@ class Relay:
                         await asyncio.sleep(remaining)
                 watchdog = asyncio.create_task(watch_idle())
                 pumps.append(watchdog)
-            done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+            # Reuse the pump wait instead of allocating another long-lived Task
+            # per transparent connection. Inbound bytes renew only this deadline.
+            miner_expired = False
+            while True:
+                remaining = (max(0, self.miner_timeout - (time.monotonic() - last_miner_activity))
+                             if self.miner_timeout else None)
+                done, _ = await asyncio.wait(pumps, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+                if done:
+                    break
+                if time.monotonic() - last_miner_activity >= self.miner_timeout:
+                    miner_expired = True
+                    break
             for finished in done:
                 finished.result()
             # Plain TCP can half-close: forward the client's EOF and allow a bounded
             # window for final pool responses. TLS transports cannot write EOF.
-            if pumps[0] in done and pumps[1] not in done and (not watchdog or watchdog not in done) and upstream.can_write_eof():
+            if pumps[0] in done and pumps[1] not in done and (not watchdog or watchdog not in done) and not miner_expired and upstream.can_write_eof():
                 upstream.write_eof()
                 waiting = [pumps[1]] + ([watchdog] if watchdog else [])
                 later, _ = await asyncio.wait(waiting, timeout=HALF_CLOSE_GRACE,
@@ -145,7 +194,9 @@ class Relay:
                 for finished in later:
                     finished.result()
                 done |= later
-            if watchdog and watchdog in done:
+            if miner_expired:
+                self.metrics.zombie_reaped += 1
+            elif watchdog and watchdog in done:
                 self.metrics.idle_timeouts += 1
             elif pumps[0] in done and pumps[1] in done:
                 self.metrics.closed_ambiguous += 1
@@ -182,9 +233,10 @@ class Relay:
                 self.workers.disconnect(session_id)
                 self.sessions.pop(session_id, None)
                 self.tasks.discard(task)
-                event(logging.INFO, "session_closed", session_id=session_id,
-                      accepted=session_metrics.accepted, rejected=session_metrics.rejected,
-                      unknown=session_metrics.unmatched)
+                if session["protocol_started"]:
+                    event(logging.INFO, "session_closed", session_id=session_id,
+                          accepted=session_metrics.accepted, rejected=session_metrics.rejected,
+                          unknown=session_metrics.unmatched)
 
     def set_listeners(self, server):
         self.listeners = [(item.family, item.getsockname()) for item in server.sockets]
@@ -265,6 +317,9 @@ class Relay:
 
     def status_snapshot(self):
         return {"primary": {"host": self.host, "port": self.port},
+                "miner_timeout_seconds": self.miner_timeout,
+                "handshake_timeout_seconds": self.handshake_timeout,
+                "max_miner_message_bytes": self.max_miner_message,
                 "active_router": self.active_router,
                 "require_devfee": getattr(self, "require_devfee", False),
                 "fee_policy_blocked": getattr(self, "fee_blocked", False),

@@ -50,7 +50,7 @@ python -m pip install -r requirements-build.txt
 python build_ext.py --output dist/kontur-pilot
 ```
 
-MSVC C++ tools and Windows SDK are required on Windows; a C compiler and Python development headers on Linux. The script translates all 13 runtime modules, including the requested five core modules, and builds platform-native .pyd/.so files. It stages sources/C/object files under ignored build/, uses short relative object paths for Windows, never overwrites the source modules and refuses an existing output directory. `--generate-only` validates Cython translation without a native compiler.
+MSVC C++ tools and Windows SDK are required on Windows; a C compiler and Python development headers on Linux. The script translates all 14 runtime modules, including the bounded Stratum codec, and builds platform-native .pyd/.so files. It stages sources/C/object files under ignored build/, uses short relative object paths for Windows, never overwrites the source modules and refuses an existing output directory. `--generate-only` validates Cython translation without a native compiler.
 
 The output contains only compiled runtime modules, `launch.py`, UI assets, requirements, `.env.example` and a hash manifest. Real ENV files, keys, state, logs and generated C are excluded by an allowlist. Install runtime requirements in the deployment environment and run `python launch.py ...` from that directory. The launcher rejects source fallback. Artifacts require matching OS, architecture and Python ABI; a Windows CPython 3.10 .pyd is not a Linux .so or a standalone executable. Build and test again on the actual pilot platform. Do not treat a successful C compilation as a successful ASIC test.
 

@@ -58,7 +58,9 @@ async def run(args, stop_event=None):
     backup = (args.backup_host, args.backup_port) if args.backup_host else None
     relay = Relay(args.pool_host, args.pool_port, tls=args.tls, backup=backup,
                   limit=args.max_connections, timeout=args.connect_timeout, allowed_networks=args.allow_cidr,
-                  idle_timeout=args.idle_timeout)
+                  idle_timeout=args.idle_timeout, miner_timeout=getattr(args, "miner_timeout", 600),
+                  handshake_timeout=getattr(args, "handshake_timeout", 30),
+                  max_miner_message=getattr(args, "max_miner_message", 4096))
     relay.active_router = args.active_router
     relay.trace_stratum = getattr(args, "debug_stratum", False)
     relay.metrics._log_handler = next((handler for handler in LOG.handlers if isinstance(handler, SafeQueueHandler)), None)
@@ -81,7 +83,8 @@ async def run(args, stop_event=None):
         relay.metrics._ledger = relay.ledger
         relay.metrics._devfee_enabled = bool(relay.fee)
         relay.metrics._audit = WorkAudit(relay.ledger)
-    server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512)
+    server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512,
+                                      limit=relay.max_miner_message if args.active_router else 65536)
     relay.set_listeners(server)
     try:
         dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream, control),
@@ -147,6 +150,9 @@ def main():
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--log-level", choices=("INFO", "WARNING", "DEBUG"), default="INFO")
     parser.add_argument("--debug-stratum", action="store_true", help="Allow redacted notify/submit packet traces at DEBUG")
+    parser.add_argument("--miner-timeout", type=float, default=600, help="ASIC silence: valid submit/ping in active mode, inbound bytes otherwise; 0 disables")
+    parser.add_argument("--handshake-timeout", type=float, default=30, help="Active-mode authorization deadline")
+    parser.add_argument("--max-miner-message", type=int, default=4096, help="Maximum active-mode ASIC JSON object size, 512..65536")
     parser.add_argument("--control-state", default="state/control.json")
     parser.add_argument("--history-file", default="state/history.json", help="Worker history checkpoint path; empty disables persistence")
     parser.add_argument("--pool-port", type=int, required=True, choices=range(1, 65536), metavar="PORT")
@@ -176,6 +182,12 @@ def main():
     args = parser.parse_args()
     load_environment(args.env_file)
     args.devfee_password = os.environ.get("KONTUR_DEVFEE_PASSWORD", "x")
+    if not math.isfinite(args.miner_timeout) or (args.miner_timeout != 0 and not .1 <= args.miner_timeout <= 86400):
+        parser.error("--miner-timeout must be 0 or .1..86400")
+    if not math.isfinite(args.handshake_timeout) or not .1 <= args.handshake_timeout <= 300:
+        parser.error("--handshake-timeout must be .1..300")
+    if not 512 <= args.max_miner_message <= 65536:
+        parser.error("--max-miner-message must be 512..65536")
     if args.require_devfee and not (args.active_router and args.devfee_host and args.devfee_port and args.devfee_worker):
         parser.error("--require-devfee requires active routing and complete DevFee configuration")
     if not math.isfinite(args.fee_grace_seconds) or not 0.1 <= args.fee_grace_seconds <= 86400:

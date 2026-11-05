@@ -5,13 +5,10 @@ import ssl
 import logging
 from pilot_logging import event
 from decimal import Decimal
+from stratum_codec import ProtocolError, PacketReader
 
 MAX_LINE = 65536
 MAX_PENDING = 1024
-
-
-class ProtocolError(Exception):
-    """Untrusted peer sent an invalid or unsupported protocol state."""
 
 
 def encode_packet(value):
@@ -33,25 +30,12 @@ def encode_packet(value):
 
 
 async def read_packet(reader):
-    try:
-        line = await reader.readuntil(b"\n")
-    except asyncio.IncompleteReadError as exc:
-        if not exc.partial:
-            return None
-        # A partial frame must never be executed as a complete JSON-RPC request.
-        raise ProtocolError("incomplete Stratum line") from exc
-    except (asyncio.LimitOverrunError, ValueError) as exc:
-        raise ProtocolError("Stratum line too long") from exc
-    if len(line) > MAX_LINE:
-        raise ProtocolError("Stratum line too long")
-    try:
-        packet = json.loads(line, parse_float=Decimal,
-                            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-    except (ValueError, UnicodeError, RecursionError) as exc:
-        raise ProtocolError("invalid Stratum JSON") from exc
-    if not isinstance(packet, dict):
-        raise ProtocolError("JSON-RPC object required")
-    return packet
+    """Compatibility helper; production sessions own explicit role-specific readers."""
+    framing = getattr(reader, '_kontur_packet_reader', None)
+    if framing is None:
+        framing = PacketReader(reader, max_bytes=MAX_LINE)
+        reader._kontur_packet_reader = framing
+    return await framing.read_packet()
 
 
 class UpstreamConnection:
@@ -59,6 +43,7 @@ class UpstreamConnection:
 
     def __init__(self, reader, writer, target, on_notification, on_disconnect, timeout=10):
         self.reader, self.writer, self.target = reader, writer, target
+        self.packets = PacketReader(reader, max_bytes=MAX_LINE, role="pool")
         self.on_notification, self.on_disconnect = on_notification, on_disconnect
         self.timeout = timeout
         self.pending = {}
@@ -92,7 +77,7 @@ class UpstreamConnection:
 
     async def _read(self):
         try:
-            while packet := await read_packet(self.reader):
+            while packet := await self.packets.read_packet():
                 if "method" in packet:
                     await self.on_notification(self, packet)
                 else:

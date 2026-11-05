@@ -317,6 +317,10 @@ class Metrics:
         self.low_diff_local = 0
         self.unknown_job_local = 0
         self.malformed_local = 0
+        self.protocol_drops = 0
+        self.handshake_timeouts = 0
+        self.zombie_reaped = 0
+        self.keepalive_unavailable = 0
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}

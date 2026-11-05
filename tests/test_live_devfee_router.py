@@ -68,6 +68,7 @@ class CheckedPool:
         self.errors = []
         self.configure_requests = []
         self.reject_submits = False
+        self.submit_delay = 0
 
     async def start(self):
         self.server = await asyncio.start_server(self.handle, "127.0.0.1", 0)
@@ -132,6 +133,8 @@ class CheckedPool:
                         response["error"] = [23, "Invalid PoW or session", None]
                 else:
                     response["error"] = [20, "Unsupported request", None]
+                if method == "mining.submit" and self.submit_delay:
+                    await asyncio.sleep(self.submit_delay)
                 writer.write(encode(response))
                 if method == "mining.authorize" and response["result"]:
                     writer.write(encode({"id": None, "method": "mining.set_difficulty", "params": [DIFFICULTY]}))
@@ -292,7 +295,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.pools.append(pool)
         return pool
 
-    async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None, debug=False):
+    async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None, debug=False,
+                     miner_timeout=600, handshake_timeout=30):
         self.admin_token = admin_token
         self.user_pool = await self.pool("11111111", "user.worker")
         if fee:
@@ -305,7 +309,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 "--control-state", str(Path(self.history.name) / "control.json"),
                 "--pool-host", "127.0.0.1", "--pool-port", str(self.user_pool.port),
                 "--listen-port", str(self.port), "--dashboard-port", str(self.dashboard),
-                "--connect-timeout", "1", "--reconnect-min-seconds", "0"]
+                "--connect-timeout", "1", "--reconnect-min-seconds", "0",
+                "--miner-timeout", str(miner_timeout), "--handshake-timeout", str(handshake_timeout)]
         if fee:
             args += ["--devfee-host", "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
                      "--devfee-worker", "fee.worker", "--fee-min-work", "0"]
@@ -356,6 +361,128 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         miner = Miner(self.port, hot=hot, configure=configure, password=password)
         self.miners.append(miner)
         return await miner.connect()
+
+    async def test_scanners_dropped_before_upstream_connect(self):
+        await self.launch(fee=False)
+        for payload in (b'GET / HTTP/1.1\r\n', b'\x16\x03\x01', b'\xff',
+                        b'{"id":1,"method":"mining.subscribe","params":["'+b'x'*4096):
+            reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
+            try:
+                writer.write(payload)
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        self.assertEqual(self.user_pool.connections, 0)
+        metrics = await self.api('/api/metrics')
+        self.assertEqual(metrics['protocol_drops'], 4)
+
+    async def test_partial_handshake_reaped_without_pool_connection(self):
+        await self.launch(fee=False, handshake_timeout=.3)
+        reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
+        try:
+            writer.write(b'{"id":1')
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+            self.assertEqual(self.user_pool.connections, 0)
+            metrics = await self.api('/api/metrics')
+            self.assertEqual(metrics['handshake_timeouts'], 1)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def test_pool_notifications_do_not_keep_zombie_asic_alive(self):
+        await self.launch(fee=False, miner_timeout=.5)
+        miner = await self.miner()
+        async def notify_forever():
+            while not miner.closed.is_set():
+                for writer in list(self.user_pool.writers):
+                    writer.write(encode({'id':None,'method':'mining.notify','params':[
+                        'shared-job',PREVHASH,COINB1,COINB2,[],VERSION,NBITS,NTIME,True]}))
+                    await writer.drain()
+                await asyncio.sleep(.05)
+        task = asyncio.create_task(notify_forever())
+        try:
+            await asyncio.wait_for(miner.closed.wait(), 3)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        metrics = await self.api('/api/metrics')
+        self.assertEqual(metrics['zombie_reaped'], 1)
+        for _ in range(50):
+            if not self.user_pool.writers:
+                break
+            await asyncio.sleep(.02)
+        self.assertFalse(self.user_pool.writers)
+
+    async def test_authenticated_ping_keeps_session_alive_then_reaps(self):
+        await self.launch(fee=False, miner_timeout=.5)
+        miner = await self.miner()
+        for _ in range(8):
+            self.assertTrue((await miner.request('mining.ping', []))['result'])
+            await asyncio.sleep(.15)
+        self.assertFalse(miner.closed.is_set())
+        await asyncio.wait_for(miner.closed.wait(), 3)
+        self.assertEqual((await self.api('/api/metrics'))['zombie_reaped'], 1)
+
+    async def test_reaper_interrupts_pending_upstream_rpc_and_releases_capacity(self):
+        await self.launch(fee=False, miner_timeout=.4)
+        miner = await self.miner()
+        self.user_pool.submit_delay = 2
+        with self.assertRaises(ConnectionError):
+            await miner.submit()
+        await asyncio.wait_for(miner.closed.wait(),2)
+        for _ in range(100):
+            metrics = await self.api('/api/metrics')
+            if metrics['active'] == 0:
+                break
+            await asyncio.sleep(.02)
+        self.assertEqual(metrics['active'],0)
+        self.assertEqual(metrics['zombie_reaped'],1)
+        self.assertEqual(metrics['unmatched'],1)
+        self.assertFalse((await self.api('/api/snapshot'))['sessions'])
+
+    async def test_glued_handshake_objects_without_newlines(self):
+        await self.launch(fee=False)
+        reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
+        packets = [
+            {'id':1,'method':'mining.subscribe','params':[]},
+            {'id':2,'method':'mining.extranonce.subscribe','params':[]},
+            {'id':3,'method':'mining.authorize','params':['user.worker','x']}]
+        try:
+            wire = b''.join(encode(p).rstrip(b'\n') for p in packets)
+            # Split inside field names and string literals as a mobile link may.
+            for i in range(0,len(wire),7):
+                writer.write(wire[i:i+7])
+                await writer.drain()
+            replies = {}
+            while len(replies) < 3:
+                packet = json.loads(await asyncio.wait_for(reader.readline(),3))
+                if packet.get('id') in (1,2,3):
+                    replies[packet['id']] = packet
+            self.assertIs(replies[2]['result'], True)
+            self.assertIs(replies[3]['result'], True)
+            self.assertEqual(self.user_pool.connections, 1)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def test_unauthenticated_client_cannot_trigger_global_fee_watchdog(self):
+        await self.launch(require_fee=True, handshake_timeout=5)
+        miner = await self.miner()
+        reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
+        try:
+            writer.write(encode({'id':1,'method':'mining.subscribe','params':[]}))
+            await writer.drain()
+            await asyncio.wait_for(reader.readline(), 2)
+            await asyncio.sleep(2.3)  # Longer than the configured fee grace.
+            self.assertFalse((await self.api('/api/status'))['fee_policy_blocked'])
+            self.assertFalse(miner.closed.is_set())
+            self.assertTrue((await miner.request('mining.ping', []))['result'])
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def test_hot_switch_routes_1000_valid_shares_without_asic_disconnect(self):
         await self.launch()

@@ -18,11 +18,12 @@ import time
 import logging
 from collections import OrderedDict
 
-from upstream_manager import UpstreamConnection, ProtocolError, read_packet, encode_packet
+from upstream_manager import UpstreamConnection, ProtocolError, encode_packet
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
 from devfee_scheduler import FeeHealth
 from pilot_logging import event, stratum_trace, remember_secret
+from stratum_codec import PacketReader
 
 
 class StatefulRouter:
@@ -33,6 +34,7 @@ class StatefulRouter:
 
     def __init__(self, relay, reader, writer, session):
         self.relay, self.reader, self.writer, self.session = relay, reader, writer, session
+        self.packets = PacketReader(reader, getattr(relay, "max_miner_message", 4096), role="miner")
         self.fee = relay.fee
         self.fee_worker = getattr(relay, 'fee_worker', '')
         self.fee_password = getattr(relay, 'fee_password', 'x')
@@ -55,21 +57,67 @@ class StatefulRouter:
         self.route_updating = False
         self.logged_channel = None
         self.started = time.monotonic()
+        self.last_miner_activity = self.started
+        self.owner = None
+        self.fee_policy_started = False
         session["router"] = self
         self.health = FeeHealth(getattr(relay, "fee_grace_seconds", 180))
-        self.prefer_fee = bool(relay.fee and relay.ledger.should_fee() and relay.fee_owner is None)
-        if self.prefer_fee:
-            relay.fee_owner = self
+        self.prefer_fee = False
+
+    @staticmethod
+    def abort(writer):
+        if writer is not None:
+            writer.close()
+            transport = getattr(writer, "transport", None)
+            if transport is not None:
+                transport.abort()
+
+    async def watch_miner(self):
+        while True:
+            if not self.auth:
+                remaining = getattr(self.relay, "handshake_timeout", 30) - (time.monotonic() - self.started)
+                counter = "handshake_timeouts"
+            else:
+                timeout = getattr(self.relay, "miner_timeout", 600)
+                if not timeout:
+                    return
+                remaining = timeout - (time.monotonic() - self.last_miner_activity)
+                counter = "zombie_reaped"
+            if remaining <= 0:
+                setattr(self.relay.metrics, counter, getattr(self.relay.metrics, counter) + 1)
+                self.abort(self.writer)
+                for channel in list(self.channels.values()):
+                    self.abort(channel.writer)
+                self.owner.cancel()
+                return
+            await asyncio.sleep(min(remaining, .25))
+
+    def start_fee_policy(self):
+        if getattr(self.relay, "require_devfee", False) and not self.fee_policy_started:
+            self.health = FeeHealth(getattr(self.relay, "fee_grace_seconds", 180))
+            self.fee_policy_started = True
+            self.tasks.add(asyncio.create_task(self.watch_fee()))
+
+    async def miner_packets(self, first):
+        yield first
+        while (packet := await self.packets.read_packet()) is not None:
+            yield packet
 
     async def send(self, packet):
         async with self.write_lock:
             self.writer.write(encode_packet(packet))
             await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
 
+    async def send_current(self, channel, packet):
+        async with self.write_lock:
+            if self.current is channel and not channel.closed:
+                self.writer.write(encode_packet(packet))
+                await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+
     def check_fee_policy(self):
         if not getattr(self.relay, "require_devfee", False):
             return
-        if getattr(self.relay, "fee_blocked", False) or self.health.expired():
+        if getattr(self.relay, "fee_blocked", False) or self.fee_policy_started and self.health.expired():
             if not getattr(self.relay, "fee_blocked", False):
                 event(logging.WARNING, "required_fee_blocked", session_id=self.session["id"])
             self.relay.fee_blocked = True
@@ -186,7 +234,7 @@ class StatefulRouter:
         elif method == "mining.set_extranonce" and not self.hot:
             self.writer.close()
         elif method != "mining.notify":
-            await self.send(msg)
+            await self.send_current(ch, msg)
 
     def make_job(self, ch, clean):
         params = list(ch.job)
@@ -207,10 +255,13 @@ class StatefulRouter:
     async def publish(self, ch, clean):
         self.check_fee_policy()
         async with self.write_lock:
+            if self.current is not ch or ch.closed:
+                return
             packet = self.make_job(ch, clean)
             if getattr(self.relay, "trace_stratum", False):
                 stratum_trace("proxy_to_asic", self.session["id"], ch.target, packet,
                               (self.user_password, self.fee_password, *self.auth.values()))
+            self.writer.write(encode_packet({"id": None, "method": "mining.set_difficulty", "params": [ch.job_difficulty]}))
             self.writer.write(encode_packet(packet))
             await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
         if self.current is ch and self.logged_channel is not ch:
@@ -341,6 +392,7 @@ class StatefulRouter:
             self.duplicates[key] = None
             while len(self.duplicates) > self.MAX_DUPLICATES:
                 self.duplicates.popitem(last=False)
+            self.last_miner_activity = time.monotonic()
         except (ValueError, TypeError):
             metrics.invalid_local += 1
             event(logging.WARNING, "share_rejected_local", session_id=self.session["id"], reason=category)
@@ -418,11 +470,18 @@ class StatefulRouter:
             self.session["pending"] -= 1
 
     async def run(self):
+        self.owner = asyncio.current_task()
+        self.tasks.add(asyncio.create_task(self.watch_miner()))
         try:
             self.check_fee_policy()
-            if getattr(self.relay, "require_devfee", False):
-                watchdog = asyncio.create_task(self.watch_fee())
-                self.tasks.add(watchdog)
+            first = await self.packets.read_packet()
+            if first is None:
+                return
+            self.session["protocol_started"] = True
+            event(logging.INFO, "session_started", session_id=self.session["id"], active_router=True)
+            self.prefer_fee = bool(self.fee and self.relay.ledger.should_fee() and self.relay.fee_owner is None)
+            if self.prefer_fee:
+                self.relay.fee_owner = self
             try:
                 user = await self.connect("user", self.session["endpoint"])
             except (OSError, asyncio.TimeoutError):
@@ -433,7 +492,7 @@ class StatefulRouter:
                 self.relay.metrics.backup_connections += 1
             self.current = user
             self.session["state"], self.session["pool"] = "connected", "primary" if user.target == "user" else user.target
-            while packet := await read_packet(self.reader):
+            async for packet in self.miner_packets(first):
                 ident, method, params = packet.get("id"), packet.get("method"), packet.get("params", [])
                 if (not isinstance(ident, (int, str)) or isinstance(ident, bool) or
                     not isinstance(method, str) or not isinstance(params, list)):
@@ -508,6 +567,8 @@ class StatefulRouter:
                         if len(params[0]) > 128 or len(params[1]) > 1024:
                             raise ProtocolError("credentials too long")
                         self.auth[params[0]] = params[1]
+                        self.last_miner_activity = time.monotonic()
+                        self.start_fee_policy()
                         self.relay.workers.authorize(self.session["id"], params[0], self.session["ip"])
                         user.authorized = True
                         self.session["worker"] = "".join(c if c.isprintable() else "?" for c in params[0][:128])
@@ -529,9 +590,18 @@ class StatefulRouter:
                         await self.publish(self.current, False)
                 elif method == "mining.submit":
                     await self.submit(ident, params)
+                elif method == "mining.ping":
+                    if params:
+                        raise ProtocolError("invalid ping")
+                    if self.auth:
+                        self.last_miner_activity = time.monotonic()
+                    await self.reply(ident, {"result": True, "error": None})
                 else:
                     await self.reply(ident, await self.current.request(method, params))
-        except (OSError, ValueError, TypeError, ProtocolError, asyncio.TimeoutError):
+        except ProtocolError:
+            self.relay.metrics.protocol_drops += 1
+            self.abort(self.writer)
+        except (OSError, ValueError, TypeError, asyncio.TimeoutError):
             self.relay.metrics.transport_errors += 1
         finally:
             self.stopping = True
@@ -543,3 +613,5 @@ class StatefulRouter:
                 await asyncio.gather(*self.tasks, return_exceptions=True)
             for ch in list(self.channels.values()) + self.retired:
                 await ch.close()
+            self.packets.pending.clear()
+            self.packets.decoder.buffer.clear()
