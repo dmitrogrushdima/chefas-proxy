@@ -5,7 +5,82 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}):
+class DashboardStream:
+    """One producer, bounded latest-state queue per browser; no event replay."""
+
+    def __init__(self, snapshot, interval=1.0, max_clients=8, drain_timeout=3.0):
+        self.snapshot = snapshot
+        self.interval, self.max_clients, self.drain_timeout = interval, max_clients, drain_timeout
+        self.queues = set()
+        self.handlers = set()
+        self.producer = None
+        self.sequence = 0
+        self.closed = False
+
+    async def _produce(self):
+        while True:
+            self.sequence += 1
+            try:
+                payload = json.dumps(self.snapshot(), allow_nan=False, separators=(",", ":")).encode()
+                if len(payload) > 2 * 1024 * 1024:
+                    raise ValueError("snapshot exceeds stream limit")
+                frame = b"id: " + str(self.sequence).encode() + b"\nevent: snapshot\ndata: " + payload + b"\n\n"
+            except Exception:
+                frame = b"event: stream-error\ndata: {}\n\n"
+            for queue in tuple(self.queues):
+                if queue.full():
+                    queue.get_nowait()
+                queue.put_nowait(frame)
+            await asyncio.sleep(self.interval)
+
+    async def serve(self, reader, writer):
+        if self.closed or len(self.queues) >= self.max_clients:
+            writer.write(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n")
+            await asyncio.wait_for(writer.drain(), self.drain_timeout)
+            return
+        queue = asyncio.Queue(maxsize=1)
+        self.queues.add(queue)
+        self.handlers.add(asyncio.current_task())
+        if self.producer is None:
+            self.producer = asyncio.create_task(self._produce())
+        disconnected = asyncio.create_task(reader.read(1))
+        waiting = None
+        try:
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Accel-Buffering: no\r\nConnection: keep-alive\r\n\r\n")
+            await asyncio.wait_for(writer.drain(), self.drain_timeout)
+            while True:
+                waiting = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait((waiting, disconnected), return_when=asyncio.FIRST_COMPLETED)
+                if disconnected in done:
+                    return
+                writer.write(waiting.result())
+                await asyncio.wait_for(writer.drain(), self.drain_timeout)
+        finally:
+            for task in (waiting, disconnected):
+                if task:
+                    task.cancel()
+            await asyncio.gather(*(task for task in (waiting, disconnected) if task), return_exceptions=True)
+            self.queues.discard(queue)
+            self.handlers.discard(asyncio.current_task())
+            if not self.queues and self.producer is not None:
+                producer = self.producer
+                self.producer = None
+                producer.cancel()
+                await asyncio.gather(producer, return_exceptions=True)
+
+    async def close(self):
+        self.closed = True
+        handlers = list(self.handlers)
+        for task in handlers:
+            task.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+        if self.producer is not None:
+            self.producer.cancel()
+            await asyncio.gather(self.producer, return_exceptions=True)
+            self.producer = None
+
+
+async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}, stream=None):
     try:
         disposition = b""
         request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
@@ -15,8 +90,18 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
         hosts = [h for h in headers if h.startswith(b"host:")]
         sock = writer.get_extra_info("sockname")
         expected_host = ("host: 127.0.0.1:" + str(sock[1])).encode()
-        if len(first) != 3 or first[0] != b"GET" or hosts != [expected_host]:
+        origins = [h for h in headers if h.startswith(b"origin:")]
+        expected_origin = b"origin: http://127.0.0.1:" + str(sock[1]).encode()
+        if (len(request) > 8192 or len(first) != 3 or first[0] != b"GET" or hosts != [expected_host]
+                or origins and origins != [expected_origin] or b"sec-fetch-site: cross-site" in headers):
             status, body, content_type = b"403 Forbidden", b"Forbidden", b"text/plain"
+        elif first[1] == b"/api/stream" and stream is not None:
+            await stream.serve(reader, writer)
+            return
+        elif first[1] == b"/api/snapshot" and stream is not None:
+            status, body, content_type = b"200 OK", json.dumps(stream.snapshot(), allow_nan=False).encode(), b"application/json"
+        elif first[1] == b"/api/workers" and stream is not None:
+            status, body, content_type = b"200 OK", json.dumps(stream.snapshot()["registry"], allow_nan=False).encode(), b"application/json"
         elif first[1] == b"/api/metrics":
             status, body, content_type = b"200 OK", json.dumps(metrics.snapshot()).encode(), b"application/json"
         elif first[1] == b"/api/sessions":
@@ -51,14 +136,14 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
         writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Type: " + content_type +
                      b"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" + disposition + b"\r\nContent-Length: " +
                      str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
-        await writer.drain()
+        await asyncio.wait_for(writer.drain(), 3)
     except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
         pass
     finally:
         writer.close()
         try:
-            await writer.wait_closed()
-        except OSError:
+            await asyncio.wait_for(writer.wait_closed(), 3)
+        except (OSError, asyncio.TimeoutError):
             pass
 
 

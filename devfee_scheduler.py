@@ -123,6 +123,7 @@ class AcceptedWorkLedger:
         return {
             "user_accepted_difficulty": _exact(self.user_work),
             "fee_accepted_difficulty": _exact(self.fee_work),
+            "outstanding_fee_difficulty": _exact(max(Fraction(0), self.eligible_user_work / 99 - self.fee_work)),
             "eligible_user_difficulty": _exact(self.eligible_user_work),
             "outage_user_difficulty": _exact(self.user_work - self.eligible_user_work),
             "user_accepted_shares": self.user_shares,

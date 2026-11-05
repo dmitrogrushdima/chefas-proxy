@@ -43,6 +43,9 @@ class StatefulRouter:
         self.switch_lock = asyncio.Lock()
         self.tasks = set()
         self.stopping = False
+        self.retired = []
+        self.route_updating = False
+        self.logged_channel = None
         self.started = time.monotonic()
         session["router"] = self
         self.health = FeeHealth(getattr(relay, "fee_grace_seconds", 180))
@@ -191,6 +194,9 @@ class StatefulRouter:
         async with self.write_lock:
             self.writer.write(encode_packet(self.make_job(ch, clean)))
             await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+        if self.current is ch and self.logged_channel is not ch:
+            self.relay.event(self.session, ch.target, kind="assignment")
+            self.logged_channel = ch
 
     async def activate(self, ch):
         self.check_fee_policy()
@@ -209,6 +215,8 @@ class StatefulRouter:
                 ):
                     self.writer.write(encode_packet(packet))
                 await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+            self.relay.event(self.session, ch.target)
+            self.logged_channel = ch
             return True
 
     async def disconnected(self, ch):
@@ -243,7 +251,7 @@ class StatefulRouter:
                 self.relay.fee_owner = None
 
     async def reconcile(self):
-        if not self.relay.fee or self.current is None:
+        if self.route_updating or not self.relay.fee or self.current is None:
             return
         fee = self.channels.get("fee")
         user = next((item for name in ("user", "backup")
@@ -308,6 +316,8 @@ class StatefulRouter:
         except (ValueError, TypeError):
             metrics.invalid_local += 1
             setattr(metrics, category, getattr(metrics, category) + 1)
+            if params and isinstance(params[0], str) and params[0] in self.auth:
+                self.relay.workers.record(self.session["id"], params[0], "invalid_local")
             await self.reply(ident, {"result": False, "error": [23, "Invalid or unknown share", None]})
             return
         outbound = list(params)
@@ -316,9 +326,15 @@ class StatefulRouter:
             outbound[0] = self.relay.fee_worker
         fee = self.channels.get("fee")
         fee_available = bool(fee and not fee.closed and fee.ready.is_set())
+        responded = False
         try:
             self.session["pending"] = self.session.get("pending", 0) + 1
+            sent_at = time.monotonic()
             response = await ch.request("mining.submit", outbound)
+            responded = True
+            latency = max(0, (time.monotonic() - sent_at) * 1000)
+            metrics.share_rtt_samples += 1
+            metrics.share_rtt_total_ms += max(0, (time.monotonic() - sent_at) * 1000)
             if ch.target == "fee":
                 if response.get("result") is True and response.get("error") is None:
                     self.health.share_result(True)
@@ -333,12 +349,22 @@ class StatefulRouter:
                 metrics.rejected += 1
             else:
                 metrics.unmatched += 1
+            error = response.get("error")
+            outcome = ("accepted" if response.get("result") is True and error is None else
+                       "rejected" if response.get("result") is False or error is not None else "unknown")
+            self.relay.workers.record(self.session["id"], params[0], outcome, difficulty=difficulty,
+                                      rtt_ms=latency, stale=isinstance(error, list) and bool(error) and error[0] == 21)
             await self.reply(ident, response)
             await self.reconcile()
         except (ConnectionError, asyncio.TimeoutError):
+            # A failed write to an ASIC after a pool confirmation does not
+            # change that share's outcome or make the pool unavailable.
+            if responded:
+                raise
             if ch.target == "fee":
                 await ch.close()
             metrics.unmatched += 1
+            self.relay.workers.record(self.session["id"], params[0], "unknown")
             await self.reply(ident, {"result": None, "error": [20, "Upstream unavailable", None]})
         finally:
             self.session["pending"] -= 1
@@ -350,7 +376,7 @@ class StatefulRouter:
                 watchdog = asyncio.create_task(self.watch_fee())
                 self.tasks.add(watchdog)
             try:
-                user = await self.connect("user", (self.relay.host, self.relay.port))
+                user = await self.connect("user", self.session["endpoint"])
             except (OSError, asyncio.TimeoutError):
                 self.relay.metrics.upstream_failures += 1
                 if not self.relay.backup:
@@ -431,6 +457,7 @@ class StatefulRouter:
                         if len(params[0]) > 128 or len(params[1]) > 1024:
                             raise ProtocolError("credentials too long")
                         self.auth[params[0]] = params[1]
+                        self.relay.workers.authorize(self.session["id"], params[0], self.session["ip"])
                         user.authorized = True
                         self.session["worker"] = "".join(c if c.isprintable() else "?" for c in params[0][:128])
                         self.session["observer"].protocol["authorized_workers"] = list(self.auth)
@@ -463,5 +490,5 @@ class StatefulRouter:
                 task.cancel()
             if self.tasks:
                 await asyncio.gather(*self.tasks, return_exceptions=True)
-            for ch in list(self.channels.values()):
+            for ch in list(self.channels.values()) + self.retired:
                 await ch.close()

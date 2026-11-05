@@ -8,7 +8,9 @@ import socket
 import ssl
 import time
 
-from observer import Metrics, Observer
+from observer import Metrics, Observer, WorkerRegistry
+from collections import deque
+from datetime import datetime, timezone
 from router import copy_stream
 from upstream_manager import connect_upstream
 from devfee_scheduler import AcceptedWorkLedger
@@ -44,6 +46,10 @@ class Relay:
         self.fee = None
         self.fee_owner = None
         self.ledger = AcceptedWorkLedger()
+        self.events = deque(maxlen=500)
+        self.workers = WorkerRegistry()
+        self.blacklist = ()
+        self.route_configs = {}
         if tls_context is not None and not tls:
             raise ValueError("TLS context provided while TLS is disabled")
         self.tls_context = (tls_context or ssl.create_default_context()) if tls else None
@@ -51,7 +57,7 @@ class Relay:
                                  self.tls_context.verify_mode != ssl.CERT_REQUIRED):
             raise ValueError("TLS requires hostname and certificate verification")
 
-    async def handle(self, reader, writer):
+    async def handle(self, reader, writer, route_id="main"):
         if not self.peer_allowed(writer.get_extra_info("peername")):
             self.metrics.refused_network += 1
             writer.close()
@@ -72,13 +78,21 @@ class Relay:
         session_id = self.next_session_id
         session_metrics = Metrics(parent=self.metrics)
         session = {"id": session_id, "state": "connecting", "worker": None,
-                   "pool": None, "started": time.monotonic(), "metrics": session_metrics}
+                   "pool": None, "started": time.monotonic(), "metrics": session_metrics,
+                   "writer": writer, "ip": writer.get_extra_info("peername")[0],
+                   "route_id": route_id}
+        session["endpoint"] = self.route_configs.get(route_id, {}).get("endpoint", (self.host, self.port))
         self.sessions[session_id] = session
 
         def authorized(name):
             session["worker"] = "".join(c if c.isprintable() else "?" for c in name)
+            self.workers.authorize(session_id, name, session["ip"])
 
-        observer = Observer(session_metrics, on_authorized=authorized)
+        def share_observed(name, outcome, latency, stale):
+            if name is not None:
+                self.workers.record(session_id, name, outcome, rtt_ms=latency, stale=stale)
+
+        observer = Observer(session_metrics, on_authorized=authorized, on_share=share_observed)
         session["observer"] = observer
         task = asyncio.current_task()
         self.tasks.add(task)
@@ -90,7 +104,7 @@ class Relay:
                 await StatefulRouter(self, reader, writer, session).run()
                 return
             remote_reader, upstream, index = await connect_upstream(
-                (self.host, self.port), self.backup, self.tls_context, self.timeout,
+                session["endpoint"], self.backup, self.tls_context, self.timeout,
                 self.is_self_route, self.metrics
             )
             if upstream is None:
@@ -163,6 +177,7 @@ class Relay:
                 self.active -= 1
                 self.metrics.active -= 1
                 observer.close()
+                self.workers.disconnect(session_id)
                 self.sessions.pop(session_id, None)
                 self.tasks.discard(task)
 
@@ -170,11 +185,16 @@ class Relay:
         self.listeners = [(item.family, item.getsockname()) for item in server.sockets]
 
     def peer_allowed(self, peer):
-        if not self.allowed_networks:
+        if not self.allowed_networks and not self.blacklist:
             return True
         try:
             address = ipaddress.ip_address(peer[0].split("%", 1)[0])
             candidates = (address, address.ipv4_mapped) if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped else (address,)
+            if any(candidate.version == network.version and candidate in network
+                   for candidate in candidates for network in self.blacklist):
+                return False
+            if not self.allowed_networks:
+                return True
             return any(candidate.version == network.version and candidate in network
                        for candidate in candidates for network in self.allowed_networks)
         except (ValueError, TypeError, IndexError, AttributeError):
@@ -215,8 +235,27 @@ class Relay:
                  "submitted": item["metrics"].submitted, "accepted": item["metrics"].accepted,
                  "rejected": item["metrics"].rejected, "unmatched": item["metrics"].unmatched,
                  "pending": item.get("pending", item["observer"].pending_shares()),
-                 "protocol_observation": dict(item["observer"].protocol)}
+                 "protocol_observation": dict(item["observer"].protocol),
+                 "ip": item["ip"], "route_id": item["route_id"],
+                 "pool_response_ms": (item["metrics"].share_rtt_total_ms / item["metrics"].share_rtt_samples
+                                      if item["metrics"].share_rtt_samples else None),
+                 "asic_ping_ms": None, "scope": "TCP session; multiple workers may share a connection"}
                 for item in self.sessions.values()]
+
+    def live_snapshot(self):
+        safe_keys = ("id", "state", "worker", "pool", "ip", "route_id", "duration_seconds",
+                     "submitted", "accepted", "rejected", "unmatched", "pending")
+        return {"generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "metrics": self.metrics.snapshot(), "status": self.status_snapshot(),
+                "sessions": [{key: item[key] for key in safe_keys} for item in self.session_snapshot()],
+                "registry": self.workers.snapshot(), "events": list(self.events),
+                "stream": {"interval_seconds": 1, "scope": "local process; latest state; no replay"}}
+
+    def event(self, session, target, kind="switch"):
+        self.events.append({"timestamp": datetime.now(timezone.utc).isoformat(),
+                            "session_id": session["id"], "worker": session["worker"],
+                            "target": target, "kind": kind,
+                            "switched_to_devfee": target == "fee"})
 
     def status_snapshot(self):
         return {"primary": {"host": self.host, "port": self.port},

@@ -1,8 +1,12 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const number = (value) => Number.isFinite(value) ? new Intl.NumberFormat(locales[language]).format(value) : "—";
+const formatters = Object.fromEntries(Object.entries(locales).map(([key, locale]) => [key, new Intl.NumberFormat(locale)]));
+const number = (value) => Number.isFinite(value) ? formatters[language].format(value) : "—";
 let latestSessions = [];
+let latestRegistry = {workers: []};
+let latestEvents = [];
+let streamConnected = false;
 let busy = false;
 let latestMetrics = null;
 let latestStatus = null;
@@ -76,6 +80,7 @@ function renderSnapshot() {
   $("redirect-notices").textContent = number(metrics.redirect_notices);
   $("idle-timeouts").textContent = number(metrics.idle_timeouts);
   const audit = metrics.audit;
+  $("audit-debt").textContent = audit?.outstanding_fee_difficulty ?? "—";
   $("audit-user").textContent = audit ? audit.user_accepted_difficulty + " / " + number(audit.user_accepted_shares) : "—";
   $("audit-fee").textContent = audit ? audit.fee_accepted_difficulty + " / " + number(audit.fee_accepted_shares) : "—";
   $("audit-percent").textContent = audit && Number.isFinite(audit.fee_percentage) ? number(Math.round(audit.fee_percentage * 10000) / 10000) + "%" : "—";
@@ -90,6 +95,8 @@ function renderSnapshot() {
   $("tls-label").textContent = t(status.tls ? "TLS · certificate verification enabled" : "TCP · no TLS");
   $("listener").textContent = status.listeners?.join(", ") || "—";
   renderSessions();
+  renderWorkers();
+  renderEvents();
 }
 
 async function refresh() {
@@ -98,14 +105,9 @@ async function refresh() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const responses = await Promise.all(["/api/metrics", "/api/sessions", "/api/status"].map((path) =>
-      fetch(path, {cache: "no-store", signal: controller.signal})));
-    if (responses.some((response) => !response.ok)) throw new Error("Не удалось получить данные");
-    const [metrics, sessions, status] = await Promise.all(responses.map((response) => response.json()));
-    if (!Array.isArray(sessions)) throw new Error("Неверные данные соединений");
-    latestSessions = sessions;
-    latestMetrics = metrics;
-    latestStatus = status;
+    const response = await fetch("/api/snapshot", {cache: "no-store", signal: controller.signal});
+    if (!response.ok) throw new Error("Snapshot unavailable");
+    acceptSnapshot(await response.json());
     networkState = "online";
     lastUpdate = new Date();
     $("offline-notice").hidden = true;
@@ -126,4 +128,85 @@ $("filter").addEventListener("change", renderSessions);
 document.addEventListener("kontur-language-change", renderSnapshot);
 renderSnapshot();
 refresh();
-setInterval(refresh, 3000);
+const stream = new EventSource("/api/stream");
+stream.addEventListener("snapshot", (event) => {
+  try {
+    acceptSnapshot(JSON.parse(event.data));
+    streamConnected = true;
+    networkState = "online";
+    lastUpdate = new Date();
+    $("offline-notice").hidden = true;
+    renderSnapshot();
+  } catch (_) { streamConnected = false; }
+});
+stream.addEventListener("stream-error", () => { streamConnected = false; refresh(); });
+stream.onerror = () => { streamConnected = false; refresh(); };
+window.addEventListener("pagehide", () => stream.close(), {once: true});
+setInterval(() => { if (!streamConnected) refresh(); }, 3000);
+
+
+function acceptSnapshot(snapshot) {
+  if (!Array.isArray(snapshot.sessions) || !snapshot.metrics || !snapshot.status ||
+      !Array.isArray(snapshot.registry?.workers) || !Array.isArray(snapshot.events)) throw new Error("Invalid snapshot");
+  latestSessions = snapshot.sessions;
+  latestMetrics = snapshot.metrics;
+  latestStatus = snapshot.status;
+  latestRegistry = snapshot.registry;
+  latestEvents = snapshot.events;
+}
+
+function hashrate(value) {
+  if (!Number.isFinite(value)) return "—";
+  const scales = [[1e18, "EH/s"], [1e15, "PH/s"], [1e12, "TH/s"], [1e9, "GH/s"], [1e6, "MH/s"], [1e3, "kH/s"], [1, "H/s"]];
+  const [scale, unit] = scales.find(([limit]) => value >= limit) || scales[scales.length - 1];
+  return number(Math.round(value / scale * 100) / 100) + " " + unit;
+}
+
+function renderWorkers() {
+  const search = $("worker-search").value.trim().toLocaleLowerCase(locales[language]);
+  const filter = $("worker-filter").value;
+  const shown = latestRegistry.workers.filter((w) => (filter === "all" || w.status === filter) &&
+    (w.worker + " " + w.ip).toLocaleLowerCase(locales[language]).includes(search));
+  shown.sort((a, b) => a.worker.localeCompare(b.worker, locales[language]) || a.ip.localeCompare(b.ip));
+  const rows = $("worker-rows");
+  rows.replaceChildren();
+  for (const worker of shown) {
+    const row = document.createElement("tr");
+    cell(row, worker.worker);
+    row.firstChild.title = worker.worker;
+    cell(row, worker.ip);
+    cell(row, "● " + t(worker.status === "online" ? "Online" : "Offline"), worker.status === "online" ? "row-status" : "row-status offline");
+    for (const window of ["15m", "1h", "24h"]) {
+      const estimate = worker.hashrate_windows?.[window];
+      cell(row, hashrate(estimate?.hashrate_hs) + (estimate?.warmup ? " *" : ""));
+      row.lastChild.title = estimate ? t("Measured interval") + ": " + duration(Math.floor(estimate.measured_seconds)) : t("Difficulty unavailable in transparent mode");
+    }
+    for (const key of ["accepted", "rejected", "stale", "invalid_local"]) cell(row, number(worker[key]));
+    cell(row, Number.isFinite(worker.pool_response_ms) ? number(Math.round(worker.pool_response_ms * 10) / 10) + " " + t("ms") : "—");
+    cell(row, "—");
+    row.lastChild.title = t("ASIC ping is not measured");
+    rows.appendChild(row);
+  }
+  $("worker-count").textContent = number(latestRegistry.workers.length);
+  $("workers-empty").hidden = shown.length > 0;
+  $("worker-limit").hidden = !(latestRegistry.dropped_observations > 0);
+  $("stream-label").textContent = t(streamConnected ? "SSE · live" : "Polling · 3 sec");
+}
+
+function renderEvents() {
+  const rows = $("fee-events");
+  rows.replaceChildren();
+  for (const event of latestEvents.slice(-50).reverse()) {
+    const row = document.createElement("tr");
+    const timestamp = new Date(event.timestamp);
+    cell(row, Number.isNaN(timestamp.getTime()) ? "—" : timestamp.toLocaleTimeString(locales[language]));
+    cell(row, event.worker || "—");
+    cell(row, event.target === "fee" ? "DevFee" : t(event.target === "backup" ? "Backup" : "Primary"));
+    cell(row, t(event.kind === "assignment" ? "Assignment" : "Switch"));
+    rows.appendChild(row);
+  }
+  $("events-empty").hidden = latestEvents.length > 0;
+}
+
+$("worker-search").addEventListener("input", renderWorkers);
+$("worker-filter").addEventListener("change", renderWorkers);

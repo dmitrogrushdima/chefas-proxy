@@ -12,7 +12,7 @@ import ipaddress
 from pathlib import Path
 from observer import Metrics, Observer, WorkAudit
 from stratum_session import Relay, HALF_CLOSE_GRACE
-from dashboard_server import dashboard_request, ASSET_DIR, ASSETS
+from dashboard_server import dashboard_request, ASSET_DIR, ASSETS, DashboardStream
 from devfee_scheduler import AcceptedWorkLedger
 
 LOG = logging.getLogger("mining_proxy")
@@ -69,8 +69,9 @@ async def run(args):
         relay.metrics._audit = WorkAudit(relay.ledger)
     server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512)
     relay.set_listeners(server)
+    stream = DashboardStream(relay.live_snapshot)
     try:
-        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot),
+        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream),
                                                "127.0.0.1", args.dashboard_port)
     except BaseException:
         server.close()
@@ -86,6 +87,7 @@ async def run(args):
         dashboard.close()
         await server.wait_closed()
         await dashboard.wait_closed()
+        await stream.close()
         await relay.shutdown()
 
 

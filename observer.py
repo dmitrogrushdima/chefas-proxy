@@ -3,6 +3,9 @@ import json
 import time
 import math
 import string
+import hashlib
+import ipaddress
+from datetime import datetime, timezone
 from collections import OrderedDict, deque
 from fractions import Fraction
 
@@ -45,6 +48,142 @@ class WorkAudit:
             result["hashrate_windows"][label] = {"hashrate_hs": rate, "measured_seconds": measured,
                                                   "warmup": elapsed < window}
         return result
+
+
+class DeviceWork:
+    """Accepted work per TCP session, in bounded one-minute buckets."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.started = clock()
+        self.windows = {"15m": (900, deque()), "1h": (3600, deque()), "24h": (86400, deque())}
+        self.totals = {label: Fraction(0) for label in self.windows}
+        self.buckets = self.windows["24h"][1]
+
+    def record(self, difficulty):
+        minute = int(self.clock() // 60)
+        if not self.buckets or self.buckets[-1][0] != minute:
+            bucket = [minute, Fraction(0)]
+            for _, buckets in self.windows.values():
+                buckets.append(bucket)
+        work = Fraction(str(difficulty))
+        self.buckets[-1][1] += work
+        for label in self.totals:
+            self.totals[label] += work
+        self._trim(minute)
+
+    def _trim(self, minute):
+        for label, (seconds, buckets) in self.windows.items():
+            while buckets and buckets[0][0] <= minute - seconds // 60:
+                self.totals[label] -= buckets.popleft()[1]
+
+    def snapshot(self):
+        now = self.clock()
+        minute = int(now // 60)
+        self._trim(minute)
+        result = {}
+        for label, (seconds, _) in self.windows.items():
+            measured = min(max(0, now - self.started), seconds)
+            work = self.totals[label]
+            try:
+                rate = float(work * 2 ** 32) / measured if measured else None
+                if rate is not None and not math.isfinite(rate):
+                    rate = None
+            except OverflowError:
+                rate = None
+            result[label] = {"hashrate_hs": rate, "measured_seconds": measured,
+                             "warmup": measured < seconds, "bucket_seconds": 60}
+        return result
+
+
+class WorkerRegistry:
+    """Bounded process-local history keyed by exact worker name and source IP."""
+
+    def __init__(self, max_workers=512, retention=86400, clock=time.monotonic):
+        self.max_workers, self.retention, self.clock = max_workers, retention, clock
+        self.entries = OrderedDict()
+        self.sessions = {}
+        self.dropped_observations = 0
+
+    @staticmethod
+    def normalize_ip(value):
+        address = ipaddress.ip_address(value.split("%", 1)[0])
+        return str(address.ipv4_mapped or address) if isinstance(address, ipaddress.IPv6Address) else str(address)
+
+    def _prune(self):
+        now = self.clock()
+        for key, row in list(self.entries.items()):
+            if not row["sessions"] and now - row["touched"] >= self.retention:
+                self.entries.pop(key)
+
+    def authorize(self, session_id, name, ip):
+        self._prune()
+        key = (name, self.normalize_ip(ip))
+        if key not in self.entries:
+            if len(self.entries) >= self.max_workers:
+                evict = next((k for k, row in self.entries.items() if not row["sessions"]), None)
+                if evict is None:
+                    self.dropped_observations += 1
+                    return
+                self.entries.pop(evict)
+            self.entries[key] = {
+                "id": hashlib.sha256((name + "\0" + key[1]).encode()).hexdigest()[:24],
+                "worker": "".join(c if c.isprintable() else "?" for c in name),
+                "ip": key[1], "sessions": set(), "accepted": 0, "rejected": 0,
+                "stale": 0, "invalid_local": 0, "unknown": 0,
+                "rtt_total_ms": 0.0, "rtt_samples": 0, "work": DeviceWork(self.clock),
+                "difficulty_known": False, "touched": self.clock(), "last_seen_utc": None}
+        self.entries[key]["sessions"].add(session_id)
+        self.sessions.setdefault(session_id, set()).add(key)
+        self._touch(key)
+
+    def _touch(self, key):
+        row = self.entries[key]
+        row["touched"] = self.clock()
+        row["last_seen_utc"] = datetime.now(timezone.utc).isoformat()
+        self.entries.move_to_end(key)
+
+    def record(self, session_id, name, outcome, difficulty=None, rtt_ms=None, stale=False):
+        key = next((k for k in self.sessions.get(session_id, ()) if k[0] == name), None)
+        if key is None or key not in self.entries:
+            self.dropped_observations += 1
+            return
+        row = self.entries[key]
+        row[outcome] += 1
+        if stale and outcome == "rejected":
+            row["stale"] += 1
+        if difficulty is not None:
+            row["difficulty_known"] = True
+            if outcome == "accepted":
+                row["work"].record(difficulty)
+        if rtt_ms is not None and math.isfinite(rtt_ms) and rtt_ms >= 0:
+            row["rtt_samples"] += 1
+            row["rtt_total_ms"] += rtt_ms
+        self._touch(key)
+
+    def disconnect(self, session_id):
+        for key in self.sessions.pop(session_id, ()):
+            if key in self.entries:
+                self.entries[key]["sessions"].discard(session_id)
+                self._touch(key)
+        self._prune()
+
+    def snapshot(self):
+        self._prune()
+        rows = []
+        for row in reversed(self.entries.values()):
+            result = {key: row[key] for key in ("id", "worker", "ip", "accepted", "rejected", "stale",
+                                                "invalid_local", "unknown", "last_seen_utc")}
+            result.update(status="online" if row["sessions"] else "offline",
+                          connection_count=len(row["sessions"]),
+                          hashrate_windows=row["work"].snapshot() if row["difficulty_known"] else None,
+                          pool_response_ms=row["rtt_total_ms"] / row["rtt_samples"] if row["rtt_samples"] else None,
+                          asic_ping_ms=None, stale_basis="pool error code 21; subset of rejected",
+                          scope="worker name + source IP; can combine multiple physical devices")
+            rows.append(result)
+        return {"workers": rows, "limit": self.max_workers,
+                "retention_seconds": self.retention, "dropped_observations": self.dropped_observations,
+                "resets_on_restart": True}
 
 
 class Metrics:
@@ -93,10 +232,11 @@ class Observer:
     MAX_LINE = 65536
     MAX_PENDING = 1024
 
-    def __init__(self, metrics, on_authorized=None, clock=time.monotonic):
+    def __init__(self, metrics, on_authorized=None, clock=time.monotonic, on_share=None):
         self.metrics = metrics
         self.on_authorized = on_authorized
         self.clock = clock
+        self.on_share = on_share
         self.buffers = [bytearray(), bytearray()]
         self.discard = [False, False]
         self.pending = OrderedDict()
@@ -164,17 +304,21 @@ class Observer:
                 return
             if direction == 0 and isinstance(msg.get("method"), str):
                 is_share = msg["method"] == "mining.submit"
+                params = msg.get("params")
+                worker = params[0] if isinstance(params, list) and params and isinstance(params[0], str) else None
                 if is_share:
                     self.metrics.submitted += 1
                 # Reused request IDs make both replies ambiguous.
                 if ident in self.pending:
-                    previous, _ = self.pending.pop(ident)
+                    previous, payload = self.pending.pop(ident)
+                    self._unknown(previous, payload)
+                    if is_share:
+                        self._unknown("share", (self.clock(), worker))
                     self.metrics.unmatched += int(previous == "share") + int(is_share)
                     self.pending[ident] = ("ambiguous", None)
                 else:
                     kind = "share" if is_share else "other"
-                    name = self.clock() if is_share else None
-                    params = msg.get("params")
+                    name = (self.clock(), worker) if is_share else None
                     if msg["method"] == "mining.authorize" and isinstance(params, list) and params and isinstance(params[0], str):
                         kind = "authorize"
                         name = params[0][:128]
@@ -182,7 +326,8 @@ class Observer:
                         kind = msg["method"]
                     self.pending[ident] = (kind, name)
                 if len(self.pending) > self.MAX_PENDING:
-                    _, (kind, _) = self.pending.popitem(last=False)
+                    _, (kind, payload) = self.pending.popitem(last=False)
+                    self._unknown(kind, payload)
                     self.metrics.unmatched += int(kind == "share")
             elif direction == 1 and "method" not in msg and ident in self.pending:
                 kind, name = self.pending[ident]
@@ -216,16 +361,27 @@ class Observer:
                     self.metrics.rejected += 1
                 else:
                     self.metrics.unmatched += 1
+                    self._unknown(kind, name)
                     return
-                elapsed = max(0.0, (self.clock() - name) * 1000)
+                elapsed = max(0.0, (self.clock() - name[0]) * 1000)
                 self.metrics.share_rtt_total_ms += elapsed
                 self.metrics.share_rtt_samples += 1
+                if self.on_share:
+                    error = msg.get("error")
+                    self.on_share(name[1], "accepted" if msg.get("result") is True and error is None else "rejected",
+                                  elapsed, isinstance(error, list) and bool(error) and error[0] == 21)
         except (ValueError, UnicodeDecodeError, TypeError, RecursionError, OverflowError):
             self.metrics.observation_errors += 1
 
     def close(self):
         self.metrics.unmatched += sum(kind == "share" for kind, _ in self.pending.values())
+        for kind, payload in self.pending.values():
+            self._unknown(kind, payload)
         self.pending.clear()
+
+    def _unknown(self, kind, payload):
+        if self.on_share and kind == "share" and payload and payload[1] is not None:
+            self.on_share(payload[1], "unknown", None, False)
 
     def pending_shares(self):
         return sum(kind == "share" for kind, _ in self.pending.values())

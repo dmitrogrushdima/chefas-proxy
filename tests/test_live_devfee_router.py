@@ -300,7 +300,9 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             args += ["--devfee-host", "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
                      "--devfee-worker", "fee.worker", "--fee-min-work", "0"]
         if require_fee:
-            args += ["--require-devfee", "--fee-grace-seconds", "0.5"]
+            # Include both real TCP handshakes on a loaded Windows runner.
+            # Exact deadline arithmetic is covered by test_fee_health.
+            args += ["--require-devfee", "--fee-grace-seconds", "2"]
         if backup:
             args += ["--backup-host", "127.0.0.1", "--backup-port", str(backup.port)]
         self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr)
@@ -359,6 +361,16 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         report = await self.api("/api/audit-export")
         self.assertTrue(report["devfee_enabled"])
         self.assertAlmostEqual(report["fee_percentage"], 1.0)
+        snapshot = await self.api("/api/snapshot")
+        worker = snapshot["registry"]["workers"][0]
+        self.assertEqual((worker["worker"], worker["ip"], worker["accepted"]), ("user.worker", "127.0.0.1", 1000))
+        self.assertEqual(worker["rejected"], 0)
+        self.assertEqual(worker["stale"], 0)
+        self.assertIsNone(worker["asic_ping_ms"])
+        self.assertIsNotNone(worker["pool_response_ms"])
+        self.assertGreater(worker["hashrate_windows"]["15m"]["hashrate_hs"], 0)
+        self.assertTrue(any(item["switched_to_devfee"] for item in snapshot["events"]))
+        self.assertNotIn("protocol_observation", snapshot["sessions"][0])
 
     async def test_legacy_miner_reconnects_and_rebuilds_pow_with_new_extranonce(self):
         await self.launch()
@@ -501,6 +513,43 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await miner.submit())["result"])
         await asyncio.wait_for(miner.closed.wait(), 4)
         self.assertTrue((await self.api("/api/status"))["fee_policy_blocked"])
+
+    async def test_live_worker_stream_updates_and_survives_miner_reconnect(self):
+        await self.launch(fee=False)
+        miner = await self.miner()
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.dashboard)
+        try:
+            writer.write(f"GET /api/stream HTTP/1.1\r\nHost: 127.0.0.1:{self.dashboard}\r\n\r\n".encode())
+            await writer.drain()
+            headers = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+            self.assertIn(b"text/event-stream", headers)
+            first = await asyncio.wait_for(reader.readuntil(b"\n\n"), 5)
+            state = json.loads(first.split(b"data: ")[1])
+            worker_id = state["registry"]["workers"][0]["id"]
+            self.assertTrue((await miner.submit())["result"])
+            for _ in range(10):
+                frame = await asyncio.wait_for(reader.readuntil(b"\n\n"), 5)
+                state = json.loads(frame.split(b"data: ")[1])
+                if state["registry"]["workers"][0]["accepted"] == 1:
+                    break
+            else:
+                self.fail("SSE did not publish the accepted share")
+            self.assertEqual(state["registry"]["workers"][0]["id"], worker_id)
+            await miner.close()
+            for _ in range(10):
+                frame = await asyncio.wait_for(reader.readuntil(b"\n\n"), 5)
+                state = json.loads(frame.split(b"data: ")[1])
+                if state["registry"]["workers"][0]["status"] == "offline":
+                    break
+            else:
+                self.fail("Worker disconnect was not published")
+            replacement = await self.miner()
+            self.assertTrue((await replacement.submit())["result"])
+            row = (await self.api("/api/workers"))["workers"][0]
+            self.assertEqual((row["id"], row["accepted"], row["status"]), (worker_id, 2, "online"))
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
 
 if __name__ == "__main__":
