@@ -10,6 +10,48 @@ after every response. The audit reports that deviation instead of hiding it.
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 import math
+import asyncio
+import random
+import time
+
+
+class FeeJitter:
+    """Per-session monotonic eligibility; accepted-work accounting is unchanged."""
+
+    def __init__(self, maximum: float = 180, *, clock=None, uniform=None):
+        if not math.isfinite(maximum) or not 0 <= maximum <= 3600:
+            raise ValueError('jitter must be 0..3600 seconds')
+        self.maximum = float(maximum)
+        self.clock = clock or time.monotonic
+        self.uniform = uniform or random.SystemRandom().uniform
+        self.defer()
+
+    def defer(self):
+        self.eligible_at = self.clock() + self.uniform(0, self.maximum)
+
+    def remaining(self):
+        return max(0, self.eligible_at - self.clock())
+
+
+class FeeConnectionGate:
+    """Process-wide spacing of connection attempts, including retries."""
+
+    def __init__(self, interval: float = .25):
+        if not math.isfinite(interval) or not 0 <= interval <= 60:
+            raise ValueError('connection interval must be 0..60 seconds')
+        self.interval = float(interval)
+        self.lock = asyncio.Lock()
+        self.last_attempt = None
+
+    async def wait(self, delay=0):
+        await asyncio.sleep(delay)
+        async with self.lock:
+            if self.last_attempt is not None:
+                deadline = self.last_attempt + self.interval
+                while (remaining := deadline - time.monotonic()) > 0:
+                    await asyncio.sleep(remaining)
+            self.last_attempt = time.monotonic()
+            return self.last_attempt
 
 
 def _difficulty(value, *, allow_zero=False):

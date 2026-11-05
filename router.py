@@ -16,12 +16,13 @@ import asyncio
 import string
 import time
 import logging
+import ssl
 from collections import OrderedDict
 
-from upstream_manager import UpstreamConnection, ProtocolError, encode_packet
+from upstream_manager import UpstreamConnection, ProtocolError, encode_packet, open_upstream
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
-from devfee_scheduler import FeeHealth
+from devfee_scheduler import FeeHealth, FeeJitter
 from pilot_logging import event, stratum_trace, remember_secret
 from stratum_codec import PacketReader
 
@@ -63,6 +64,58 @@ class StatefulRouter:
         session["router"] = self
         self.health = FeeHealth(getattr(relay, "fee_grace_seconds", 180))
         self.prefer_fee = False
+        self.jitter = FeeJitter(getattr(relay, 'fee_jitter_seconds', 180))
+        self.warmup_task = None
+
+    def prune_jobs(self, now=None):
+        now = time.monotonic() if now is None else now
+        ttl = getattr(self.relay, 'job_ttl', 900)
+        expired = [key for key, timing in self.job_times.items() if now - timing[0] >= ttl]
+        for key in expired:
+            self.jobs.pop(key, None)
+            self.job_times.pop(key, None)
+        for key, (job_id, created) in list(self.duplicates.items()):
+            if job_id not in self.jobs or now - created >= ttl:
+                self.duplicates.pop(key, None)
+        return len(expired)
+
+    async def collect_jobs(self):
+        while True:
+            await asyncio.sleep(getattr(self.relay, 'job_gc_interval', 60))
+            self.prune_jobs()
+
+    def schedule_fee_warmup(self):
+        if (self.fee and self.auth and self.subscription is not None and self.jitter.maximum and
+                (self.warmup_task is None or self.warmup_task.done())):
+            self.warmup_task = asyncio.create_task(self.warm_fee())
+            self.tasks.add(self.warmup_task)
+            self.warmup_task.add_done_callback(self.tasks.discard)
+
+    async def warm_fee(self):
+        while not self.stopping:
+            ch = self.channels.get('fee')
+            try:
+                if ch is None or ch.closed:
+                    ch = await self.prepare('fee', self.fee, fee=True)
+                    await asyncio.wait_for(ch.ready.wait(), self.relay.timeout)
+                    if ch.closed or not ch.authorized:
+                        raise ProtocolError('fee warmup failed')
+                    await self.reconcile()
+                try:
+                    await asyncio.shield(ch.task)
+                except asyncio.CancelledError:
+                    # Closing a failed upstream cancels its reader, not this
+                    # supervisor. Session shutdown still cancels us normally.
+                    if self.stopping or not ch.task.cancelled():
+                        raise
+            except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
+                event(logging.WARNING, 'fee_warmup_failed', session_id=self.session['id'])
+            ch = self.channels.get('fee')
+            if ch is not None:
+                await ch.close()
+            self.jitter.defer()
+            # Even a zero random draw must not create a connection retry loop.
+            await asyncio.sleep(max(5, self.jitter.remaining()))
 
     @staticmethod
     def abort(writer):
@@ -139,8 +192,13 @@ class StatefulRouter:
         if await self.relay.is_self_route(endpoint):
             self.relay.metrics.blocked_loops += 1
             raise ConnectionError("upstream loops back to listener")
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(*endpoint, ssl=self.relay.tls_context), self.relay.timeout)
+        try:
+            reader, writer = await open_upstream(endpoint, self.relay.tls_context, self.relay.timeout,
+                                                 getattr(self.relay, 'url_tls_context', None))
+        except ssl.SSLCertVerificationError as exc:
+            event(logging.WARNING, 'upstream_tls_verification_failed', target=name,
+                  verify_code=exc.verify_code, session_id=self.session['id'])
+            raise
         ch = UpstreamConnection(reader, writer, name, self.notification, self.disconnected, self.relay.timeout)
         self.channels[name] = ch
         return ch
@@ -159,6 +217,10 @@ class StatefulRouter:
         ch.extranonce1, ch.extranonce2_size, ch.subscribed = result[1], result[2], True
 
     async def prepare(self, name, endpoint, fee=False):
+        if fee:
+            await self.relay.fee_connection_gate.wait(0 if self.prefer_fee else self.jitter.remaining())
+            if self.auth:
+                self.start_fee_policy()
         ch = await self.connect(name, endpoint)
         if self.config is not None:
             response = await ch.request("mining.configure", self.config)
@@ -175,7 +237,7 @@ class StatefulRouter:
             response = await ch.request("mining.subscribe", self.subscription)
             self.subscription_result(ch, response.get("result"))
             ch.subscription_result = response["result"]
-        for worker, password in self.auth.items():
+        for worker, password in list(self.auth.items()):
             response = await ch.request("mining.authorize", [self.fee_worker if fee else (self.user_worker or worker),
                                         self.fee_password if fee else (self.user_password if self.user_worker else password)])
             if response.get("result") is not True or response.get("error") is not None:
@@ -250,6 +312,7 @@ class StatefulRouter:
         while len(self.jobs) > self.MAX_JOBS:
             expired, _ = self.jobs.popitem(last=False)
             self.job_times.pop(expired, None)
+        self.prune_jobs()
         return {"id": None, "method": "mining.notify", "params": params}
 
     async def publish(self, ch, clean):
@@ -335,6 +398,7 @@ class StatefulRouter:
         if self.current.target == "fee" and not want:
             if self.hot and user and not user.closed:
                 await self.activate(user)
+                self.jitter.defer()
                 if self.relay.fee_owner is self:
                     self.relay.fee_owner = None
             elif not self.hot:
@@ -343,7 +407,8 @@ class StatefulRouter:
             else:
                 # Fail closed rather than mine indefinitely to the fee account.
                 self.writer.close()
-        elif self.current.target != "fee" and want and self.relay.fee_owner in (None, self):
+        elif (self.current.target != "fee" and want and self.jitter.remaining() == 0 and
+              self.relay.fee_owner in (None, self)):
             if self.hot:
                 self.relay.fee_owner = self
                 await self.activate(fee)
@@ -367,6 +432,10 @@ class StatefulRouter:
                 stratum_trace("asic_to_proxy", self.session["id"], "router",
                               {"id": ident, "method": "mining.submit", "params": params},
                               (self.user_password, self.fee_password, *self.auth.values()))
+            timing = self.job_times.get(params[1])
+            if timing is not None and received_at - timing[0] >= getattr(self.relay, 'job_ttl', 900):
+                self.jobs.pop(params[1], None)
+                self.job_times.pop(params[1], None)
             if params[0] not in self.auth or params[1] not in self.jobs:
                 category = "unknown_job_local"
                 raise ValueError("unknown worker or job")
@@ -389,7 +458,7 @@ class StatefulRouter:
                     if not meets_target(header, compact_target(int(job[6], 16))):
                         category = "low_diff_local"
                         raise ValueError("low difficulty")
-            self.duplicates[key] = None
+            self.duplicates[key] = (params[1], time.monotonic())
             while len(self.duplicates) > self.MAX_DUPLICATES:
                 self.duplicates.popitem(last=False)
             self.last_miner_activity = time.monotonic()
@@ -472,6 +541,7 @@ class StatefulRouter:
     async def run(self):
         self.owner = asyncio.current_task()
         self.tasks.add(asyncio.create_task(self.watch_miner()))
+        self.tasks.add(asyncio.create_task(self.collect_jobs()))
         try:
             self.check_fee_policy()
             first = await self.packets.read_packet()
@@ -536,7 +606,7 @@ class StatefulRouter:
                     self.subscription = params
                     response = await user.request(method, params)
                     self.subscription_result(user, response.get("result"))
-                    if self.fee:
+                    if self.fee and (not self.jitter.maximum or self.prefer_fee):
                         try:
                             fee = await self.prepare("fee", self.fee, fee=True)
                             if self.prefer_fee:
@@ -568,7 +638,8 @@ class StatefulRouter:
                             raise ProtocolError("credentials too long")
                         self.auth[params[0]] = params[1]
                         self.last_miner_activity = time.monotonic()
-                        self.start_fee_policy()
+                        if not self.jitter.maximum or self.channels.get('fee') is not None:
+                            self.start_fee_policy()
                         self.relay.workers.authorize(self.session["id"], params[0], self.session["ip"])
                         user.authorized = True
                         self.session["worker"] = "".join(c if c.isprintable() else "?" for c in params[0][:128])
@@ -588,6 +659,8 @@ class StatefulRouter:
                     if self.current.job is not None and getattr(self.current, "job_difficulty", None) is not None:
                         await self.send({"id": None, "method": "mining.set_difficulty", "params": [self.current.job_difficulty]})
                         await self.publish(self.current, False)
+                    self.schedule_fee_warmup()
+                    self.prefer_fee = False
                 elif method == "mining.submit":
                     await self.submit(ident, params)
                 elif method == "mining.ping":
@@ -615,3 +688,6 @@ class StatefulRouter:
                 await ch.close()
             self.packets.pending.clear()
             self.packets.decoder.buffer.clear()
+            self.jobs.clear()
+            self.job_times.clear()
+            self.duplicates.clear()

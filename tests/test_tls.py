@@ -2,6 +2,7 @@ import asyncio
 import ssl
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from proxy import Relay
 
@@ -37,8 +38,8 @@ class TLSRelayTests(unittest.IsolatedAsyncioTestCase):
         self.pool.close()
         await self.pool.wait_closed()
 
-    async def run_relay(self, host, context):
-        self.relay = Relay(host, self.pool_port, tls=True, tls_context=context, timeout=3)
+    async def run_relay(self, host, context, tls=True):
+        self.relay = Relay(host, self.pool_port, tls=tls, tls_context=context, timeout=3)
         self.server = await asyncio.start_server(self.relay.handle, "127.0.0.1", 0)
         reader, writer = await asyncio.open_connection("127.0.0.1", self.server.sockets[0].getsockname()[1])
         writer.write(b"hello\n")
@@ -53,6 +54,15 @@ class TLSRelayTests(unittest.IsolatedAsyncioTestCase):
         context = ssl.create_default_context(cafile=str(FIXTURES / "lab-cert.pem"))
         self.assertEqual(await self.run_relay("localhost", context), b"hello\n")
         self.assertEqual(self.relay.metrics.upstream_failures, 0)
+
+    async def test_ssl_url_enables_tls_without_global_flag(self):
+        context = ssl.create_default_context(cafile=str(FIXTURES/'lab-cert.pem'))
+        with patch('upstream_manager.default_tls_context',return_value=context):
+            self.assertEqual(await self.run_relay('stratum+ssl://localhost',None,tls=False),b'hello\n')
+
+    async def test_ssl_url_rejects_untrusted_certificate_without_plaintext_retry(self):
+        self.assertEqual(await self.run_relay('stratum+ssl://localhost',None,tls=False),b'')
+        self.assertEqual(self.relay.metrics.upstream_failures,1)
 
     async def test_untrusted_certificate_rejected(self):
         context = ssl.create_default_context()

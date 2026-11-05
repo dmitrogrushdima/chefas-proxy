@@ -3,12 +3,55 @@ import asyncio
 import json
 import ssl
 import logging
+import re
 from pilot_logging import event
 from decimal import Decimal
 from stratum_codec import ProtocolError, PacketReader
+from urllib.parse import urlsplit
+from functools import lru_cache
 
 MAX_LINE = 65536
 MAX_PENDING = 1024
+
+
+def parse_endpoint(host, port=None):
+    """Return DNS/IP host, explicit port and TLS intent, without URL credentials."""
+    if not isinstance(host, str) or not host or len(host) > 300 or any(c.isspace() for c in host):
+        raise ValueError('invalid pool host')
+    secure = False
+    if '://' in host:
+        url = urlsplit(host)
+        if (url.scheme not in ('stratum+ssl', 'stratum+tcp') or url.username is not None or
+                url.password is not None or url.path not in ('', '/') or url.query or url.fragment):
+            raise ValueError('invalid Stratum URL')
+        name, embedded = url.hostname, url.port
+        if embedded is not None:
+            if port is not None and port != embedded:
+                raise ValueError('conflicting pool ports')
+            port = embedded
+        secure = url.scheme == 'stratum+ssl'
+    else:
+        name = host
+    if (not isinstance(name, str) or not 1 <= len(name) <= 253 or
+            not re.fullmatch(r'[A-Za-z0-9._:-]+', name) or type(port) is not int or not 1 <= port <= 65535):
+        raise ValueError('invalid pool endpoint')
+    return name, port, secure
+
+
+@lru_cache(maxsize=1)
+def default_tls_context():
+    return ssl.create_default_context()
+
+
+async def open_upstream(endpoint, tls_context, timeout, url_tls_context=None):
+    host, port, secure = parse_endpoint(*endpoint)
+    context = tls_context or ((url_tls_context or default_tls_context()) if secure else None)
+    if context is not None and (not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED):
+        raise ValueError('upstream TLS requires certificate and hostname verification')
+    kwargs = {'ssl': context}
+    if context is not None:
+        kwargs['server_hostname'] = host
+    return await asyncio.wait_for(asyncio.open_connection(host, port, **kwargs), timeout)
 
 
 def encode_packet(value):
@@ -109,7 +152,7 @@ class UpstreamConnection:
             pass
 
 
-async def connect_upstream(primary, backup, tls_context, timeout, is_self_route, metrics):
+async def connect_upstream(primary, backup, tls_context, timeout, is_self_route, metrics, url_tls_context=None):
     endpoints = [primary] + ([backup] if backup else [])
     for index, endpoint in enumerate(endpoints):
         try:
@@ -117,9 +160,7 @@ async def connect_upstream(primary, backup, tls_context, timeout, is_self_route,
                 metrics.blocked_loops += 1
                 metrics.upstream_failures += 1
                 continue
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(*endpoint, ssl=tls_context), timeout
-            )
+            reader, writer = await open_upstream(endpoint, tls_context, timeout, url_tls_context)
             if index:
                 metrics.backup_connections += 1
             return reader, writer, index
@@ -130,7 +171,6 @@ async def connect_upstream(primary, backup, tls_context, timeout, is_self_route,
 
 # Configuration snapshots are immutable so a live session never mixes credentials.
 from dataclasses import dataclass, field
-import re
 
 
 @dataclass(frozen=True)
@@ -147,10 +187,7 @@ class PoolRoute:
         host, port = value.get('host'), value.get('port')
         worker = value.get('worker', previous.worker if previous else '')
         password = value.get('password', previous.password if previous else 'x')
-        if not isinstance(host, str) or not 1 <= len(host) <= 253 or not re.fullmatch(r'[A-Za-z0-9._:-]+', host):
-            raise ValueError('invalid pool host')
-        if type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError('invalid pool port')
+        _, port, _ = parse_endpoint(host, port)
         if not isinstance(worker, str) or len(worker) > 128 or any(ord(c) < 32 for c in worker):
             raise ValueError('invalid worker')
         if not isinstance(password, str) or len(password) > 1024:

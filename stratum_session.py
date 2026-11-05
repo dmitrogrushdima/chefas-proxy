@@ -12,8 +12,8 @@ from observer import Metrics, Observer, WorkerRegistry
 from collections import deque
 from datetime import datetime, timezone
 from router import copy_stream
-from upstream_manager import connect_upstream
-from devfee_scheduler import AcceptedWorkLedger
+from upstream_manager import connect_upstream, parse_endpoint
+from devfee_scheduler import AcceptedWorkLedger, FeeConnectionGate
 from pilot_logging import event
 # Public framing types are re-exported here for session-level integrations.
 from stratum_codec import PacketReader, StratumDecoder
@@ -75,6 +75,11 @@ class Relay:
         self.active_router = False
         self.fee = None
         self.fee_owner = None
+        self.fee_jitter_seconds = 180
+        self.fee_connection_gate = FeeConnectionGate()
+        self.job_ttl = 900
+        self.job_gc_interval = 60
+        self.url_tls_context = None
         self.ledger = AcceptedWorkLedger()
         self.events = deque(maxlen=500)
         self.workers = WorkerRegistry()
@@ -139,7 +144,7 @@ class Relay:
                 return
             remote_reader, upstream, index = await connect_upstream(
                 session["endpoint"], self.backup, self.tls_context, self.timeout,
-                self.is_self_route, self.metrics
+                self.is_self_route, self.metrics, self.url_tls_context
             )
             if upstream is None:
                 return
@@ -258,6 +263,8 @@ class Relay:
             return False
 
     async def is_self_route(self, endpoint):
+        host, port, _ = parse_endpoint(*endpoint)
+        endpoint = (host, port)
         relevant = [(family, address) for family, address in self.listeners if address[1] == endpoint[1]]
         if not relevant:
             return False
@@ -316,14 +323,20 @@ class Relay:
         event(logging.INFO, "session_route", session_id=session["id"], target=target, kind=kind)
 
     def status_snapshot(self):
-        return {"primary": {"host": self.host, "port": self.port},
+        return {"primary": {"host": self.host, "port": self.port,
+                            "tls": self.tls or parse_endpoint(self.host,self.port)[2]},
+                "devfee_jitter_seconds": self.fee_jitter_seconds,
+                "devfee_connect_interval": self.fee_connection_gate.interval,
+                "job_ttl_seconds": self.job_ttl,
+                "job_gc_interval_seconds": self.job_gc_interval,
                 "miner_timeout_seconds": self.miner_timeout,
                 "handshake_timeout_seconds": self.handshake_timeout,
                 "max_miner_message_bytes": self.max_miner_message,
                 "active_router": self.active_router,
                 "require_devfee": getattr(self, "require_devfee", False),
                 "fee_policy_blocked": getattr(self, "fee_blocked", False),
-                "backup": {"host": self.backup[0], "port": self.backup[1]} if self.backup else None,
+                "backup": {"host": self.backup[0], "port": self.backup[1],
+                           "tls": self.tls or parse_endpoint(*self.backup)[2]} if self.backup else None,
                 "tls": self.tls, "limit": self.limit,
                 "listeners": [str(item[1][1]) for item in self.listeners]}
 

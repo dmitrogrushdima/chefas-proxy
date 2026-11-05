@@ -36,6 +36,12 @@ function duration(seconds) {
 function endpoint(value) {
   if (!value) return t("Not configured");
   const host = String(value.host ?? "");
+  if (host.includes("://")) {
+    try {
+      const url = new URL(host);
+      return `${url.protocol}//${url.hostname}:${value.port}`;
+    } catch (_) { return host; }
+  }
   return `${host.includes(":") ? `[${host}]` : host}:${value.port}`;
 }
 
@@ -105,7 +111,7 @@ function renderSnapshot() {
     ? `${number(Math.round(metrics.share_rtt_total_ms / metrics.share_rtt_samples * 10) / 10)} ${t("ms")}` : "—";
   $("primary-pool").textContent = endpoint(status.primary);
   $("backup-pool").textContent = endpoint(status.backup);
-  $("tls-label").textContent = t(status.tls ? "TLS · certificate verification enabled" : "TCP · no TLS");
+  $("tls-label").textContent = t((status.primary?.tls ?? status.tls) ? "TLS · certificate verification enabled" : "TCP · no TLS");
   $("listener").textContent = status.listeners?.join(", ") || "—";
   renderSessions();
   renderWorkers();

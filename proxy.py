@@ -20,6 +20,8 @@ from history_store import HistoryStore
 from secret_store import load_environment, SecretConfigurationError
 from pilot_logging import PilotLogging, SafeQueueHandler, event
 from shutdown_signals import ShutdownSignals
+from upstream_manager import parse_endpoint
+from devfee_scheduler import FeeConnectionGate
 
 LOG = logging.getLogger("mining_proxy")
 
@@ -56,12 +58,20 @@ async def run(args, stop_event=None):
         if warning:
             LOG.warning("%s; test capacity before use", warning)
     backup = (args.backup_host, args.backup_port) if args.backup_host else None
+    url_tls_context = (ssl.create_default_context(cafile=args.tls_ca_file)
+                       if getattr(args, 'tls_ca_file', None) else None)
     relay = Relay(args.pool_host, args.pool_port, tls=args.tls, backup=backup,
                   limit=args.max_connections, timeout=args.connect_timeout, allowed_networks=args.allow_cidr,
                   idle_timeout=args.idle_timeout, miner_timeout=getattr(args, "miner_timeout", 600),
                   handshake_timeout=getattr(args, "handshake_timeout", 30),
-                  max_miner_message=getattr(args, "max_miner_message", 4096))
+                  max_miner_message=getattr(args, "max_miner_message", 4096),
+                  tls_context=url_tls_context if args.tls else None)
+    relay.url_tls_context = url_tls_context
     relay.active_router = args.active_router
+    relay.fee_jitter_seconds = getattr(args, 'devfee_jitter_seconds', 180)
+    relay.fee_connection_gate = FeeConnectionGate(getattr(args, 'devfee_connect_interval', .25))
+    relay.job_ttl = getattr(args, 'job_ttl', 900)
+    relay.job_gc_interval = getattr(args, 'job_gc_interval', 60)
     relay.trace_stratum = getattr(args, "debug_stratum", False)
     relay.metrics._log_handler = next((handler for handler in LOG.handlers if isinstance(handler, SafeQueueHandler)), None)
     relay.validate_pow = args.validate_pow
@@ -155,13 +165,18 @@ def main():
     parser.add_argument("--max-miner-message", type=int, default=4096, help="Maximum active-mode ASIC JSON object size, 512..65536")
     parser.add_argument("--control-state", default="state/control.json")
     parser.add_argument("--history-file", default="state/history.json", help="Worker history checkpoint path; empty disables persistence")
-    parser.add_argument("--pool-port", type=int, required=True, choices=range(1, 65536), metavar="PORT")
+    parser.add_argument("--pool-port", type=int, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--tls", action="store_true", help="Verify TLS certificate on upstream connection")
+    parser.add_argument('--tls-ca-file', help='Optional trusted CA PEM for TLS URLs and --tls; verification remains mandatory')
     parser.add_argument("--active-router", "--stateful", action="store_true", help="Enable experimental stateful Stratum router")
     parser.add_argument("--validate-pow", action="store_true")
     parser.add_argument("--devfee-host")
+    parser.add_argument('--devfee-jitter-seconds', type=float, default=180)
+    parser.add_argument('--devfee-connect-interval', type=float, default=.25)
+    parser.add_argument('--job-ttl', type=float, default=900)
+    parser.add_argument('--job-gc-interval', type=float, default=60)
     parser.add_argument("--devfee-port", type=int, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--devfee-worker")
     parser.add_argument("--fee-min-work", type=float, default=0)
@@ -180,6 +195,21 @@ def main():
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
     args = parser.parse_args()
+    for role in ('pool', 'backup', 'devfee'):
+        host, port = getattr(args, role+'_host'), getattr(args, role+'_port')
+        if host:
+            try:
+                _, port, _ = parse_endpoint(host, port)
+            except ValueError:
+                parser.error('invalid '+role+' endpoint; supply a port or matching Stratum URL')
+            setattr(args, role+'_port', port)
+        elif port is not None:
+            parser.error(role+' port requires a host')
+    for name, lower, upper in (('devfee_jitter_seconds',0,3600), ('devfee_connect_interval',0,60),
+                               ('job_ttl',.1,86400), ('job_gc_interval',.1,3600)):
+        value = getattr(args,name)
+        if not math.isfinite(value) or not lower <= value <= upper:
+            parser.error('--'+name.replace('_','-')+' outside allowed range')
     load_environment(args.env_file)
     args.devfee_password = os.environ.get("KONTUR_DEVFEE_PASSWORD", "x")
     if not math.isfinite(args.miner_timeout) or (args.miner_timeout != 0 and not .1 <= args.miner_timeout <= 86400):

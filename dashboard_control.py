@@ -11,7 +11,7 @@ import secrets
 import tempfile
 import time
 from collections import deque
-from upstream_manager import PoolRoute, current_pool_routes, apply_pool_routes
+from upstream_manager import PoolRoute, current_pool_routes, apply_pool_routes, open_upstream
 from secret_store import SecretStore, SecretConfigurationError
 from pilot_logging import remember_secret, event
 import logging
@@ -98,7 +98,8 @@ class DashboardControl:
         endpoint = (route.host, route.port)
         if await self.relay.is_self_route(endpoint):
             raise ValueError('route points to listener')
-        _, writer = await asyncio.wait_for(asyncio.open_connection(*endpoint, ssl=self.relay.tls_context), self.relay.timeout)
+        _, writer = await open_upstream(endpoint, self.relay.tls_context, self.relay.timeout,
+                                        getattr(self.relay, 'url_tls_context', None))
         writer.close()
         try:
             await asyncio.wait_for(writer.wait_closed(), 1)

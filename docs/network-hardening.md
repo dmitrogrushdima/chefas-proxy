@@ -2,6 +2,8 @@
 
 Implemented in `stratum_codec.py`, `stratum_session.py`, `router.py` and `upstream_manager.py`. Synthetic tests establish protocol behavior; they do not certify ASIC firmware or commercial pools.
 
+Follow-up: [long-term stability](long-term-stability.md) adds fee connection jitter/admission, job TTL and URL-selected TLS. Its planned startup delay precedes required-fee outage accounting.
+
 ## Framing and scanner rejection
 
 Active routing uses a bounded streaming UTF-8 JSON-object decoder in both directions. Objects may be split across TCP reads, glued without newlines, or end exactly at EOF. The router still emits conventional newline-delimited JSON. A partial object at EOF is rejected, never executed. Strings, escaped delimiters, multibyte UTF-8 and Unicode escape boundaries are tracked across reads.

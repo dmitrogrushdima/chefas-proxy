@@ -2,6 +2,8 @@
 
 This is a pilot candidate. No Antminer/Whatsminer firmware or commercial pool has been certified by the synthetic tests.
 
+For the current jitter, job TTL, `stratum+ssl://` addressing and private-CA option, see [long-term stability](long-term-stability.md). Preserve startup spreading for a farm rollout; the zero-delay switches in the live test fixture are laboratory settings.
+
 ## Install and secrets
 
 Use Python 3.10+ in a dedicated virtual environment:

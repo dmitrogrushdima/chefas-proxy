@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -70,8 +71,8 @@ class CheckedPool:
         self.reject_submits = False
         self.submit_delay = 0
 
-    async def start(self):
-        self.server = await asyncio.start_server(self.handle, "127.0.0.1", 0)
+    async def start(self, ssl_context=None):
+        self.server = await asyncio.start_server(self.handle, "127.0.0.1", 0, ssl=ssl_context)
         self.port = self.server.sockets[0].getsockname()[1]
         return self
 
@@ -290,29 +291,34 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.stderr.close()
         self.history.cleanup()
 
-    async def pool(self, extra, worker):
-        pool = await CheckedPool(extra, worker).start()
+    async def pool(self, extra, worker, ssl_context=None):
+        pool = await CheckedPool(extra, worker).start(ssl_context)
         self.pools.append(pool)
         return pool
 
     async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None, debug=False,
-                     miner_timeout=600, handshake_timeout=30):
+                     miner_timeout=600, handshake_timeout=30, jitter=0, connect_interval=0,
+                     job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False):
         self.admin_token = admin_token
-        self.user_pool = await self.pool("11111111", "user.worker")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(ROOT/'tests'/'fixtures'/'lab-cert.pem', ROOT/'tests'/'fixtures'/'lab-key.pem')
+        self.user_pool = await self.pool("11111111", "user.worker", context if ssl_user else None)
         if fee:
-            self.fee_pool = await self.pool("22222222", "fee.worker")
+            self.fee_pool = await self.pool("22222222", "fee.worker", context if ssl_fee else None)
         self.port, self.dashboard = unused_ports(2)
         entrypoint = os.environ.get("KONTUR_TEST_ENTRYPOINT", str(ROOT / "proxy.py"))
         args = [sys.executable, entrypoint, "--active-router", "--validate-pow",
                 "--env-file", "", "--log-dir", str(Path(self.history.name) / "logs"),
                 "--history-file", str(Path(self.history.name) / "history.json"),
                 "--control-state", str(Path(self.history.name) / "control.json"),
-                "--pool-host", "127.0.0.1", "--pool-port", str(self.user_pool.port),
+                "--pool-host", "stratum+ssl://localhost" if ssl_user else "127.0.0.1", "--pool-port", str(self.user_pool.port),
                 "--listen-port", str(self.port), "--dashboard-port", str(self.dashboard),
-                "--connect-timeout", "1", "--reconnect-min-seconds", "0",
-                "--miner-timeout", str(miner_timeout), "--handshake-timeout", str(handshake_timeout)]
+                "--connect-timeout", "3" if ssl_user or ssl_fee else "1", "--reconnect-min-seconds", "0",
+                "--miner-timeout", str(miner_timeout), "--handshake-timeout", str(handshake_timeout),
+                "--devfee-jitter-seconds", str(jitter), '--devfee-connect-interval', str(connect_interval),
+                '--job-ttl', str(job_ttl), '--job-gc-interval', str(job_gc_interval)]
         if fee:
-            args += ["--devfee-host", "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
+            args += ["--devfee-host", "stratum+ssl://localhost" if ssl_fee else "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
                      "--devfee-worker", "fee.worker", "--fee-min-work", "0"]
         if require_fee:
             # Include both real TCP handshakes on a loaded Windows runner.
@@ -322,6 +328,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             args += ["--backup-host", "127.0.0.1", "--backup-port", str(backup.port)]
         if debug:
             args += ["--log-level", "DEBUG", "--debug-stratum"]
+        if ssl_user or ssl_fee:
+            args += ['--tls-ca-file', str(ROOT/'tests'/'fixtures'/'lab-cert.pem')]
         environment = dict(os.environ)
         environment["KONTUR_SECRETS_KEY"] = Fernet.generate_key().decode()
         environment["KONTUR_USER_PASSWORD"] = "x"
@@ -377,6 +385,87 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.user_pool.connections, 0)
         metrics = await self.api('/api/metrics')
         self.assertEqual(metrics['protocol_drops'], 4)
+
+    async def test_jitter_warmup_keeps_user_mining_and_replays_version_rolling(self):
+        await self.launch(jitter=.5, connect_interval=.05, require_fee=True)
+        miner = await self.miner(configure=True)
+        self.assertTrue(miner.extra.startswith('111111'))
+        self.assertTrue((await miner.request('mining.ping', []))['result'])
+        for _ in range(150):
+            if self.fee_pool.configure_requests and self.fee_pool.connections:
+                break
+            await asyncio.sleep(.02)
+        self.assertEqual(self.fee_pool.connections,1)
+        # Wait for asynchronous authorization/notify before exercising the fee path.
+        await asyncio.sleep(.1)
+        for _ in range(30):
+            self.assertTrue((await miner.submit())['result'])
+            if self.fee_pool.accepted:
+                break
+        self.assertGreater(self.fee_pool.accepted,0)
+        self.assertEqual(self.user_pool.rejected+self.fee_pool.rejected,0)
+        self.assertFalse(miner.closed.is_set())
+        self.assertFalse((await self.api('/api/status'))['fee_policy_blocked'])
+
+    async def test_jitter_supervisor_retries_after_fee_rpc_timeout(self):
+        await self.launch(jitter=.2)
+        miner = await self.miner()
+        for _ in range(100):
+            if self.fee_pool.connections:
+                break
+            await asyncio.sleep(.02)
+        await asyncio.sleep(.1)
+        for _ in range(30):
+            self.assertTrue((await miner.submit())['result'])
+            if miner.extra.startswith('222222'):
+                break
+        self.assertTrue(miner.extra.startswith('222222'))
+        self.fee_pool.submit_delay = 2
+        self.assertIsNot((await miner.submit()).get('result'),True)
+        self.fee_pool.submit_delay = 0
+        for _ in range(400):
+            if self.fee_pool.connections >= 2:
+                break
+            await asyncio.sleep(.02)
+        self.assertGreaterEqual(self.fee_pool.connections,2)
+        self.assertFalse(miner.closed.is_set())
+        self.assertTrue((await miner.request('mining.ping',[]))['result'])
+
+    async def test_expired_job_rejected_before_background_gc(self):
+        await self.launch(fee=False, job_ttl=.2, job_gc_interval=60)
+        miner = await self.miner()
+        await asyncio.sleep(.3)
+        self.assertFalse((await miner.submit())['result'])
+        self.assertEqual(self.user_pool.accepted,0)
+        self.assertEqual((await self.api('/api/metrics'))['unknown_job_local'],1)
+
+    async def test_inflight_accepted_share_survives_job_gc(self):
+        await self.launch(fee=False, job_ttl=.3, job_gc_interval=.1)
+        miner = await self.miner()
+        self.user_pool.submit_delay = .5
+        self.assertTrue((await miner.submit())['result'])
+        self.assertEqual((await self.api('/api/metrics'))['accepted'],1)
+
+    async def test_two_ssl_url_upstreams_validate_pow(self):
+        await self.launch(ssl_user=True, ssl_fee=True)
+        try:
+            miner = await self.miner(configure=True)
+        except ConnectionError:
+            log = (Path(self.history.name)/'logs'/'proxy.log').read_text(encoding='utf-8')
+            self.fail('TLS handshake failed: '+repr(await self.api('/api/metrics'))+' '+log)
+        for _ in range(100):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(99,1))
+        self.assertEqual(self.user_pool.rejected+self.fee_pool.rejected,0)
+        self.assertFalse(miner.closed.is_set())
+
+    async def test_plain_user_and_ssl_fee_have_independent_transport(self):
+        await self.launch(ssl_fee=True)
+        miner = await self.miner()
+        for _ in range(100):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(99,1))
+        self.assertEqual(self.user_pool.rejected+self.fee_pool.rejected,0)
 
     async def test_partial_handshake_reaped_without_pool_connection(self):
         await self.launch(fee=False, handshake_timeout=.3)
