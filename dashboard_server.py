@@ -33,7 +33,7 @@ class DashboardStream:
                 queue.put_nowait(frame)
             await asyncio.sleep(self.interval)
 
-    async def serve(self, reader, writer):
+    async def serve(self, reader, writer, allowed=None):
         if self.closed or len(self.queues) >= self.max_clients:
             writer.write(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n")
             await asyncio.wait_for(writer.drain(), self.drain_timeout)
@@ -52,6 +52,8 @@ class DashboardStream:
                 waiting = asyncio.create_task(queue.get())
                 done, _ = await asyncio.wait((waiting, disconnected), return_when=asyncio.FIRST_COMPLETED)
                 if disconnected in done:
+                    return
+                if allowed is not None and not allowed():
                     return
                 writer.write(waiting.result())
                 await asyncio.wait_for(writer.drain(), self.drain_timeout)
@@ -80,7 +82,7 @@ class DashboardStream:
             self.producer = None
 
 
-async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}, stream=None):
+async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}, stream=None, control=None):
     try:
         disposition = b""
         request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
@@ -92,8 +94,12 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
         expected_host = ("host: 127.0.0.1:" + str(sock[1])).encode()
         origins = [h for h in headers if h.startswith(b"origin:")]
         expected_origin = b"origin: http://127.0.0.1:" + str(sock[1]).encode()
-        if (len(request) > 8192 or len(first) != 3 or first[0] != b"GET" or hosts != [expected_host]
+        if (len(request) > 8192 or len(first) != 3 or (first[0] != b"GET" and control is None) or hosts != [expected_host]
                 or origins and origins != [expected_origin] or b"sec-fetch-site: cross-site" in headers):
+            status, body, content_type = b"403 Forbidden", b"Forbidden", b"text/plain"
+        elif control is not None and await control.handle(reader, writer, first[0].decode("ascii"), first[1].decode("ascii"), request.split(b"\r\n")[1:-2]):
+            return
+        elif first[0] != b"GET":
             status, body, content_type = b"403 Forbidden", b"Forbidden", b"text/plain"
         elif first[1] == b"/api/stream" and stream is not None:
             await stream.serve(reader, writer)

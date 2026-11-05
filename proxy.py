@@ -9,11 +9,13 @@ import math
 import socket
 import errno
 import ipaddress
+import os
 from pathlib import Path
 from observer import Metrics, Observer, WorkAudit
 from stratum_session import Relay, HALF_CLOSE_GRACE
 from dashboard_server import dashboard_request, ASSET_DIR, ASSETS, DashboardStream
 from devfee_scheduler import AcceptedWorkLedger
+from dashboard_control import DashboardControl
 
 LOG = logging.getLogger("mining_proxy")
 
@@ -63,15 +65,16 @@ async def run(args):
     relay.fee_grace_seconds = args.fee_grace_seconds
     relay.fee_blocked = False
     relay.ledger = AcceptedWorkLedger(args.fee_min_work)
+    stream = DashboardStream(relay.live_snapshot)
+    control = DashboardControl(relay, stream, os.environ.get("KONTUR_ADMIN_TOKEN"), args.control_state)
     if args.active_router:
         relay.metrics._ledger = relay.ledger
         relay.metrics._devfee_enabled = bool(relay.fee)
         relay.metrics._audit = WorkAudit(relay.ledger)
     server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512)
     relay.set_listeners(server)
-    stream = DashboardStream(relay.live_snapshot)
     try:
-        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream),
+        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream, control),
                                                "127.0.0.1", args.dashboard_port)
     except BaseException:
         server.close()
@@ -88,6 +91,7 @@ async def run(args):
         await server.wait_closed()
         await dashboard.wait_closed()
         await stream.close()
+        await control.observer_stream.close()
         await relay.shutdown()
 
 
@@ -97,6 +101,7 @@ async def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool-host", required=True)
+    parser.add_argument("--control-state", default="state/control.json")
     parser.add_argument("--pool-port", type=int, required=True, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")

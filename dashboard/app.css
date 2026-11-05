@@ -5,3 +5,4 @@
 .export-link{color:#d2def0;background:#192537;border:1px solid #304157;padding:9px 12px;border-radius:6px;font-size:11px;white-space:nowrap}.export-link:hover{background:#253752}
 .worker-table{min-width:1180px}.worker-table td,.worker-table th{padding-left:14px;padding-right:14px}.worker-table td:first-child{max-width:190px}.row-status.offline{color:#8b98aa}.worker-notice{font-size:11px;color:#91a4bb;padding:0 22px;line-height:1.6}.worker-notice[hidden]{display:none}#fee-log tbody tr:nth-child(even){background:#101927}#fee-log td:first-child{font-variant-numeric:tabular-nums}
 .panel{min-width:0}.main-column{grid-template-columns:minmax(0,1fr)}.note-card b{overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+[hidden]{display:none!important}

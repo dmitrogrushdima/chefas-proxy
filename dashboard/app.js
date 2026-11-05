@@ -7,6 +7,18 @@ let latestSessions = [];
 let latestRegistry = {workers: []};
 let latestEvents = [];
 let streamConnected = false;
+let observerToken = new URLSearchParams(location.hash.slice(1)).get("observer") || "";
+if (observerToken) {
+  history.replaceState(null, "", location.pathname);
+  try { sessionStorage.setItem("kontur-observer", observerToken); } catch (_) {}
+} else {
+  try { observerToken = sessionStorage.getItem("kontur-observer") || ""; } catch (_) {}
+}
+if (observerToken) {
+  for (const selector of ["#fee-log", "#pools", 'a[href="#pools"]', 'a[href="/api/audit-export"]']) {
+    document.querySelectorAll(selector).forEach((element) => { element.hidden = true; });
+  }
+}
 let busy = false;
 let latestMetrics = null;
 let latestStatus = null;
@@ -105,7 +117,8 @@ async function refresh() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch("/api/snapshot", {cache: "no-store", signal: controller.signal});
+    const response = await fetch("/api/snapshot", {cache: "no-store", signal: controller.signal,
+      headers: observerToken ? {Authorization: "Bearer " + observerToken} : {}});
     if (!response.ok) throw new Error("Snapshot unavailable");
     acceptSnapshot(await response.json());
     networkState = "online";
@@ -128,7 +141,7 @@ $("filter").addEventListener("change", renderSessions);
 document.addEventListener("kontur-language-change", renderSnapshot);
 renderSnapshot();
 refresh();
-const stream = new EventSource("/api/stream");
+const stream = new EventSource("/api/stream" + (observerToken ? "?observer=" + encodeURIComponent(observerToken) : ""));
 stream.addEventListener("snapshot", (event) => {
   try {
     acceptSnapshot(JSON.parse(event.data));
