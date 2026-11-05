@@ -65,6 +65,7 @@ class CheckedPool:
         self.writers = set()
         self.errors = []
         self.configure_requests = []
+        self.reject_submits = False
 
     async def start(self):
         self.server = await asyncio.start_server(self.handle, "127.0.0.1", 0)
@@ -116,7 +117,7 @@ class CheckedPool:
                     # Only routing and the original session extranonce differ.
                     worker, job, ex2, ntime, nonce = params[:5]
                     key = (job, ex2, ntime, nonce, *params[5:])
-                    valid = (worker in authorized and job == "shared-job" and
+                    valid = (not self.reject_submits and worker in authorized and job == "shared-job" and
                              ntime == NTIME and key not in seen and
                              meets_target(checked_header(extra, ex2, nonce, params[5] if len(params) > 5 else None), SHARE_TARGET))
                     response["result"] = valid
@@ -286,7 +287,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.pools.append(pool)
         return pool
 
-    async def launch(self, *, fee=True, backup=None):
+    async def launch(self, *, fee=True, backup=None, require_fee=False):
         self.user_pool = await self.pool("11111111", "user.worker")
         if fee:
             self.fee_pool = await self.pool("22222222", "fee.worker")
@@ -298,6 +299,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         if fee:
             args += ["--devfee-host", "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
                      "--devfee-worker", "fee.worker", "--fee-min-work", "0"]
+        if require_fee:
+            args += ["--require-devfee", "--fee-grace-seconds", "0.5"]
         if backup:
             args += ["--backup-host", "127.0.0.1", "--backup-port", str(backup.port)]
         self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr)
@@ -480,6 +483,24 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(miner.closed.is_set())
         self.assertTrue((await miner.submit())["result"])
         self.assertEqual(backup.accepted, 1)
+
+    async def test_required_fee_outage_stops_all_miners(self):
+        await self.launch(require_fee=True)
+        first = await self.miner()
+        second = await self.miner()
+        await self.fee_pool.close()
+        await asyncio.wait_for(asyncio.gather(first.closed.wait(), second.closed.wait()), 4)
+        self.assertTrue((await self.api("/api/status"))["fee_policy_blocked"])
+
+    async def test_required_fee_rejections_stop_miner_with_connected_pool(self):
+        await self.launch(require_fee=True)
+        miner = await self.miner()
+        self.fee_pool.reject_submits = True
+        self.assertTrue((await miner.submit())["result"])
+        self.assertTrue(miner.extra.startswith("222222"))
+        self.assertFalse((await miner.submit())["result"])
+        await asyncio.wait_for(miner.closed.wait(), 4)
+        self.assertTrue((await self.api("/api/status"))["fee_policy_blocked"])
 
 
 if __name__ == "__main__":

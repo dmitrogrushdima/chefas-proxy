@@ -59,6 +59,9 @@ async def run(args):
     relay.fee_worker = args.devfee_worker
     relay.fee_password = args.devfee_password
     relay.reconnect_min_seconds = args.reconnect_min_seconds
+    relay.require_devfee = args.require_devfee
+    relay.fee_grace_seconds = args.fee_grace_seconds
+    relay.fee_blocked = False
     relay.ledger = AcceptedWorkLedger(args.fee_min_work)
     if args.active_router:
         relay.metrics._ledger = relay.ledger
@@ -103,6 +106,8 @@ def main():
     parser.add_argument("--devfee-worker")
     parser.add_argument("--devfee-password", default="x")
     parser.add_argument("--fee-min-work", type=float, default=0)
+    parser.add_argument("--require-devfee", action="store_true", help="Stop all active sessions after sustained DevFee failure; restart required")
+    parser.add_argument("--fee-grace-seconds", type=float, default=180, help="DevFee outage/rejection grace in required mode")
     parser.add_argument("--reconnect-min-seconds", type=float, default=5940)
     parser.add_argument("--backup-host", help="Backup pool, used when initial connection fails")
     parser.add_argument("--backup-port", type=int, choices=range(1, 65536), metavar="PORT")
@@ -116,6 +121,10 @@ def main():
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
     args = parser.parse_args()
+    if args.require_devfee and not (args.active_router and args.devfee_host and args.devfee_port and args.devfee_worker):
+        parser.error("--require-devfee requires active routing and complete DevFee configuration")
+    if not math.isfinite(args.fee_grace_seconds) or not 0.1 <= args.fee_grace_seconds <= 86400:
+        parser.error("--fee-grace-seconds must be in 0.1..86400")
     if any((args.devfee_host, args.devfee_port, args.devfee_worker)) and not all((args.devfee_host, args.devfee_port, args.devfee_worker)):
         parser.error("--devfee-host, --devfee-port and --devfee-worker must be supplied together")
     if (args.devfee_host or args.validate_pow) and not args.active_router:

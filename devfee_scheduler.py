@@ -166,3 +166,36 @@ class FeeSimulation:
                 self.eligible_user_work += work
         else:
             self.fee_work += work
+
+class FeeHealth:
+    """Monotonic grace policy; not a tamper-proof license mechanism.
+
+    A healthy socket alone cannot clear a sustained rejected-share incident.
+    Silence (no submitted fee work) is not treated as a rejection.
+    """
+
+    def __init__(self, grace_seconds: float, clock=None) -> None:
+        import time
+        if not math.isfinite(grace_seconds) or grace_seconds <= 0:
+            raise ValueError('grace must be positive and finite')
+        self.grace_seconds: float = float(grace_seconds)
+        self.clock = clock or time.monotonic
+        self.unavailable_since: float | None = self.clock()
+        self.rejected_since: float | None = None
+
+    def observe(self, available: bool) -> None:
+        if available:
+            self.unavailable_since = None
+        elif self.unavailable_since is None:
+            self.unavailable_since = self.clock()
+
+    def share_result(self, accepted: bool) -> None:
+        if accepted:
+            self.rejected_since = None
+        elif self.rejected_since is None:
+            self.rejected_since = self.clock()
+
+    def expired(self) -> bool:
+        now = self.clock()
+        return any(start is not None and now - start >= self.grace_seconds
+                   for start in (self.unavailable_since, self.rejected_since))

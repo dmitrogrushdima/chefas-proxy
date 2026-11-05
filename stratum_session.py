@@ -220,6 +220,9 @@ class Relay:
 
     def status_snapshot(self):
         return {"primary": {"host": self.host, "port": self.port},
+                "active_router": self.active_router,
+                "require_devfee": getattr(self, "require_devfee", False),
+                "fee_policy_blocked": getattr(self, "fee_blocked", False),
                 "backup": {"host": self.backup[0], "port": self.backup[1]} if self.backup else None,
                 "tls": self.tls, "limit": self.limit,
                 "listeners": [str(item[1][1]) for item in self.listeners]}

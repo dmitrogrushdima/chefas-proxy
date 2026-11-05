@@ -20,6 +20,7 @@ from collections import OrderedDict
 from upstream_manager import UpstreamConnection, ProtocolError, read_packet, encode_packet
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
+from devfee_scheduler import FeeHealth
 
 
 class StatefulRouter:
@@ -43,6 +44,8 @@ class StatefulRouter:
         self.tasks = set()
         self.stopping = False
         self.started = time.monotonic()
+        session["router"] = self
+        self.health = FeeHealth(getattr(relay, "fee_grace_seconds", 180))
         self.prefer_fee = bool(relay.fee and relay.ledger.should_fee() and relay.fee_owner is None)
         if self.prefer_fee:
             relay.fee_owner = self
@@ -51,6 +54,25 @@ class StatefulRouter:
         async with self.write_lock:
             self.writer.write(encode_packet(packet))
             await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+
+    def check_fee_policy(self):
+        if not getattr(self.relay, "require_devfee", False):
+            return
+        if getattr(self.relay, "fee_blocked", False) or self.health.expired():
+            self.relay.fee_blocked = True
+            for session in self.relay.sessions.values():
+                router = session.get("router")
+                if router:
+                    router.writer.close()
+            raise ProtocolError("required DevFee health expired")
+
+    async def watch_fee(self):
+        while True:
+            self.check_fee_policy()
+            fee = self.channels.get("fee")
+            self.health.observe(bool(fee and not fee.closed and fee.authorized and fee.ready.is_set()))
+            self.check_fee_policy()
+            await asyncio.sleep(min(.25, self.health.grace_seconds / 4))
 
     async def connect(self, name, endpoint):
         if await self.relay.is_self_route(endpoint):
@@ -108,6 +130,7 @@ class StatefulRouter:
             ch.ready.set()
 
     async def notification(self, ch, msg):
+        self.check_fee_policy()
         method, params = msg.get("method"), msg.get("params")
         if not isinstance(params, list):
             raise ProtocolError("invalid notification")
@@ -164,11 +187,13 @@ class StatefulRouter:
         return {"id": None, "method": "mining.notify", "params": params}
 
     async def publish(self, ch, clean):
+        self.check_fee_policy()
         async with self.write_lock:
             self.writer.write(encode_packet(self.make_job(ch, clean)))
             await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
 
     async def activate(self, ch):
+        self.check_fee_policy()
         async with self.switch_lock:
             if ch.closed or not ch.ready.is_set() or ch.job is None or ch.job_difficulty is None:
                 return False
@@ -248,6 +273,7 @@ class StatefulRouter:
         await self.send({"id": ident, "result": response.get("result"), "error": response.get("error")})
 
     async def submit(self, ident, params):
+        self.check_fee_policy()
         metrics = self.session["metrics"]
         metrics.submitted += 1
         category = "malformed_local"
@@ -293,6 +319,11 @@ class StatefulRouter:
         try:
             self.session["pending"] = self.session.get("pending", 0) + 1
             response = await ch.request("mining.submit", outbound)
+            if ch.target == "fee":
+                if response.get("result") is True and response.get("error") is None:
+                    self.health.share_result(True)
+                elif response.get("result") is False or response.get("error") is not None:
+                    self.health.share_result(False)
             if response.get("result") is True and response.get("error") is None:
                 metrics.accepted += 1
                 self.relay.ledger.record("fee" if ch.target == "fee" else "user", difficulty,
@@ -305,6 +336,8 @@ class StatefulRouter:
             await self.reply(ident, response)
             await self.reconcile()
         except (ConnectionError, asyncio.TimeoutError):
+            if ch.target == "fee":
+                await ch.close()
             metrics.unmatched += 1
             await self.reply(ident, {"result": None, "error": [20, "Upstream unavailable", None]})
         finally:
@@ -312,6 +345,10 @@ class StatefulRouter:
 
     async def run(self):
         try:
+            self.check_fee_policy()
+            if getattr(self.relay, "require_devfee", False):
+                watchdog = asyncio.create_task(self.watch_fee())
+                self.tasks.add(watchdog)
             try:
                 user = await self.connect("user", (self.relay.host, self.relay.port))
             except (OSError, asyncio.TimeoutError):
