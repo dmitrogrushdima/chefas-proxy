@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from router import copy_stream
 from upstream_manager import connect_upstream
 from devfee_scheduler import AcceptedWorkLedger
+from pilot_logging import event
 
 LOG = logging.getLogger("mining_proxy")
 HALF_CLOSE_GRACE = 3.0
@@ -83,6 +84,7 @@ class Relay:
                    "route_id": route_id}
         session["endpoint"] = self.route_configs.get(route_id, {}).get("endpoint", (self.host, self.port))
         self.sessions[session_id] = session
+        event(logging.INFO, "session_started", session_id=session_id, active_router=self.active_router)
 
         def authorized(name):
             session["worker"] = "".join(c if c.isprintable() else "?" for c in name)
@@ -180,6 +182,9 @@ class Relay:
                 self.workers.disconnect(session_id)
                 self.sessions.pop(session_id, None)
                 self.tasks.discard(task)
+                event(logging.INFO, "session_closed", session_id=session_id,
+                      accepted=session_metrics.accepted, rejected=session_metrics.rejected,
+                      unknown=session_metrics.unmatched)
 
     def set_listeners(self, server):
         self.listeners = [(item.family, item.getsockname()) for item in server.sockets]
@@ -256,6 +261,7 @@ class Relay:
                             "session_id": session["id"], "worker": session["worker"],
                             "target": target, "kind": kind,
                             "switched_to_devfee": target == "fee"})
+        event(logging.INFO, "session_route", session_id=session["id"], target=target, kind=kind)
 
     def status_snapshot(self):
         return {"primary": {"host": self.host, "port": self.port},

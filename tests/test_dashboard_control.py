@@ -7,6 +7,8 @@ from unittest.mock import Mock, AsyncMock
 from dashboard_control import DashboardControl
 from dashboard_server import DashboardStream, dashboard_request
 from stratum_session import Relay
+from secret_store import SecretStore
+from cryptography.fernet import Fernet
 
 
 class ControlTests(unittest.IsolatedAsyncioTestCase):
@@ -15,7 +17,8 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.tmp.name)/'control.json'
         self.relay = Relay('127.0.0.1', 4444)
         self.stream = DashboardStream(self.relay.live_snapshot)
-        self.control = DashboardControl(self.relay, self.stream, 'A'*32, self.path)
+        self.secret_store = SecretStore(key=Fernet.generate_key(), environment={})
+        self.control = DashboardControl(self.relay, self.stream, 'A'*32, self.path, secret_store=self.secret_store)
         self.server = await asyncio.start_server(lambda r,w: dashboard_request(r,w,self.relay.metrics,stream=self.stream,control=self.control), '127.0.0.1',0)
         self.port = self.server.sockets[0].getsockname()[1]
 
@@ -65,7 +68,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         headers,_=await self.request('/api/blacklist','A'*32,{'blacklist':['127.0.0.1/32']})
         self.assertIn(b'200 OK',headers)
         restored=Relay('127.0.0.1',4444)
-        DashboardControl(restored,self.stream,'A'*32,self.path)
+        DashboardControl(restored,self.stream,'A'*32,self.path,secret_store=self.secret_store)
         self.assertFalse(restored.peer_allowed(('127.0.0.1',123)))
         self.assertFalse(restored.peer_allowed(('::ffff:127.0.0.1',123)))
         miner_server=await asyncio.start_server(restored.handle,'127.0.0.1',0)
@@ -101,8 +104,11 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'200 OK', headers)
         self.assertNotIn('user-secret', json.dumps(data))
         self.assertNotIn('fee-secret', json.dumps(data))
+        self.assertNotIn('user-secret', self.path.read_text())
+        self.assertNotIn('fee-secret', self.path.read_text())
+        self.assertNotIn('A'*32, self.path.read_text())
         restored = Relay('127.0.0.1',4444)
-        DashboardControl(restored, self.stream, 'A'*32, self.path)
+        DashboardControl(restored, self.stream, 'A'*32, self.path,secret_store=self.secret_store)
         self.assertEqual((restored.host,restored.port,restored.user_worker,restored.user_password),
                          ('127.0.0.1',5555,'wallet','user-secret'))
         self.assertEqual((restored.fee,restored.fee_worker,restored.fee_password),

@@ -15,12 +15,14 @@ async def copy_stream(source, destination, direction, observer, metrics, on_acti
 import asyncio
 import string
 import time
+import logging
 from collections import OrderedDict
 
 from upstream_manager import UpstreamConnection, ProtocolError, read_packet, encode_packet
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
 from devfee_scheduler import FeeHealth
+from pilot_logging import event, stratum_trace, remember_secret
 
 
 class StatefulRouter:
@@ -68,6 +70,8 @@ class StatefulRouter:
         if not getattr(self.relay, "require_devfee", False):
             return
         if getattr(self.relay, "fee_blocked", False) or self.health.expired():
+            if not getattr(self.relay, "fee_blocked", False):
+                event(logging.WARNING, "required_fee_blocked", session_id=self.session["id"])
             self.relay.fee_blocked = True
             for session in self.relay.sessions.values():
                 router = session.get("router")
@@ -140,6 +144,9 @@ class StatefulRouter:
 
     async def notification(self, ch, msg):
         self.check_fee_policy()
+        if getattr(self.relay, "trace_stratum", False):
+            stratum_trace("upstream_to_proxy", self.session["id"], ch.target, msg,
+                          (self.user_password, self.fee_password, *self.auth.values()))
         method, params = msg.get("method"), msg.get("params")
         if not isinstance(params, list):
             raise ProtocolError("invalid notification")
@@ -200,7 +207,11 @@ class StatefulRouter:
     async def publish(self, ch, clean):
         self.check_fee_policy()
         async with self.write_lock:
-            self.writer.write(encode_packet(self.make_job(ch, clean)))
+            packet = self.make_job(ch, clean)
+            if getattr(self.relay, "trace_stratum", False):
+                stratum_trace("proxy_to_asic", self.session["id"], ch.target, packet,
+                              (self.user_password, self.fee_password, *self.auth.values()))
+            self.writer.write(encode_packet(packet))
             await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
         if self.current is ch and self.logged_channel is not ch:
             self.relay.event(self.session, ch.target, kind="assignment")
@@ -221,6 +232,9 @@ class StatefulRouter:
                     {"id": None, "method": "mining.set_difficulty", "params": [ch.job_difficulty]},
                     self.make_job(ch, True),
                 ):
+                    if getattr(self.relay, "trace_stratum", False):
+                        stratum_trace("proxy_to_asic", self.session["id"], ch.target, packet,
+                                      (self.user_password, self.fee_password, *self.auth.values()))
                     self.writer.write(encode_packet(packet))
                 await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
             self.relay.event(self.session, ch.target)
@@ -230,6 +244,7 @@ class StatefulRouter:
     async def disconnected(self, ch):
         if self.stopping:
             return
+        event(logging.WARNING, "upstream_disconnected", session_id=self.session["id"], target=ch.target)
         # Losing the user channel while mining a fee window must also trigger
         # recovery; otherwise the miner could remain on the fee indefinitely.
         if self.current is not ch and not (ch.target in ("user", "backup") and
@@ -297,6 +312,10 @@ class StatefulRouter:
         try:
             if not isinstance(params, list) or len(params) not in (5, 6) or not all(isinstance(x, str) for x in params):
                 raise ValueError("malformed share")
+            if getattr(self.relay, "trace_stratum", False):
+                stratum_trace("asic_to_proxy", self.session["id"], "router",
+                              {"id": ident, "method": "mining.submit", "params": params},
+                              (self.user_password, self.fee_password, *self.auth.values()))
             if params[0] not in self.auth or params[1] not in self.jobs:
                 category = "unknown_job_local"
                 raise ValueError("unknown worker or job")
@@ -324,6 +343,7 @@ class StatefulRouter:
                 self.duplicates.popitem(last=False)
         except (ValueError, TypeError):
             metrics.invalid_local += 1
+            event(logging.WARNING, "share_rejected_local", session_id=self.session["id"], reason=category)
             setattr(metrics, category, getattr(metrics, category) + 1)
             if params and isinstance(params[0], str) and params[0] in self.auth:
                 self.relay.workers.record(self.session["id"], params[0], "invalid_local")
@@ -337,6 +357,10 @@ class StatefulRouter:
             outbound[0] = self.user_worker
         fee = self.channels.get("fee")
         fee_available = bool(fee and not fee.closed and fee.ready.is_set())
+        if getattr(self.relay, "trace_stratum", False):
+            stratum_trace("proxy_to_upstream", self.session["id"], ch.target,
+                          {"id": ident, "method": "mining.submit", "params": outbound},
+                          (self.user_password, self.fee_password, *self.auth.values()))
         responded = False
         try:
             self.session["pending"] = self.session.get("pending", 0) + 1
@@ -363,6 +387,9 @@ class StatefulRouter:
                 self.relay.metrics._audit.record("fee" if ch.target == "fee" else "user", difficulty)
             elif response.get("result") is False or response.get("error") is not None:
                 metrics.rejected += 1
+                error = response.get("error")
+                code = error[0] if isinstance(error, list) and error and type(error[0]) is int else None
+                event(logging.WARNING, "share_rejected_pool", session_id=self.session["id"], target=ch.target, code=code)
             else:
                 metrics.unmatched += 1
             error = response.get("error")
@@ -470,6 +497,8 @@ class StatefulRouter:
                     self.session["observer"].protocol["extranonce_subscribed"] = True
                     await self.reply(ident, {"result": True, "error": None})
                 elif method == "mining.authorize":
+                    if len(params) >= 2 and isinstance(params[1], str):
+                        remember_secret(params[1])
                     upstream_params = [self.user_worker, self.user_password] if self.user_worker else params
                     response = await user.request(method, upstream_params)
                     accepted = response.get("result") is True and response.get("error") is None

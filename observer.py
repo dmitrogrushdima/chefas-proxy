@@ -320,6 +320,8 @@ class Metrics:
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}
+        if getattr(self, "_log_handler", None) is not None:
+            result["logging_dropped"] = self._log_handler.dropped
         if getattr(self, "_audit", None) is not None:
             result["audit"] = self._audit.snapshot()
         return result

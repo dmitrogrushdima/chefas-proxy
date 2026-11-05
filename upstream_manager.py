@@ -2,6 +2,8 @@
 import asyncio
 import json
 import ssl
+import logging
+from pilot_logging import event
 from decimal import Decimal
 
 MAX_LINE = 65536
@@ -138,6 +140,7 @@ async def connect_upstream(primary, backup, tls_context, timeout, is_self_route,
             return reader, writer, index
         except (OSError, asyncio.TimeoutError, ssl.SSLError):
             metrics.upstream_failures += 1
+            event(logging.WARNING, "upstream_connect_failed", target="primary" if index == 0 else "backup")
     return None, None, None
 
 # Configuration snapshots are immutable so a live session never mixes credentials.

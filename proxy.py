@@ -17,6 +17,9 @@ from dashboard_server import dashboard_request, ASSET_DIR, ASSETS, DashboardStre
 from devfee_scheduler import AcceptedWorkLedger
 from dashboard_control import DashboardControl
 from history_store import HistoryStore
+from secret_store import load_environment, SecretConfigurationError
+from pilot_logging import PilotLogging, SafeQueueHandler, event
+from shutdown_signals import ShutdownSignals
 
 LOG = logging.getLogger("mining_proxy")
 
@@ -42,7 +45,7 @@ def fd_limit_warning(limit, soft_limit):
 
 
 
-async def run(args):
+async def run(args, stop_event=None):
     try:
         import resource
     except ImportError:
@@ -57,10 +60,13 @@ async def run(args):
                   limit=args.max_connections, timeout=args.connect_timeout, allowed_networks=args.allow_cidr,
                   idle_timeout=args.idle_timeout)
     relay.active_router = args.active_router
+    relay.trace_stratum = getattr(args, "debug_stratum", False)
+    relay.metrics._log_handler = next((handler for handler in LOG.handlers if isinstance(handler, SafeQueueHandler)), None)
     relay.validate_pow = args.validate_pow
     relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
     relay.fee_worker = args.devfee_worker
     relay.fee_password = args.devfee_password
+    relay.user_password = os.environ.get("KONTUR_USER_PASSWORD", "x")
     relay.reconnect_min_seconds = args.reconnect_min_seconds
     relay.require_devfee = args.require_devfee
     relay.fee_grace_seconds = args.fee_grace_seconds
@@ -84,23 +90,51 @@ async def run(args):
         server.close()
         await server.wait_closed()
         raise
-    LOG.warning("Experimental relay only; not for production. Listening on %s", server.sockets[0].getsockname())
+    LOG.info("Experimental relay; pilot validation required. Listening on %s", server.sockets[0].getsockname())
     LOG.info("Dashboard: http://127.0.0.1:%s", args.dashboard_port)
     if history:
         history.start()
+    async def summaries():
+        while True:
+            await asyncio.sleep(60)
+            audit = relay.metrics.snapshot().get("audit", {})
+            estimate = audit.get("hashrate_windows", {}).get("5m", {}).get("hashrate_hs")
+            event(logging.INFO, "minute_summary", active=relay.active,
+                  accepted=relay.metrics.accepted, rejected=relay.metrics.rejected,
+                  hashrate_5m_hs=estimate,
+                  logging_dropped=getattr(relay.metrics._log_handler, "dropped", 0))
+    summary = asyncio.create_task(summaries())
     try:
         async with server, dashboard:
-            await server.serve_forever()
+            if stop_event is None:
+                await server.serve_forever()
+            else:
+                await stop_event.wait()
     finally:
+        summary.cancel()
+        await asyncio.gather(summary, return_exceptions=True)
         server.close()
         dashboard.close()
         await server.wait_closed()
         await dashboard.wait_closed()
+        if history:
+            await history.checkpoint()
+        await asyncio.gather(*(control._reconnect(session) for session in list(relay.sessions.values())))
         await stream.close()
         await control.observer_stream.close()
         await relay.shutdown()
         if history:
             await history.close()
+        event(logging.INFO, "proxy_stopped", accepted=relay.metrics.accepted, rejected=relay.metrics.rejected)
+
+
+async def run_cli(args):
+    signals = ShutdownSignals()
+    try:
+        signals.install()
+        await run(args, signals.stop)
+    finally:
+        signals.close()
 
 
 
@@ -109,6 +143,10 @@ async def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool-host", required=True)
+    parser.add_argument("--env-file", default=".env", help="Explicit dotenv path; server ENV takes priority; empty disables")
+    parser.add_argument("--log-dir", default="logs")
+    parser.add_argument("--log-level", choices=("INFO", "WARNING", "DEBUG"), default="INFO")
+    parser.add_argument("--debug-stratum", action="store_true", help="Allow redacted notify/submit packet traces at DEBUG")
     parser.add_argument("--control-state", default="state/control.json")
     parser.add_argument("--history-file", default="state/history.json", help="Worker history checkpoint path; empty disables persistence")
     parser.add_argument("--pool-port", type=int, required=True, choices=range(1, 65536), metavar="PORT")
@@ -120,7 +158,6 @@ def main():
     parser.add_argument("--devfee-host")
     parser.add_argument("--devfee-port", type=int, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--devfee-worker")
-    parser.add_argument("--devfee-password", default="x")
     parser.add_argument("--fee-min-work", type=float, default=0)
     parser.add_argument("--require-devfee", action="store_true", help="Stop all active sessions after sustained DevFee failure; restart required")
     parser.add_argument("--fee-grace-seconds", type=float, default=180, help="DevFee outage/rejection grace in required mode")
@@ -137,6 +174,8 @@ def main():
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
     args = parser.parse_args()
+    load_environment(args.env_file)
+    args.devfee_password = os.environ.get("KONTUR_DEVFEE_PASSWORD", "x")
     if args.require_devfee and not (args.active_router and args.devfee_host and args.devfee_port and args.devfee_worker):
         parser.error("--require-devfee requires active routing and complete DevFee configuration")
     if not math.isfinite(args.fee_grace_seconds) or not 0.1 <= args.fee_grace_seconds <= 86400:
@@ -165,11 +204,18 @@ def main():
         parser.error("--allow-any-miner cannot be combined with --allow-cidr")
     if not is_loopback_bind(args.listen_host) and not args.allow_cidr and not args.allow_any_miner:
         parser.error("non-loopback listeners require --allow-cidr or explicit --allow-any-miner")
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    pilot = None
     try:
-        asyncio.run(run(args))
+        pilot = PilotLogging(args.log_dir, args.log_level)
+        asyncio.run(run_cli(args))
     except KeyboardInterrupt:
         pass
+    except (SecretConfigurationError, ValueError, OSError):
+        LOG.error("Startup or configuration failed; check configuration, ENV and secret key")
+        raise SystemExit(1) from None
+    finally:
+        if pilot and not pilot.close():
+            LOG.warning("Pilot log drain incomplete")
 
 
 if __name__ == "__main__":

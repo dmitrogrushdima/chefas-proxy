@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from cryptography.fernet import Fernet
 
 from lab.pool import (COINB1, COINB2, NBITS, NTIME, PREVHASH, SHARE_TARGET,
                       VERSION, build_header, find_nonce)
@@ -151,7 +152,7 @@ class CheckedPool:
 
 
 class Miner:
-    def __init__(self, port, *, hot=True, configure=False):
+    def __init__(self, port, *, hot=True, configure=False, password="x"):
         self.port = port
         self.hot = hot
         self.next_id = 0
@@ -166,6 +167,7 @@ class Miner:
         self.nonces = {}
         self.configure = configure
         self.version_bits = None
+        self.password = password
 
     async def connect(self):
         self.reader, self.writer = await asyncio.open_connection("127.0.0.1", self.port)
@@ -184,7 +186,7 @@ class Miner:
             extension = await self.request("mining.extranonce.subscribe", [])
             if extension.get("result") is not True:
                 raise AssertionError(extension)
-        authorized = await self.request("mining.authorize", ["user.worker", "x"])
+        authorized = await self.request("mining.authorize", ["user.worker", self.password])
         if authorized.get("result") is not True:
             raise AssertionError(authorized)
         await asyncio.wait_for(self.job_event.wait(), 5)
@@ -290,13 +292,15 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.pools.append(pool)
         return pool
 
-    async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None):
+    async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None, debug=False):
         self.admin_token = admin_token
         self.user_pool = await self.pool("11111111", "user.worker")
         if fee:
             self.fee_pool = await self.pool("22222222", "fee.worker")
         self.port, self.dashboard = unused_ports(2)
-        args = [sys.executable, str(ROOT / "proxy.py"), "--active-router", "--validate-pow",
+        entrypoint = os.environ.get("KONTUR_TEST_ENTRYPOINT", str(ROOT / "proxy.py"))
+        args = [sys.executable, entrypoint, "--active-router", "--validate-pow",
+                "--env-file", "", "--log-dir", str(Path(self.history.name) / "logs"),
                 "--history-file", str(Path(self.history.name) / "history.json"),
                 "--control-state", str(Path(self.history.name) / "control.json"),
                 "--pool-host", "127.0.0.1", "--pool-port", str(self.user_pool.port),
@@ -311,7 +315,12 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             args += ["--require-devfee", "--fee-grace-seconds", "2"]
         if backup:
             args += ["--backup-host", "127.0.0.1", "--backup-port", str(backup.port)]
+        if debug:
+            args += ["--log-level", "DEBUG", "--debug-stratum"]
         environment = dict(os.environ)
+        environment["KONTUR_SECRETS_KEY"] = Fernet.generate_key().decode()
+        environment["KONTUR_USER_PASSWORD"] = "x"
+        environment["KONTUR_DEVFEE_PASSWORD"] = "x"
         environment.pop("KONTUR_ADMIN_TOKEN", None)
         if admin_token:
             environment["KONTUR_ADMIN_TOKEN"] = admin_token
@@ -343,8 +352,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             writer.close()
             await writer.wait_closed()
 
-    async def miner(self, *, hot=True, configure=False):
-        miner = Miner(self.port, hot=hot, configure=configure)
+    async def miner(self, *, hot=True, configure=False, password="x"):
+        miner = Miner(self.port, hot=hot, configure=configure, password=password)
         self.miners.append(miner)
         return await miner.connect()
 
@@ -609,9 +618,9 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(miner.closed.is_set())
         self.assertTrue((await miner.submit())["result"])
 
-    async def test_graceful_proxy_shutdown_saves_worker_history(self):
+    async def _shutdown_history(self, signal_mode=False):
         from types import SimpleNamespace
-        from proxy import run
+        from proxy import run, run_cli
         from observer import WorkerRegistry
         from history_store import HistoryStore
         pool = await self.pool("11111111", "user.worker")
@@ -625,7 +634,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             reconnect_min_seconds=0, require_devfee=False, fee_grace_seconds=180,
             fee_min_work=0, history_file=str(path), control_state=str(Path(self.history.name)/"shutdown-control.json"),
             listen_host="127.0.0.1", listen_port=self.port, dashboard_port=self.dashboard)
-        running = asyncio.create_task(run(args))
+        running = asyncio.create_task(run_cli(args) if signal_mode else run(args))
         try:
             for _ in range(100):
                 try:
@@ -635,13 +644,20 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(.02)
             miner = await self.miner()
             self.assertTrue((await miner.submit())["result"])
-            running.cancel()
-            # Simulate Python 3.10 runner cancelling background jobs as well.
-            for task in asyncio.all_tasks():
-                if task.get_coro().__qualname__ == "HistoryStore._run":
-                    task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await running
+            if signal_mode:
+                import signal
+                signal.raise_signal(signal.SIGTERM)
+                await asyncio.wait_for(running, 5)
+                await asyncio.wait_for(miner.closed.wait(), 2)
+                self.assertTrue(miner.reconnect.is_set())
+            else:
+                running.cancel()
+                # Simulate Python 3.10 runner cancelling background jobs as well.
+                for task in asyncio.all_tasks():
+                    if task.get_coro().__qualname__ == "HistoryStore._run":
+                        task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await running
             restored = WorkerRegistry()
             HistoryStore(restored, path).load()
             row = restored.snapshot()["workers"][0]
@@ -651,6 +667,35 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             if not running.done():
                 running.cancel()
             await asyncio.gather(running, return_exceptions=True)
+
+    async def test_graceful_proxy_shutdown_saves_worker_history(self):
+        await self._shutdown_history()
+
+    async def test_sigterm_closes_live_miner_and_saves_history(self):
+        await self._shutdown_history(signal_mode=True)
+
+    async def test_debug_harness_traces_jobs_without_authorization_secrets(self):
+        await self.launch(fee=False, debug=True, admin_token="A"*32)
+        secret = "fixture-asic-private-password"
+        miner = await self.miner(password=secret)
+        malformed = miner.share_params()
+        malformed.append(secret)  # broken firmware copies password to version bits
+        self.assertFalse((await miner.submit(malformed))["result"])
+        self.assertTrue((await miner.submit())["result"])
+        path = Path(self.history.name) / "logs" / "proxy.log"
+        for _ in range(100):
+            text = path.read_text(encoding="utf-8")
+            if "proxy_to_upstream" in text and "share_rejected_local" in text:
+                break
+            await asyncio.sleep(.02)
+        else:
+            self.fail("Pilot packet events were not written")
+        self.assertNotIn(secret, text)
+        self.assertNotIn("A"*32, text)
+        self.assertNotIn("mining.authorize", text)
+        self.assertIn("mining.notify", text)
+        self.assertIn("mining.submit", text)
+        self.assertIn("[REDACTED]", text)
 
 
 if __name__ == "__main__":

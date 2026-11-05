@@ -12,19 +12,26 @@ import tempfile
 import time
 from collections import deque
 from upstream_manager import PoolRoute, current_pool_routes, apply_pool_routes
+from secret_store import SecretStore, SecretConfigurationError
+from pilot_logging import remember_secret, event
+import logging
 
 
 class DashboardControl:
-    def __init__(self, relay, stream, admin_token=None, state_path='state/control.json'):
+    def __init__(self, relay, stream, admin_token=None, state_path='state/control.json', secret_store=None):
         from dashboard_server import DashboardStream
         if admin_token is not None and len(admin_token) < 32:
             raise ValueError('KONTUR_ADMIN_TOKEN must contain at least 32 characters')
         self.relay, self.stream, self.admin_token = relay, stream, admin_token
         self.path = Path(state_path)
+        self.secrets = secret_store or SecretStore()
+        remember_secret(admin_token)
         self.tokens, self.route_data = {}, None
         self.mutations = deque()
         self.lock = asyncio.Lock()
         if self.path.exists():
+            if self.path.stat().st_size > 2 * 1024 * 1024:
+                raise ValueError('control state size limit exceeded')
             data = json.loads(self.path.read_text(encoding='utf-8'))
             self.relay.blacklist = tuple(ipaddress.ip_network(item, strict=True) for item in data.get('blacklist', []))
             self.tokens = data.get('observers', {})
@@ -33,7 +40,8 @@ class DashboardControl:
             if any(len(key) != 64 or any(c not in '0123456789abcdef' for c in key) or
                    type(expiry) not in (int, float) or not math.isfinite(expiry) for key, expiry in self.tokens.items()):
                 raise ValueError('invalid observer state')
-            self.route_data = data.get('routes')
+            stored_routes = data.get('routes')
+            self.route_data = self.secrets.open_routes(stored_routes)
             if self.route_data is not None:
                 user = PoolRoute.parse(self.route_data['user_pool'])
                 fee = PoolRoute.parse(self.route_data['devfee_pool']) if self.route_data['devfee_pool'] is not None else None
@@ -43,6 +51,10 @@ class DashboardControl:
                 relay.route_generation = data.get('route_generation', 1)
                 if type(relay.route_generation) is not int or relay.route_generation < 0:
                     raise ValueError('invalid route generation')
+            legacy = stored_routes and any(isinstance(route, dict) and 'password' in route for route in stored_routes.values())
+            if legacy or 'admin_token' in data or 'KONTUR_ADMIN_TOKEN' in data:
+                self.save(self.relay.blacklist, self.tokens)
+                event(logging.WARNING, 'control_secrets_migrated')
         self.observer_stream = DashboardStream(self.observer_snapshot)
 
     def observer_snapshot(self):
@@ -52,12 +64,13 @@ class DashboardControl:
         return snapshot
 
     def save(self, blacklist, tokens, routes=None, generation=None):
+        sealed_routes = self.secrets.seal_routes(self.route_data if routes is None else routes)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(dir=self.path.parent, prefix='.control-')
         try:
             with os.fdopen(descriptor, 'w', encoding='utf-8') as file:
                 json.dump({'blacklist': [str(item) for item in blacklist], 'observers': tokens,
-                           'routes': self.route_data if routes is None else routes,
+                           'routes': sealed_routes,
                            'route_generation': getattr(self.relay, 'route_generation', 0) if generation is None else generation}, file)
                 file.flush()
                 os.fsync(file.fileno())
@@ -132,6 +145,7 @@ class DashboardControl:
             if len(tokens) >= 64:
                 raise ValueError('observer limit reached')
             secret = secrets.token_urlsafe(32)
+            remember_secret(secret)
             expires = time.time() + 3600
             tokens[hashlib.sha256(secret.encode()).hexdigest()] = expires
             await asyncio.to_thread(self.save, self.relay.blacklist, tokens)
@@ -163,6 +177,7 @@ class DashboardControl:
             await asyncio.to_thread(self.save, self.relay.blacklist, self.tokens, stored, generation)
             self.route_data = stored
             apply_pool_routes(self.relay, user, fee)
+            event(logging.INFO, 'routes_changed', generation=generation, reconnect=reconnect)
             selected = list(self.relay.sessions.values()) if reconnect else []
             await asyncio.gather(*(self._reconnect(item) for item in selected))
             return dict(self.public_config(), reconnect_requested=[item['id'] for item in selected])
@@ -234,6 +249,8 @@ class DashboardControl:
             async with self.lock:
                 result = await self.mutate(path, data)
             await self.respond(writer, b'200 OK', result)
+        except SecretConfigurationError:
+            await self.respond(writer, b'503 Service Unavailable', {'error': 'Configure pool password ENV or KONTUR_SECRETS_KEY before saving secrets'})
         except (ValueError, TypeError, OverflowError):
             await self.respond(writer, b'400 Bad Request', {'error': 'invalid request or stale configuration'})
         except KeyError:

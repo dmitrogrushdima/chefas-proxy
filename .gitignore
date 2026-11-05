@@ -12,3 +12,7 @@ __pycache__/
 *.pyc
 .DS_Store
 state/
+logs/
+build/
+*.pyd
+*.so
