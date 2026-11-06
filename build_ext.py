@@ -1,6 +1,6 @@
 """Build a source-free runtime directory; never compile extensions in place.
 
-Usage: python build_ext.py [--output dist/kontur] [--generate-only]
+Usage: python build_ext.py [--output dist/chefas-proxy] [--generate-only]
 Requires requirements-build.txt and a platform C compiler / Python headers.
 """
 import argparse
@@ -17,7 +17,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parent
 MODULES = ('proxy','router','devfee_scheduler','pow_validator','history_store','stratum_session',
            'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec','hardware_compatibility','network_io','aggregation')
-LAUNCHER = '''"""Launch the compiled KONTUR runtime; source fallback is rejected."""
+LAUNCHER = '''"""Launch the compiled CHEFAS Proxy runtime; source fallback is rejected."""
 import importlib
 from importlib.machinery import EXTENSION_SUFFIXES
 
@@ -37,7 +37,7 @@ if __name__ == '__main__':
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', default=str(ROOT/'bin'/'kontur'))
+    parser.add_argument('--output', default=str(ROOT/'bin'/'chefas-proxy'))
     parser.add_argument('--generate-only', action='store_true', help='Validate Cython translation without invoking the native compiler')
     args = parser.parse_args()
     output = Path(args.output).resolve()
@@ -66,7 +66,7 @@ def main():
     if args.generate_only:
         print('Cython translation complete for ' + str(len(extensions)) + ' modules; native artifacts not built')
         return
-    setup(name='kontur-core', version='0.1.0rc1', ext_modules=extensions,
+    setup(name='chefas-proxy-core', version='0.1.0rc1', ext_modules=extensions,
           script_args=['build_ext', '--build-lib', str(stage), '--build-temp', 'objects'])
     for name in MODULES:
         if not any((stage/(name+suffix)).is_file() for suffix in importlib.machinery.EXTENSION_SUFFIXES):

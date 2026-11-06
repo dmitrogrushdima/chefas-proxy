@@ -80,7 +80,7 @@ def main():
             print(json.dumps({"frozen": True, "python": sys.version.split()[0], "native_modules": modules}, sort_keys=True))
             return
         base = Path(sys.executable).resolve().parent
-        path = Path(known.config).resolve() if known.config else base / "kontur.json"
+        path = Path(known.config).resolve() if known.config else base / "chefas-proxy.json"
         options = []
         if "--help" in remainder or "-h" in remainder:
             options = []
@@ -89,11 +89,11 @@ def main():
             # State and dotenv paths are relative to the selected configuration.
             os.chdir(path.parent)
         elif not remainder:
-            raise ValueError("Create kontur.json from kontur.example.json, or supply --pool-host and --pool-port")
+            raise ValueError("Create chefas-proxy.json from chefas-proxy.example.json, or supply --pool-host and --pool-port")
         sys.argv = [sys.argv[0], *options, *remainder]
     except (OSError, ValueError, RuntimeError, ImportError):
         # Never interpolate config contents or credentials into startup errors.
-        print("Release startup failed. Check native files and public kontur.json settings; secrets belong in ENV. See RELEASE.md.", file=sys.stderr)
+        print("Release startup failed. Check native files and public chefas-proxy.json settings; secrets belong in ENV. See RELEASE.md.", file=sys.stderr)
         raise SystemExit(2) from None
     importlib.import_module("proxy").main()
 

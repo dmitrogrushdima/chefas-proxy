@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">CHEFAS Proxy</title>
+  <desc id="desc">Your farm. Your pools. One clear view. Bitcoin SHA-256d Stratum V1 proxy.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101820"/><stop offset="1" stop-color="#1d2227"/></linearGradient>
+    <linearGradient id="copper"><stop stop-color="#e9bc94"/><stop offset="1" stop-color="#b77851"/></linearGradient>
+  </defs>
+  <rect width="1200" height="340" rx="20" fill="url(#bg)"/>
+  <path d="M760 0v340M840 0v340M920 0v340M1000 0v340M1080 0v340M1160 0v340M720 90h480M720 170h480M720 250h480" stroke="#e9bc94" stroke-opacity=".045"/>
+  <path d="M93 85h45v12h-33v33h33v12H93z" fill="url(#copper)"/>
+  <path d="M116 106h45v12h-33v33h33v12h-45z" fill="#e9bc94" opacity=".5"/>
+  <text x="190" y="128" fill="#f4f1eb" font-family="Segoe UI,Arial,sans-serif" font-size="55" font-weight="650" letter-spacing="1">CHEFAS <tspan fill="#d7a47c" font-weight="350">Proxy</tspan></text>
+  <text x="94" y="211" fill="#f4f1eb" font-family="Segoe UI,Arial,sans-serif" font-size="28">Your farm. Your pools. One clear view.</text>
+  <text x="95" y="264" fill="#a5adb5" font-family="Segoe UI,Arial,sans-serif" font-size="13" letter-spacing="2.8">BITCOIN ONLY  /  SHA-256d  /  STRATUM V1</text>
+  <g fill="none" stroke="#d7a47c" stroke-width="2">
+    <path d="M850 115h40v55h36M850 225h40v-55M978 170h55v-55h40M1033 170v55h40" stroke-opacity=".45"/>
+    <rect x="816" y="100" width="34" height="30" rx="6"/><rect x="816" y="210" width="34" height="30" rx="6"/>
+    <rect x="926" y="144" width="52" height="52" rx="12" fill="#d7a47c" fill-opacity=".08"/>
+    <circle cx="1088" cy="115" r="15"/><circle cx="1088" cy="225" r="15"/>
+    <path d="M961 158h-19v24h19" stroke-width="3"/>
+  </g>
+  <g fill="#a5adb5" font-family="Segoe UI,Arial,sans-serif" font-size="11" text-anchor="middle" letter-spacing="1.4">
+    <text x="833" y="272">ASICS</text><text x="952" y="272">PROXY</text><text x="1088" y="272">POOLS</text>
+  </g>
+</svg>

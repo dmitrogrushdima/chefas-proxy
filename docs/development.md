@@ -26,11 +26,11 @@ python -m pip install -r requirements-build.txt
 python build_ext.py
 ```
 
-Windows requires MSVC/Windows SDK; Linux requires a C compiler and Python development headers. Default output: ignored `bin/kontur/`. An existing output is never overwritten; pass `--output bin/ANOTHER_NAME` for a fresh build. `--generate-only` checks Cython translation without linking. Compiled distributions include 17 native modules, the bootstrap, local UI, launcher scripts, dependency files and a hash manifest, without runtime source, real ENV files, state or logs.
+Windows requires MSVC/Windows SDK; Linux requires a C compiler and Python development headers. Default output: ignored `bin/chefas-proxy/`. An existing output is never overwritten; pass `--output bin/ANOTHER_NAME` for a fresh build. `--generate-only` checks Cython translation without linking. Compiled distributions include 17 native modules, the bootstrap, local UI, launcher scripts, dependency files and a hash manifest, without runtime source, real ENV files, state or logs.
 
-For an executable that bundles Python, use the [standalone release scripts](release.md). Root launchers prefer `dist/kontur-windows-x64/kontur.exe` or `dist/kontur-linux-x64/kontur` when present, and otherwise use the native development runtime.
+For an executable that bundles Python, use the [standalone release scripts](release.md). Root launchers prefer `dist/chefas-proxy-windows-x64/chefas-proxy.exe` or `dist/chefas-proxy-linux-x64/chefas-proxy` when present, and otherwise use the native development runtime.
 
-To test the compiled CLI, set `KONTUR_TEST_ENTRYPOINT` to its absolute `launch.py`, then run `tests/test_live_devfee_router.py` with `-k "not graceful_proxy_shutdown and not sigterm_closes_live"`. The excluded tests invoke the source entrypoint in-process. Verify manifest hashes and actual import paths; successful compilation alone is insufficient.
+To test the compiled CLI, set `CHEFAS_PROXY_TEST_ENTRYPOINT` to its absolute `launch.py`, then run `tests/test_live_devfee_router.py` with `-k "not graceful_proxy_shutdown and not sigterm_closes_live"`. The excluded tests invoke the source entrypoint in-process. Verify manifest hashes and actual import paths; successful compilation alone is insufficient.
 
 Before release: qualify Linux packaging, long-running lossy-network behavior, signed distribution/update integrity and real hardware/pool combinations. Performance targets require measurement; the existing 400-session regression does not certify thousands of ASICs.
 

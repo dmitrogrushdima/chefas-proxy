@@ -19,3 +19,9 @@ build/
 bin/*
 !bin/.gitkeep
 .pytest_cache/
+
+.venv*/
+*.zip
+*.tar.gz
+*.zip.sha256
+*.tar.gz.sha256

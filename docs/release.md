@@ -1,29 +1,29 @@
 # Standalone pilot releases
 
 Release builds contain an executable, a bundled Python runtime, compiled core
-modules, and the KONTUR dashboard. Operators do not need Python or Cython.
+modules, and the CHEFAS Proxy dashboard. Operators do not need Python or Cython.
 Keep the executable and its `_internal` directory together.
 
 ## Operator: three steps
 
 1. Unpack the **matching Windows x64 or Linux x64** release. Copy
-   `kontur.example.json` to `kontur.json`, replace `POOL_HOST`, and set the
+   `chefas-proxy.example.json` to `chefas-proxy.json`, replace `POOL_HOST`, and set the
    pool address/port. The default listener is local only. For LAN ASICs set
    `listen_host` and an explicit `allow_cidr` list (for example
    `["192.168.10.0/24"]`). ASIC wallet/worker credentials normally come from
-   each ASIC's Stratum authorization. Route overrides are configured in KONTUR.
+   each ASIC's Stratum authorization. Route overrides are configured in CHEFAS Proxy.
 2. Copy `.env.example` to `.env`, generate your own admin token and encryption
-   key, and set `KONTUR_ADMIN_TOKEN` / `KONTUR_SECRETS_KEY`. Restrict the file to
-   the service owner. Never place tokens or passwords in `kontur.json`. DevFee
+   key, and set `CHEFAS_PROXY_ADMIN_TOKEN` / `CHEFAS_PROXY_SECRETS_KEY`. Restrict the file to
+   the service owner. Never place tokens or passwords in `chefas-proxy.json`. DevFee
    requires `devfee_host`, `devfee_port`, and `devfee_worker`; its password is
-   `KONTUR_DEVFEE_PASSWORD` in ENV. Pool credentials saved by the routing API
+   `CHEFAS_PROXY_DEVFEE_PASSWORD` in ENV. Pool credentials saved by the routing API
    use the existing encrypted secret store.
-3. Run `start.cmd` / `kontur.exe` (Windows) or `./kontur` (Linux). `start.cmd`
-   keeps the console open after startup errors. With `kontur.json` present
+3. Run `start.cmd` / `chefas-proxy.exe` (Windows) or `./chefas-proxy` (Linux). `start.cmd`
+   keeps the console open after startup errors. With `chefas-proxy.json` present
    it starts without CLI arguments. Open `http://127.0.0.1:8080`. The dashboard
    stays loopback-only; use an authenticated SSH tunnel for remote access.
 
-`--config /absolute/path/kontur.json` selects another configuration. Relative
+`--config /absolute/path/chefas-proxy.json` selects another configuration. Relative
 state and dotenv paths are resolved from that configuration's directory.
 Additional CLI options override scalar configuration settings. Repeated
 `--allow-cidr` values add to the configured list. Use `--help` for all proxy
@@ -52,7 +52,7 @@ Windows:
 Linux:
 
 ```sh
-KONTUR_BUILD_PYTHON=.venv-release/bin/python ./build_release.sh
+CHEFAS_PROXY_BUILD_PYTHON=.venv-release/bin/python ./build_release.sh
 ```
 
 The builder compiles all `build_ext.py` modules, supplies Cython's hidden
@@ -61,8 +61,8 @@ and runs `--release-info` / `--help` with developer Python paths removed.
 It refuses existing output directories and retains staging on failure.
 Run one native/release build at a time per checkout: the C compiler's
 intermediate directory is shared by the native and standalone builders.
-The default destination is `dist/kontur-windows-x64` or
-`dist/kontur-linux-x64`, with a `.zip` (Windows) or `.tar.gz` (Linux) archive
+The default destination is `dist/chefas-proxy-windows-x64` or
+`dist/chefas-proxy-linux-x64`, with a `.zip` (Windows) or `.tar.gz` (Linux) archive
 and a companion archive SHA-256 checksum. No secrets, history, control state, or compatibility
 profiles are collected from the workspace.
 
@@ -81,19 +81,40 @@ removal or binary patching impossible.
 
 ## Linux service
 
-The release contains `kontur.service.example`; maintainers can generate a
-custom unit with `python scripts/generate_service.py --output kontur.service`.
+The release contains `chefas-proxy.service.example`; maintainers can generate a
+custom unit with `python scripts/generate_service.py --output chefas-proxy.service`.
 The generator only writes a new file. It never installs or starts a service.
 
-An administrator must create the `kontur` service user, install the **complete**
-release directory at `/opt/kontur`, and place configuration at
-`/etc/kontur/kontur.json` and secrets at `/etc/kontur/kontur.env` with restricted
+An administrator must create the `chefas-proxy` service user, install the **complete**
+release directory at `/opt/chefas-proxy`, and place configuration at
+`/etc/chefas-proxy/chefas-proxy.json` and secrets at `/etc/chefas-proxy/chefas-proxy.env` with restricted
 permissions. Install the reviewed unit into `/etc/systemd/system/`, then use
-the usual `systemctl daemon-reload` / `systemctl enable --now kontur` commands.
-The generated unit uses systemd-managed `/var/lib/kontur` and `/var/log/kontur`,
+the usual `systemctl daemon-reload` / `systemctl enable --now chefas-proxy` commands.
+The generated unit uses systemd-managed `/var/lib/chefas-proxy` and `/var/log/chefas-proxy`,
 an unprivileged user, restrictive permissions, and SIGTERM graceful shutdown.
 It assumes a systemd version supporting `StateDirectory` / `LogsDirectory`.
 Service ports must be above 1023. Review host firewall and process FD limits.
+
+For a **fresh installation**, after unpacking into `/opt/chefas-proxy` and editing
+the configuration and environment files locally:
+
+```sh
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin chefas-proxy
+sudo install -d -m 0750 -o root -g chefas-proxy /etc/chefas-proxy
+sudo install -m 0640 -o root -g chefas-proxy chefas-proxy.json /etc/chefas-proxy/chefas-proxy.json
+sudo install -m 0600 -o root -g root .env /etc/chefas-proxy/chefas-proxy.env
+sudo install -m 0644 /opt/chefas-proxy/chefas-proxy.service.example /etc/systemd/system/chefas-proxy.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now chefas-proxy
+sudo systemctl status chefas-proxy --no-pager
+```
+
+The system service manager reads the root-owned environment file. Do not run
+these fresh-install steps over an existing deployment without preserving its
+private configuration and encryption key. Keep installed binaries owned by root
+and readable/executable by the service account. The service creates its own state
+and log directories. Linux qualification is still pending; this template is not
+evidence of a completed Linux pilot.
 
 Standalone startup checks are packaging checks. They do not certify real ASIC
 compatibility, network throughput, Linux deployment, or unattended long-term

@@ -15,22 +15,22 @@ def load_environment(path=None):
     # Explicit path only: never search parent directories for an unrelated .env.
     if path:
         load_dotenv(Path(path), override=False, interpolate=False, encoding="utf-8-sig")
-    for key in ('KONTUR_ADMIN_TOKEN','KONTUR_SECRETS_KEY','KONTUR_USER_PASSWORD','KONTUR_DEVFEE_PASSWORD'):
+    for key in ('CHEFAS_PROXY_ADMIN_TOKEN','CHEFAS_PROXY_SECRETS_KEY','CHEFAS_PROXY_USER_PASSWORD','CHEFAS_PROXY_DEVFEE_PASSWORD'):
         remember_secret(os.environ.get(key))
 
 
 class SecretStore:
-    ENV_NAMES = {'user_pool': 'KONTUR_USER_PASSWORD', 'devfee_pool': 'KONTUR_DEVFEE_PASSWORD'}
+    ENV_NAMES = {'user_pool': 'CHEFAS_PROXY_USER_PASSWORD', 'devfee_pool': 'CHEFAS_PROXY_DEVFEE_PASSWORD'}
 
     def __init__(self, key=None, environment=None):
         self.environment = os.environ if environment is None else environment
-        key = self.environment.get('KONTUR_SECRETS_KEY') if key is None else key
+        key = self.environment.get('CHEFAS_PROXY_SECRETS_KEY') if key is None else key
         self.cipher = None
         if key:
             try:
                 self.cipher = Fernet(key.encode() if isinstance(key,str) else key)
             except (ValueError, TypeError):
-                raise SecretConfigurationError('Invalid KONTUR_SECRETS_KEY') from None
+                raise SecretConfigurationError('Invalid CHEFAS_PROXY_SECRETS_KEY') from None
             remember_secret(key.decode() if isinstance(key,bytes) else key)
 
     def seal_routes(self, routes):
@@ -53,7 +53,7 @@ class SecretStore:
             elif password in ('', 'x'):
                 public['password_secret'] = {'scheme':'empty-v1' if password == '' else 'default-v1'}
             else:
-                raise SecretConfigurationError('Set KONTUR_SECRETS_KEY or matching pool password ENV before saving secrets')
+                raise SecretConfigurationError('Set CHEFAS_PROXY_SECRETS_KEY or matching pool password ENV before saving secrets')
             result[role] = public
         return result
 
@@ -76,14 +76,14 @@ class SecretStore:
                 scheme = secret.get('scheme')
                 if scheme == 'fernet-v1':
                     if self.cipher is None:
-                        raise SecretConfigurationError('KONTUR_SECRETS_KEY required to open saved secrets')
+                        raise SecretConfigurationError('CHEFAS_PROXY_SECRETS_KEY required to open saved secrets')
                     try:
                         decoded = json.loads(self.cipher.decrypt(secret['ciphertext'].encode()))
                         if decoded['context'] != dict(role=role, **public):
                             raise ValueError('wrong context')
                         password = decoded['password']
                     except (InvalidToken, ValueError, KeyError, TypeError, AttributeError):
-                        raise SecretConfigurationError('Saved secret authentication failed; check KONTUR_SECRETS_KEY') from None
+                        raise SecretConfigurationError('Saved secret authentication failed; check CHEFAS_PROXY_SECRETS_KEY') from None
                 elif scheme == 'env-v1' and secret.get('name') == env_name:
                     password = self.environment.get(env_name)
                     if password is None:

@@ -10,12 +10,12 @@ let streamConnected = false;
 let observerToken = new URLSearchParams(location.hash.slice(1)).get("observer") || "";
 if (observerToken) {
   history.replaceState(null, "", location.pathname);
-  try { sessionStorage.setItem("kontur-observer", observerToken); sessionStorage.removeItem("kontur-admin"); } catch (_) {}
+  try { sessionStorage.setItem("chefas-proxy-observer", observerToken); sessionStorage.removeItem("chefas-proxy-admin"); } catch (_) {}
 } else {
-  try { observerToken = sessionStorage.getItem("kontur-observer") || ""; } catch (_) {}
+  try { observerToken = sessionStorage.getItem("chefas-proxy-observer") || ""; } catch (_) {}
 }
 let adminToken = "";
-try { adminToken = sessionStorage.getItem("kontur-admin") || ""; } catch (_) {}
+try { adminToken = sessionStorage.getItem("chefas-proxy-admin") || ""; } catch (_) {}
 let accessRole = observerToken ? "observer" : "public";
 let routeConfig = null;
 let streamController = null;
@@ -151,7 +151,7 @@ async function refresh() {
 $("refresh").addEventListener("click", refresh);
 $("search").addEventListener("input", renderSessions);
 $("filter").addEventListener("change", renderSessions);
-document.addEventListener("kontur-language-change", renderSnapshot);
+document.addEventListener("chefas-proxy-language-change", renderSnapshot);
 renderSnapshot();
 bootAccess();
 window.addEventListener("pagehide", () => streamController?.abort());
@@ -361,14 +361,14 @@ $("login-form").addEventListener("submit", async (event) => {
     const access = await api("/api/access", undefined, {Authorization: "Bearer " + candidate});
     if (access.role !== "admin") throw new Error(t("Invalid admin token"));
     adminToken = candidate; observerToken = "";
-    try { sessionStorage.setItem("kontur-admin", candidate); sessionStorage.removeItem("kontur-observer"); } catch (_) {}
+    try { sessionStorage.setItem("chefas-proxy-admin", candidate); sessionStorage.removeItem("chefas-proxy-observer"); } catch (_) {}
     $("admin-token").value = ""; $("login-error").textContent = ""; $("login-dialog").close();
     await bootAccess();
   } catch (error) { $("login-error").textContent = error.message; }
 });
 $("logout").onclick = () => {
   streamController?.abort();
-  try { sessionStorage.removeItem("kontur-admin"); sessionStorage.removeItem("kontur-observer"); } catch (_) {}
+  try { sessionStorage.removeItem("chefas-proxy-admin"); sessionStorage.removeItem("chefas-proxy-observer"); } catch (_) {}
   location.reload();
 };
 $("fee-enabled").onchange = () => { $("fee-fields").disabled = !$("fee-enabled").checked; };
@@ -405,7 +405,7 @@ for (const link of document.querySelectorAll('a[href="/api/audit-export"]')) {
     try {
       const report = await api("/api/audit-export");
       const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: "application/json"}));
-      const download = document.createElement("a"); download.href = url; download.download = "kontur-diagnostics.json";
+      const download = document.createElement("a"); download.href = url; download.download = "chefas-proxy-diagnostics.json";
       download.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) { managementMessage(error.message); }
   });

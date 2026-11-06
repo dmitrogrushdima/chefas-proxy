@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0.."
-echo Kontur local preview - TEST ONLY, no real pool or miners.
+echo CHEFAS Proxy local preview - TEST ONLY, no real pool or miners.
 echo.
 echo After the server starts, open Google Chrome at:
 echo http://127.0.0.1:18771/

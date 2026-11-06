@@ -188,7 +188,7 @@ class Miner:
         self.configure = configure
         self.version_bits = None
         self.password = password
-        self.subscribe_params = ["kontur-integration/1"]
+        self.subscribe_params = ["chefas-proxy-integration/1"]
 
     async def connect(self):
         self.reader, self.writer = await asyncio.open_connection("127.0.0.1", self.port)
@@ -336,7 +336,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             if fee_template:
                 self.fee_pool.allowed_workers={f'fee.worker_{slot}' for slot in range(1,4)}
         self.port, self.dashboard = unused_ports(2)
-        entrypoint = os.environ.get("KONTUR_TEST_ENTRYPOINT", str(ROOT / "launch.py"))
+        entrypoint = os.environ.get("CHEFAS_PROXY_TEST_ENTRYPOINT", str(ROOT / "launch.py"))
         args = [sys.executable, entrypoint, "--active-router", "--validate-pow",
                 "--env-file", "", "--log-dir", str(Path(self.history.name) / "logs"),
                 "--history-file", str(Path(self.history.name) / "history.json"),
@@ -365,14 +365,14 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         if ssl_user or ssl_fee:
             args += ['--tls-ca-file', str(ROOT/'tests'/'fixtures'/'lab-cert.pem')]
         environment = dict(os.environ)
-        if environment.get('KONTUR_TEST_EXECUTABLE'):
-            args = [environment['KONTUR_TEST_EXECUTABLE'],*args[2:]]
-        environment["KONTUR_SECRETS_KEY"] = Fernet.generate_key().decode()
-        environment["KONTUR_USER_PASSWORD"] = "x"
-        environment["KONTUR_DEVFEE_PASSWORD"] = "x"
-        environment.pop("KONTUR_ADMIN_TOKEN", None)
+        if environment.get('CHEFAS_PROXY_TEST_EXECUTABLE'):
+            args = [environment['CHEFAS_PROXY_TEST_EXECUTABLE'],*args[2:]]
+        environment["CHEFAS_PROXY_SECRETS_KEY"] = Fernet.generate_key().decode()
+        environment["CHEFAS_PROXY_USER_PASSWORD"] = "x"
+        environment["CHEFAS_PROXY_DEVFEE_PASSWORD"] = "x"
+        environment.pop("CHEFAS_PROXY_ADMIN_TOKEN", None)
         if admin_token:
-            environment["KONTUR_ADMIN_TOKEN"] = admin_token
+            environment["CHEFAS_PROXY_ADMIN_TOKEN"] = admin_token
         self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr, env=environment)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
@@ -995,7 +995,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         from history_store import HistoryStore
         pool = await self.pool("11111111", "user.worker")
         self.port, self.dashboard = unused_ports(2)
-        self.admin_token = os.environ.get("KONTUR_ADMIN_TOKEN")
+        self.admin_token = os.environ.get("CHEFAS_PROXY_ADMIN_TOKEN")
         path = Path(self.history.name) / "shutdown-history.json"
         args = SimpleNamespace(pool_host="127.0.0.1", pool_port=pool.port, tls=False,
             backup_host=None, backup_port=None, max_connections=10, connect_timeout=1,

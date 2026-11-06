@@ -46,7 +46,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
                                 "--allow-cidr=192.168.1.0/24"])
 
     def test_secrets_unknown_fields_and_bad_types_are_rejected(self):
-        for value in ({"KONTUR_ADMIN_TOKEN": "secret"}, {"password": "secret"},
+        for value in ({"CHEFAS_PROXY_ADMIN_TOKEN": "secret"}, {"password": "secret"},
                       {"active_router": "false"}, {"listen_port": True}, {"pool_host": {}},
                       {"allow_cidr": "0.0.0.0/0"}, [], {"allow_cidr": ["x"] * 129}):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -65,18 +65,18 @@ class ReleaseConfigurationTests(unittest.TestCase):
         proxy = SimpleNamespace(main=lambda: captured.append((list(sys.argv), Path.cwd())))
         original_directory = Path.cwd()
         try:
-            with patch.object(sys, "argv", ["kontur", "--config", str(path), "--pool-port", "4444"]), \
+            with patch.object(sys, "argv", ["chefas-proxy", "--config", str(path), "--pool-port", "4444"]), \
                  patch.object(entry, "native_modules", return_value={}), \
                  patch.object(entry.importlib, "import_module", return_value=proxy):
                 entry.main()
         finally:
             os.chdir(original_directory)
-        self.assertEqual(captured, [(["kontur", "--pool-host=example.invalid", "--pool-port=3333", "--pool-port", "4444"], path.parent)])
+        self.assertEqual(captured, [(["chefas-proxy", "--pool-host=example.invalid", "--pool-port=3333", "--pool-port", "4444"], path.parent)])
 
     def test_invalid_configuration_never_echoes_credential(self):
-        path = self.config({"KONTUR_ADMIN_TOKEN": "do-not-print-this-secret"})
+        path = self.config({"CHEFAS_PROXY_ADMIN_TOKEN": "do-not-print-this-secret"})
         output = io.StringIO()
-        with patch.object(sys, "argv", ["kontur", "--config", str(path)]), \
+        with patch.object(sys, "argv", ["chefas-proxy", "--config", str(path)]), \
              patch.object(entry, "native_modules", return_value={}), \
              contextlib.redirect_stderr(output), self.assertRaises(SystemExit) as caught:
             entry.main()
@@ -88,12 +88,12 @@ class ServiceGenerationTests(unittest.TestCase):
     def test_service_uses_isolated_persistent_paths_and_sigterm(self):
         unit = service.service_text()
         self.assertIn("KillSignal=SIGTERM", unit)
-        self.assertIn("StateDirectory=kontur", unit)
-        self.assertIn("LogsDirectory=kontur", unit)
-        self.assertIn("--history-file=/var/lib/kontur/history.json", unit)
-        self.assertIn("EnvironmentFile=\"/etc/kontur/kontur.env\"", unit)
+        self.assertIn("StateDirectory=chefas-proxy", unit)
+        self.assertIn("LogsDirectory=chefas-proxy", unit)
+        self.assertIn("--history-file=/var/lib/chefas-proxy/history.json", unit)
+        self.assertIn("EnvironmentFile=\"/etc/chefas-proxy/chefas-proxy.env\"", unit)
         self.assertIn("NoNewPrivileges=true", unit)
-        self.assertIn("User=kontur", unit)
+        self.assertIn("User=chefas-proxy", unit)
 
     def test_unit_injection_rejected_and_specifiers_escaped(self):
         for path in ("relative/path", "/opt/x\nUser=root", '/opt/"x', "/opt/../root", "/opt/\\root", "/opt/$HOME", "/opt/\tx"):
@@ -102,7 +102,7 @@ class ServiceGenerationTests(unittest.TestCase):
         for user in ("root\nExecStart=bad", "user name", "-bad"):
             with self.assertRaises(ValueError):
                 service.service_text(user=user)
-        self.assertIn('ExecStart="/opt/%%h/kontur"', service.service_text(install_dir="/opt/%h"))
+        self.assertIn('ExecStart="/opt/%%h/chefas-proxy"', service.service_text(install_dir="/opt/%h"))
 
 
 class BuildPolicyTests(unittest.TestCase):
@@ -110,7 +110,7 @@ class BuildPolicyTests(unittest.TestCase):
         builder.validate_example_environment(ROOT / ".env.example")
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / ".env.example"
-            for content in ("KONTUR_ADMIN_TOKEN=real-secret", "KONTUR_DEVFEE_PASSWORD=real-password",
+            for content in ("CHEFAS_PROXY_ADMIN_TOKEN=real-secret", "CHEFAS_PROXY_DEVFEE_PASSWORD=real-password",
                             "UNRELATED_API_KEY=real-api-secret"):
                 path.write_text(content, encoding="utf-8")
                 with self.subTest(content=content), self.assertRaises(ValueError):

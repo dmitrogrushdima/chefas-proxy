@@ -19,9 +19,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Set the first value as `KONTUR_ADMIN_TOKEN` and the second as `KONTUR_SECRETS_KEY` in server ENV or a private `.env`. Never put them in JSON, Git, screenshots or a release archive. Restrict the ENV file/key backups and state directory to the service account, including Windows ACLs and any cloud sync of the workspace. Losing the encryption key prevents recovery of encrypted pool passwords. A key readable by the same OS account is not protection against that compromised account.
+Set the first value as `CHEFAS_PROXY_ADMIN_TOKEN` and the second as `CHEFAS_PROXY_SECRETS_KEY` in server ENV or a private `.env`. Never put them in JSON, Git, screenshots or a release archive. Restrict the ENV file/key backups and state directory to the service account, including Windows ACLs and any cloud sync of the workspace. Losing the encryption key prevents recovery of encrypted pool passwords. A key readable by the same OS account is not protection against that compromised account.
 
-`KONTUR_USER_PASSWORD` and `KONTUR_DEVFEE_PASSWORD` are optional initial passwords. The CLI `--devfee-password` has been removed to avoid process-list leakage. The existing User Pool account override is still configured in the authenticated routing UI; an empty override forwards each ASIC's own credentials in memory.
+`CHEFAS_PROXY_USER_PASSWORD` and `CHEFAS_PROXY_DEVFEE_PASSWORD` are optional initial passwords. The CLI `--devfee-password` has been removed to avoid process-list leakage. The existing User Pool account override is still configured in the authenticated routing UI; an empty override forwards each ASIC's own credentials in memory.
 
 Persisted route passwords use authenticated Fernet ciphertext, bound to pool role, host, port and worker. Alternatively, with no encryption key, a password exactly matching its role's ENV value is persisted as an ENV reference. Empty passwords and the public default `x` use scheme markers with no password value. A custom password with neither a key nor matching ENV is rejected before committing the configuration. There is no plaintext fallback.
 
@@ -49,7 +49,7 @@ SIGINT and SIGTERM request a cooperative stop, rather than abruptly cancelling t
 
 ```sh
 python -m pip install -r requirements-build.txt
-python build_ext.py --output dist/kontur-pilot
+python build_ext.py --output dist/chefas-proxy-pilot
 ```
 
 MSVC C++ tools and Windows SDK are required on Windows; a C compiler and Python development headers on Linux. The script translates all 14 runtime modules, including the bounded Stratum codec, and builds platform-native .pyd/.so files. It stages sources/C/object files under ignored build/, uses short relative object paths for Windows, never overwrites the source modules and refuses an existing output directory. `--generate-only` validates Cython translation without a native compiler.
@@ -66,4 +66,4 @@ Reference: [Cython source and extension compilation](https://cython.readthedocs.
 python -m unittest discover -s tests -v
 ```
 
-For the live CLI integration suite against compiled modules, set `KONTUR_TEST_ENTRYPOINT` to the absolute path to the generated launch.py, then run tests/test_live_devfee_router.py with pytest. This variable is used only by the test fixture, not by the product. Inspect the build-manifest source hashes against the source revision used for the build.
+For the live CLI integration suite against compiled modules, set `CHEFAS_PROXY_TEST_ENTRYPOINT` to the absolute path to the generated launch.py, then run tests/test_live_devfee_router.py with pytest. This variable is used only by the test fixture, not by the product. Inspect the build-manifest source hashes against the source revision used for the build.

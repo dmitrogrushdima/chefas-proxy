@@ -1,21 +1,39 @@
 # Operator quick start
 
-Use a trusted build made for the pilot machine. The runtime needs Python matching its ABI and the packages in `requirements.txt`. Native compilation requires the additional build dependencies and platform compiler; see [development](development.md).
+Use a trusted standalone build made for the pilot machine: it bundles Python and the native core. Follow the [three-step package setup](release.md#operator-three-steps). Only the separate native development runtime needs an installed matching Python; see [development](development.md).
 
 ## Configure the server
 
 1. Copy `.env.example` to `.env` in the directory from which you run the launcher. ENV values override this explicit file.
-2. Generate two independent secrets locally:
+2. Generate two independent secrets locally. Standalone operators do not need Python.
+
+   Windows PowerShell (run twice, once for each secret):
+
+   ```powershell
+   $bytes = New-Object byte[] 32
+   $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+   $rng.GetBytes($bytes)
+   $rng.Dispose()
+   [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_')
+   ```
+
+   Linux with OpenSSL (run twice):
+
+   ```sh
+   openssl rand -base64 32 | tr '+/' '-_'
+   ```
+
+   Developers with Python may instead use:
 
    ```sh
    python -c "import secrets; print(secrets.token_urlsafe(32))"
    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
    ```
 
-   Put the first in `KONTUR_ADMIN_TOKEN` and the second in `KONTUR_SECRETS_KEY`. Preserve the encryption key in a private backup; losing it prevents recovery of encrypted pool passwords. Do not send these values to support or add them to Git.
-3. Set `KONTUR_DEVFEE_PASSWORD` if your fee account requires it. The default pool password `x` is public convention, not the administrative secret. User credentials normally come from each ASIC; the authenticated Routes form can override them.
+   Put the first in `CHEFAS_PROXY_ADMIN_TOKEN` and the second in `CHEFAS_PROXY_SECRETS_KEY`. Preserve the encryption key in a private backup; losing it prevents recovery of encrypted pool passwords. Do not send these values to support or add them to Git.
+3. Set `CHEFAS_PROXY_DEVFEE_PASSWORD` if your fee account requires it. The default pool password `x` is public convention, not the administrative secret. User credentials normally come from each ASIC; the authenticated Routes form can override them.
 
-Run `start.bat` on Windows or `./start.sh` on Linux. The root scripts select `bin/kontur/`; a distributed bundle's scripts select their own directory. `KONTUR_PYTHON` can specify an absolute interpreter path. Missing binaries cause an error; the production scripts do not silently fall back to source.
+Run `start.bat` on Windows or `./start.sh` on Linux. The root scripts prefer the matching standalone package in `dist/`, otherwise select `bin/chefas-proxy/`; a distributed bundle's scripts select their own directory. `CHEFAS_PROXY_PYTHON` can specify an absolute interpreter path. Missing binaries cause an error; the production scripts do not silently fall back to source.
 
 ## Pool and miner addresses
 

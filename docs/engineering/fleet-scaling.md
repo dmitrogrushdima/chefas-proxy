@@ -115,7 +115,7 @@ not pool acceptance and must not enter the DevFee ledger or payout estimates.
   All 17 modules were preloaded from the final standalone `_internal` directory
   and their native import paths checked before pytest.
 - Final standalone executable: **36 live integration tests passed** through
-  `kontur.exe`; two in-process shutdown tests were covered by the source suite.
+  `chefas-proxy.exe`; two in-process shutdown tests were covered by the source suite.
   Coverage includes 1000 valid shares (990 user / 10 fee), simultaneous fee
   windows (198 user / 2 fee), and a fee pool four times harder than the user
   pool (396 user / 1 fee share, 1% of accepted difficulty), with no pool rejects

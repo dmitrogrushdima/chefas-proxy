@@ -52,7 +52,7 @@ def pyinstaller_command(native, work, output):
     entry.write_text(template, encoding="utf-8")
     # All core imports must resolve to the already compiled native directory.
     imports = set(modules) | set(imported_modules(ROOT / "src" / (name + ".py") for name in modules))
-    command = [sys.executable, "-m", "PyInstaller", "--onedir", "--name", "kontur",
+    command = [sys.executable, "-m", "PyInstaller", "--onedir", "--name", "chefas-proxy",
                "--noupx", "--console", "--optimize", "0", "--paths", str(native),
                "--distpath", str(output), "--workpath", str(work / "pyinstaller"),
                "--specpath", str(work), "--add-data", str(native / "dashboard") + ":dashboard"]
@@ -89,8 +89,8 @@ def declared_dependencies(path, seen=None):
 def validate_example_environment(path):
     """An accidentally edited .env.example must not turn into a secret leak."""
     from dotenv import dotenv_values
-    allowed = {"KONTUR_ADMIN_TOKEN": (None, ""), "KONTUR_SECRETS_KEY": (None, ""),
-               "KONTUR_USER_PASSWORD": (None, "", "x"), "KONTUR_DEVFEE_PASSWORD": (None, "", "x")}
+    allowed = {"CHEFAS_PROXY_ADMIN_TOKEN": (None, ""), "CHEFAS_PROXY_SECRETS_KEY": (None, ""),
+               "CHEFAS_PROXY_USER_PASSWORD": (None, "", "x"), "CHEFAS_PROXY_DEVFEE_PASSWORD": (None, "", "x")}
     values = dotenv_values(path, interpolate=False, encoding="utf-8-sig")
     if any(key not in allowed or value not in allowed[key] for key, value in values.items()):
         raise ValueError(".env.example contains non-placeholder values; release refused")
@@ -130,7 +130,7 @@ def validate_native_files(bundle, modules):
 def validate_core_archive(bundle, modules):
     """Reject hidden core bytecode as well as loose .py/.pyc files."""
     from PyInstaller.archive.readers import CArchiveReader
-    executable = bundle / ("kontur.exe" if os.name == "nt" else "kontur")
+    executable = bundle / ("chefas-proxy.exe" if os.name == "nt" else "chefas-proxy")
     archive = CArchiveReader(str(executable))
     for name, entry in archive.toc.items():
         if entry[-1] == "z":
@@ -140,10 +140,10 @@ def validate_core_archive(bundle, modules):
 
 
 def smoke_test(bundle):
-    executable = bundle / ("kontur.exe" if os.name == "nt" else "kontur")
+    executable = bundle / ("chefas-proxy.exe" if os.name == "nt" else "chefas-proxy")
     environment = dict(os.environ)
     for key in list(environment):
-        if key.startswith("PYTHON") or key.startswith("KONTUR_"):
+        if key.startswith("PYTHON") or key.startswith("CHEFAS_PROXY_"):
             environment.pop(key)
     # The binary must not need a Python installation or packages on PATH.
     environment["PATH"] = os.path.join(environment.get("SystemRoot", "C:\\Windows"), "System32") if os.name == "nt" else "/usr/bin:/bin"
@@ -160,12 +160,12 @@ def smoke_test(bundle):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", help="Fresh distribution directory; default dist/kontur-<platform>")
+    parser.add_argument("--output", help="Fresh distribution directory; default dist/chefas-proxy-<platform>")
     parser.add_argument("--skip-smoke-test", action="store_true")
     args = parser.parse_args()
     try:
         target = release_platform()
-        output = Path(args.output).resolve() if args.output else ROOT / "dist" / ("kontur-" + target)
+        output = Path(args.output).resolve() if args.output else ROOT / "dist" / ("chefas-proxy-" + target)
         archive_format = "zip" if os.name == "nt" else "gztar"
         archive_suffix = ".zip" if os.name == "nt" else ".tar.gz"
         archive_path = Path(str(output) + archive_suffix)
@@ -188,7 +188,7 @@ def main():
                       Path(path).resolve() != ROOT and ROOT not in Path(path).resolve().parents]
         environment["PYTHONPATH"] = os.pathsep.join(safe_paths)
         subprocess.run(command, cwd=work, env=environment, check=True)
-        bundle = work / "dist" / "kontur"
+        bundle = work / "dist" / "chefas-proxy"
         validate_native_files(bundle, native_manifest["modules"])
         validate_core_archive(bundle, native_manifest["modules"])
         validate_example_environment(ROOT / ".env.example")
@@ -197,13 +197,13 @@ def main():
         example = {"pool_host": "stratum+tcp://POOL_HOST:3333", "listen_host": "127.0.0.1",
                    "listen_port": 3333, "active_router": True, "validate_pow": True,
                    "dashboard_port": 8080}
-        (bundle / "kontur.example.json").write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
-        (bundle / "kontur.service.example").write_text(service_text(), encoding="utf-8", newline="\n")
+        (bundle / "chefas-proxy.example.json").write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
+        (bundle / "chefas-proxy.service.example").write_text(service_text(), encoding="utf-8", newline="\n")
         if os.name == "nt":
-            (bundle / "start.cmd").write_text('@echo off\ncd /d "%~dp0"\n"%~dp0kontur.exe" %*\nif errorlevel 1 (\n  echo See RELEASE.md for configuration instructions.\n  pause\n)\n', encoding="ascii", newline="\r\n")
+            (bundle / "start.cmd").write_text('@echo off\ncd /d "%~dp0"\n"%~dp0chefas-proxy.exe" %*\nif errorlevel 1 (\n  echo See RELEASE.md for configuration instructions.\n  pause\n)\n', encoding="ascii", newline="\r\n")
         else:
             starter = bundle / "start.sh"
-            starter.write_text('#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\ncd "$base"\nexec "$base/kontur" "$@"\n', encoding="utf-8", newline="\n")
+            starter.write_text('#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\ncd "$base"\nexec "$base/chefas-proxy" "$@"\n', encoding="utf-8", newline="\n")
             starter.chmod(0o755)
         if not args.skip_smoke_test:
             smoke_test(bundle)

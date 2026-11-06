@@ -1,70 +1,103 @@
-# KONTUR · ASIC Mining Proxy
+<div align="center">
 
-**One ASIC endpoint. Flexible pool routing. An auditable 1% DevFee target.**
+![CHEFAS Proxy — Your farm. Your pools. One clear view.](docs/assets/chefas-proxy.svg)
 
-KONTUR is the working name of our Bitcoin / SHA-256d Stratum V1 proxy. It connects ASIC miners to their pools and gives farm operators a local control panel, per-worker statistics and a transparent accepted-work ledger.
+**Bitcoin mining, with a clearer view of every connection.**
 
-**Pilot candidate.** Synthetic PoW, network and native-build tests are available. Real Antminer, Whatsminer, Avalon and custom-firmware compatibility is being qualified; there is no claim of universal support or certified farm capacity.
+[![Version](https://img.shields.io/badge/version-0.1.0rc1-cb8b5f?style=flat-square)](docs/release.md)
+[![Stage](https://img.shields.io/badge/stage-pilot_candidate-64748b?style=flat-square)](docs/compatibility.md)
+[![Windows](https://img.shields.io/badge/Windows-x64-334155?style=flat-square)](docs/release.md)
+[![Linux](https://img.shields.io/badge/Linux-x64_build_target-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
+[![License](https://img.shields.io/badge/license-not_declared-64748b?style=flat-square)](#license)
 
-## What operators get
+[![Releases](https://img.shields.io/badge/GitHub-Releases-181717?style=flat-square&logo=github)](https://github.com/dmitrogrushdima/mining-proxy/releases)
+[![Telegram](https://img.shields.io/badge/Telegram-News-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxy)
+[![Community](https://img.shields.io/badge/Telegram-Community-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxychat)
+[![Discord](https://img.shields.io/badge/Discord-coming_soon-64748b?style=flat-square&logo=discord&logoColor=white)](#community)
 
-- Independent user/DevFee connections, verified TLS URLs and controlled failover.
-- Exact version-rolling negotiation, extranonce translation and remembered reconnect fallback.
-- Optional local PoW/duplicate filtering, bounded parsing, job TTL and miner liveness checks.
-- Gradual DevFee connection startup and accepted-difficulty accounting with JSON export.
-- Concurrent fee windows with a shared difficulty reservation budget and explicit session worker templates.
-- Live worker tables, rolling hashrate, history checkpoints and read-only Observer Links.
-- Authenticated route changes, Kick and IP/CIDR blacklist. English, Russian and Chinese UI.
+[Quick start](#-running-in-three-steps) · [Compatibility](#-pools--hardware) · [Documentation](docs/README.md) · [Support development](#-support-development)
 
-## Run the compiled version in three steps
+</div>
 
-### 1. Prepare a matching build
+**CHEFAS Proxy** sits between your Bitcoin ASICs and mining pools. Route connections, follow worker activity and inspect the DevFee ledger from a local dashboard. Built exclusively for **BTC · SHA-256d · Stratum V1**.
 
-There is no public signed installer yet. Maintainers can create a **standalone Windows x64 or Linux x64** package with the release scripts; operators of that package do not need Python. See the [standalone build and launch guide](docs/release.md).
+> **Pilot candidate:** Windows standalone packaging has been tested. Linux deployment and physical ASIC/pool combinations still need qualification. Public downloads appear on Releases when published; this README does not announce a signed production release.
 
-For a native development runtime, use Python 3.10+ and a C compiler on the target platform:
+## ✦ Built around your farm
 
-```sh
-python -m pip install -r requirements-build.txt
-python build_ext.py
-```
+| Capability | What you get |
+| :--- | :--- |
+| **Clear operations** | Live worker tables, estimated hashrate, accepted/rejected shares and history checkpoints. |
+| **Flexible routing** | User and DevFee upstreams, verified TLS, failover and controlled route changes. |
+| **Visible 1% target** | Pool-confirmed difficulty accounting, outstanding DevFee balance and JSON export. |
+| **Careful switching** | Hot extranonce changes on capable firmware; controlled reconnect fallback otherwise. |
+| **Local protection** | Optional PoW checks, duplicate filtering, bounded buffers, job expiry and idle-session cleanup. |
+| **Private administration** | Admin authentication, read-only Observer Links, Kick and IP/CIDR blocking. |
 
-The source-free runtime is created in `bin/kontur/`. Windows `.pyd` and Linux `.so` builds require matching OS, architecture and Python ABI. [Build details](docs/development.md).
+Dashboard languages: **English · Русский · 简体中文**. No cloud account is needed for the local dashboard.
 
-### 2. Configure access and fee credentials
+## 🚀 Running in three steps
 
-Copy `.env.example` to a private `.env`. Set independent `KONTUR_ADMIN_TOKEN` and `KONTUR_SECRETS_KEY` values and any required pool passwords. Keep the key outside release archives. [Exact setup](docs/quickstart.md).
+### Windows x64
 
-### 3. Start the proxy and connect a pilot ASIC
+1. **Unpack** a matching CHEFAS Proxy release ZIP. Keep `chefas-proxy.exe` beside its `_internal` folder.
+2. **Configure** `chefas-proxy.example.json` → `chefas-proxy.json` with your pool and permitted farm network; `.env.example` → `.env` with your own admin token and secrets. [Configuration guide →](docs/quickstart.md)
+3. **Run** `chefas-proxy.exe` (or `start.cmd` to keep startup errors visible). Open **http://127.0.0.1:8080**.
 
-Windows example — replace the pool/account and LAN values:
+### Linux x64 · pilot build target
 
-```bat
-start.bat --pool-host stratum+ssl://USER_POOL:443 --devfee-host stratum+ssl://FEE_POOL:443 --devfee-worker FEE_ACCOUNT.worker --active-router --validate-pow --require-devfee --listen-host 0.0.0.0 --allow-cidr 192.168.10.0/24
-```
+1. **Unpack** a matching Linux build into `/opt/chefas-proxy`.
+2. **Configure and install** the supplied service template, service account and private environment file. [Exact systemd setup →](docs/release.md#linux-service)
+3. **Start** with `sudo systemctl enable --now chefas-proxy`. Access the dashboard locally or through an SSH tunnel.
 
-Linux: use `./start.sh` with the same arguments. Open **http://127.0.0.1:8080/** and sign in. Point the ASIC at **stratum+tcp://PROXY_LAN_IP:3333** with its usual pool worker credentials. Start with a small pilot, then expand after measuring pool rejects and reconnects. [Connection guide and troubleshooting](docs/quickstart.md).
+**Point your ASIC here:** `stratum+tcp://PROXY_LAN_IP:3333`. Keep its normal user-pool worker name and password. Start with one pilot miner, compare accepted work at the pool, then expand.
 
-## Transparent commission and protection
+No separate Python installation is needed for a standalone package. Building from source is covered in the [release guide](docs/release.md).
 
-The fixed **1% target uses pool-confirmed difficulty**, not a count of shares or a promise about monetary payouts. Whole shares, warmup and outages create visible short-term deviations. The ledger exposes accepted user/fee work and the outstanding difference.
+## ⛏ Pools & hardware
 
-The scheduler permits parallel fee windows and reserves expected difficulty before assignment, so miners share one commission budget. Late proofs retain their original route; unknown pool outcomes are reported separately. `--devfee-worker-template '{worker}_{slot}'` optionally gives independent sessions distinct worker names. Jitter and connection admission reduce synchronization; they cannot promise a smooth stochastic hashrate graph.
+These are **qualification targets**, not certification badges or partnerships. Only **Bitcoin SHA-256d models** are in scope; a manufacturer's other algorithms are not supported.
 
-Live routing still uses independent upstreams per ASIC. The aggregation mathematics is implemented and tested, but shared upstream socket consolidation is **not enabled**. No 95% bandwidth saving or 5,000-device capacity is claimed. [Scaling design and remaining gates](docs/engineering/fleet-scaling.md).
+![Antminer](https://img.shields.io/badge/ASIC-Antminer-334155?style=flat-square)
+![Whatsminer](https://img.shields.io/badge/ASIC-Whatsminer-334155?style=flat-square)
+![Avalon](https://img.shields.io/badge/ASIC-Avalon-334155?style=flat-square)
+![Innosilicon](https://img.shields.io/badge/ASIC-Innosilicon-334155?style=flat-square)
 
-`--require-devfee` enables the commercial watchdog: sustained fee failure closes sessions and blocks new mining until restart. It is an explicit availability tradeoff. Cython makes source modification harder; it cannot prevent an owner of the machine from altering the program.
+![f2pool](https://img.shields.io/badge/Pool-f2pool-334155?style=flat-square)
+![ViaBTC](https://img.shields.io/badge/Pool-ViaBTC-334155?style=flat-square)
+![AntPool](https://img.shields.io/badge/Pool-AntPool-334155?style=flat-square)
+![Poolin](https://img.shields.io/badge/Pool-Poolin-334155?style=flat-square)
 
-## Project layout
+Other BTC Stratum V1 pools can be configured by address. Compatibility depends on the **exact model, firmware, endpoint, version mask and extranonce limits**. See the [qualification matrix](docs/compatibility.md).
 
-```text
-src/          Stratum core, session lifecycle, API and observation
-dashboard/    Local HTML/CSS/JS interface
-tests/        Protocol, security and live PoW regressions
-lab/          Synthetic pools and load fixtures
-docs/         Operator guides and engineering references
-bin/          Ignored native builds; never real secrets
-scripts/      Development helpers
-```
+## ◈ A commission you can inspect
 
-[Operator guide](docs/quickstart.md) · [Compatibility and pilot matrix](docs/compatibility.md) · [Build and tests](docs/development.md) · [Documentation index](docs/README.md)
+The **1% DevFee target is measured in pool-confirmed difficulty**, not raw share count or monetary payouts. Parallel fee sessions reserve work against one shared budget; the dashboard exposes accepted user/fee work and the remaining balance. Whole shares and network outages can cause short-term deviations.
+
+`--require-devfee` enables the watchdog: sustained fee failure stops mining until restart. Configure this availability policy deliberately. Compilation does not make a machine owner's modifications impossible.
+
+**Current boundary:** each ASIC still has independent upstream connections. Aggregation mathematics is tested, but shared TCP consolidation is not enabled. There is no advertised 95% bandwidth saving, automatic ASIC overclock or certified 5,000-device capacity. [Engineering roadmap →](docs/engineering/roadmap.md)
+
+## Community
+
+Join [CHEFAS Proxy News](https://t.me/Chefasproxy) for announcements or [the community chat](https://t.me/Chefasproxychat) for discussion. Discord is not open yet. Use [GitHub Issues](https://github.com/dmitrogrushdima/mining-proxy/issues) for reproducible bug reports; remove credentials and identifying network details from traces.
+
+## ♡ Support development
+
+Voluntary donations support CHEFAS Proxy development and are separate from DevFee.
+
+| Currency | Network | Address |
+| :--- | :--- | :--- |
+| ₿ **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
+| 💵 **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
+| ◎ **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
+
+## Documentation & source
+
+[`src/`](src) core · [`dashboard/`](dashboard) interface · [`tests/`](tests) regressions · [`lab/`](lab) synthetic test pools · [`docs/engineering/`](docs/engineering) design and limits.
+
+[Operator guide](docs/quickstart.md) · [Build & release](docs/release.md) · [Development](docs/development.md) · [Upgrade naming](docs/engineering/branding.md)
+
+## License
+
+No project license has been declared yet. A public repository is not a license grant. Distribution terms must be settled before a public binary release; bundled dependencies retain their own license terms.

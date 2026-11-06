@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Kontur — Mining Proxy</title>
+  <title>CHEFAS Proxy — Mining Proxy</title>
   <link rel="stylesheet" href="/app.css">
   <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <dialog id="login-dialog"><form id="login-form"><h2>Administrator sign in</h2><p>Enter the KONTUR_ADMIN_TOKEN configured on the server.</p><label>Admin token<input id="admin-token" type="password" required minlength="32" maxlength="512" autocomplete="off"></label><p id="login-error" role="alert"></p><button type="submit">Sign in</button><button id="login-cancel" type="button">Cancel</button></form></dialog>
+  <dialog id="login-dialog"><form id="login-form"><h2>Administrator sign in</h2><p>Enter the CHEFAS_PROXY_ADMIN_TOKEN configured on the server.</p><label>Admin token<input id="admin-token" type="password" required minlength="32" maxlength="512" autocomplete="off"></label><p id="login-error" role="alert"></p><button type="submit">Sign in</button><button id="login-cancel" type="button">Cancel</button></form></dialog>
 
   <div class="shell">
     <aside class="sidebar">
-      <a class="brand" href="#overview" aria-label="Kontur — overview">
+      <a class="brand" href="#overview" aria-label="CHEFAS Proxy — overview">
         <span class="brand-mark" aria-hidden="true"><span></span></span>
-        <span><b>KONTUR</b><small>MINING PROXY</small></span>
+        <span><b>CHEFAS <em>Proxy</em></b><small>BITCOIN · SHA-256d</small></span>
       </a>
       <p class="nav-caption">WORKSPACE</p>
       <nav aria-label="Sections">
@@ -31,8 +31,9 @@
     </aside>
     <div class="workspace">
       <header class="topbar">
+        <a class="mobile-brand" href="#overview">CHEFAS <span>Proxy</span></a>
         <div class="breadcrumb">WORKSPACE <span>/</span> <strong>OVERVIEW</strong></div>
-        <div class="top-actions"><button id="login-open" type="button">Sign in</button><button id="logout" type="button" hidden>Sign out</button><label class="language-control"><span id="language-label">Language</span><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option><option value="zh-CN">简体中文</option></select></label><span class="test-badge">TEST VERSION</span><span class="live-status" id="connection-status" role="status"><i></i> Connecting</span></div>
+        <div class="top-actions"><button id="login-open" type="button">Sign in</button><button id="logout" type="button" hidden>Sign out</button><label class="language-control"><span id="language-label">Language</span><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option><option value="zh-CN">简体中文</option></select></label><span class="test-badge">PILOT BUILD</span><span class="live-status" id="connection-status" role="status"><i></i> Connecting</span></div>
       </header>
       <main id="overview">
         <div class="page-title"><div><div class="eyebrow"><span></span> CONTROL CENTER</div><h1>Proxy overview<span class="title-dot">.</span></h1><p>Connections and pool activity in one place.</p></div><div class="refresh-wrap"><span id="last-update">Waiting for data</span><button id="refresh" type="button" aria-label="Refresh data">↻ <span>Refresh</span></button></div></div>
@@ -78,7 +79,7 @@
           <aside class="right-column">
             <section class="panel route-panel" id="pools"><div class="panel-header"><div><div class="section-kicker">ROUTE <span> / 03</span></div><h2>Pools</h2><p>Current configuration</p></div><span class="subtle-icon">⌁</span></div><div class="route"><div class="route-point"><span class="route-dot main-dot"></span><div><small>PRIMARY POOL</small><b id="primary-pool">—</b><span id="tls-label">—</span></div></div><div class="route-line"></div><div class="route-point"><span class="route-dot backup-dot"></span><div><small>BACKUP POOL</small><b id="backup-pool">—</b><span>On connection failure</span></div></div></div><div class="route-footer"><span>Proxy port</span><strong id="listener">—</strong></div></section>
             <section class="note-card"><div class="note-top"><span class="note-icon">✳</span><span>AUDIT</span></div><h3>Accepted work</h3><p><span>User difficulty / shares</span>: <b id="audit-user">—</b></p><p><span>DevFee difficulty / shares</span>: <b id="audit-fee">—</b></p><p><span>DevFee share of difficulty</span>: <b id="audit-percent">—</b></p><p><span>Estimated hashrate · 5 min</span>: <b id="audit-hashrate">—</b></p><p><span>Outstanding DevFee difficulty</span>: <b id="audit-debt">—</b></p><p><span>Rejected locally</span>: <b id="audit-local">—</b></p><p>Pool-confirmed work since proxy start. Estimates are not payouts.</p><a href="/api/audit-export" download>Export JSON <span>↗</span></a></section>
-            <div class="version"><span>KONTUR / MINING PROXY</span><span>PROTOTYPE 01</span></div>
+            <div class="version"><span>CHEFAS Proxy / BITCOIN</span><span>PILOT CANDIDATE</span></div>
           </aside>
         </div>
         <footer>Built for those who keep things under control. <span>Local monitoring · BTC / Stratum V1</span></footer>

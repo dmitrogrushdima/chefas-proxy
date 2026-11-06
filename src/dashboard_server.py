@@ -131,7 +131,7 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
                                "fee_difficulty": audit["fee_accepted_difficulty"],
                                "fee_percentage": audit["fee_percentage"], "audit": audit})
             status, body, content_type = b"200 OK", json.dumps(report).encode(), b"application/json"
-            disposition = b"\r\nContent-Disposition: attachment; filename=kontur-diagnostics.json"
+            disposition = b"\r\nContent-Disposition: attachment; filename=chefas-proxy-diagnostics.json"
         elif first[1] in ASSETS:
             body, content_type = ASSETS[first[1]]
             status = b"200 OK"

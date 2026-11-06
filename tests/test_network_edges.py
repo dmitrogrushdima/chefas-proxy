@@ -161,7 +161,7 @@ class EdgeTests(unittest.IsolatedAsyncioTestCase):
                 tasks=[asyncio.create_task(drain_bounded(target,5,source)) for target in targets]
                 try:
                     await asyncio.sleep(0)
-                    self.assertEqual(source._kontur_read_pressure['users'],2)
+                    self.assertEqual(source._chefas_proxy_read_pressure['users'],2)
                     releases[first].set();await tasks[first]
                     self.assertFalse(source.transport.reading)
                     self.assertEqual(source.transport.resumes,0)
@@ -169,7 +169,7 @@ class EdgeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(source.transport.reading)
                     self.assertEqual(source.transport.pauses,1)
                     self.assertEqual(source.transport.resumes,1)
-                    self.assertEqual(source._kontur_read_pressure['users'],0)
+                    self.assertEqual(source._chefas_proxy_read_pressure['users'],0)
                 finally:
                     for task in tasks:task.cancel()
                     await asyncio.gather(*tasks,return_exceptions=True)
@@ -187,7 +187,7 @@ class EdgeTests(unittest.IsolatedAsyncioTestCase):
                     tasks[cancelled].cancel()
                     with self.assertRaises(asyncio.CancelledError):await tasks[cancelled]
                     self.assertFalse(source.transport.reading)
-                    self.assertEqual(source._kontur_read_pressure['users'],1)
+                    self.assertEqual(source._chefas_proxy_read_pressure['users'],1)
                     releases[1-cancelled].set();await tasks[1-cancelled]
                     self.assertTrue(source.transport.reading)
                     self.assertEqual(source.transport.resumes,1)
@@ -211,7 +211,7 @@ class EdgeTests(unittest.IsolatedAsyncioTestCase):
                     release.set();await task
                     self.assertFalse(source.transport.reading)
                     self.assertEqual(source.transport.resumes,0)
-                    self.assertEqual(source._kontur_read_pressure['users'],0)
+                    self.assertEqual(source._chefas_proxy_read_pressure['users'],0)
                 finally:
                     task.cancel();await asyncio.gather(task,return_exceptions=True)
 

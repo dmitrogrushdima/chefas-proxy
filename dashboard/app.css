@@ -8,7 +8,7 @@
 [hidden]{display:none!important}
 button{background:#192537;border:1px solid #304157;color:#d2def0;padding:8px 11px;border-radius:6px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.management-form{padding:0 22px 22px;display:grid;gap:14px}.management-form fieldset{border:1px solid #304157;border-radius:8px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:16px;min-width:0}.management-form label,dialog label{display:grid;gap:6px;font-size:12px;color:#a9bdd8}.management-form input,dialog input{width:100%;min-width:0;color:#edf3fc;background:#101927;border:1px solid #304157;border-radius:5px;padding:9px}.management-form .check-label{display:flex;align-items:center}.check-label input{width:auto}.management-form legend{color:#b7cbff}.management-form p{font-size:12px;line-height:1.5;overflow-wrap:anywhere}.worker-actions{display:flex;gap:6px}.worker-actions button{font-size:10px;padding:5px 8px}dialog{max-width:440px;width:calc(100% - 32px);background:#141d2b;color:#edf3fc;border:1px solid #304157;border-radius:10px;padding:24px}dialog::backdrop{background:#0009}dialog form{display:grid;gap:14px}dialog p{font-size:12px;line-height:1.6}#login-error{color:#ffb5ad;margin:0}#management-result{color:#a9bdd8}.observer-view #fee-log,.observer-view #pools,.observer-view a[href="#pools"],.observer-view a[href="/api/audit-export"]{display:none!important}@media(max-width:500px){.management-form fieldset{grid-template-columns:minmax(0,1fr)}.top-actions button{font-size:10px;padding:6px}}
 
-/* Product console: local assets only, compact operational density. */
+/* CHEFAS Proxy console: local assets only, compact operational density. */
 :root { --bg:#0d1218; --panel:#151d26; --border:#2a3643; --muted:#a1adbc; --text:#eff5fa; --accent:#63d8c1; --mint:#63d8c1; }
 body { background:radial-gradient(ellipse at 65% 0%,#18302f35,transparent 50%),var(--bg); }
 .shell { grid-template-columns:192px minmax(0,1fr); }
@@ -67,3 +67,29 @@ table td { font-size:12px; border-color:#253340; }
 @media(max-width:900px) { .shell { grid-template-columns:74px minmax(0,1fr); } .product-metric { padding:18px 16px; } .product-metric strong { font-size:28px; } .fee-metric strong { font-size:23px; } main { padding:24px 20px; } }
 @media(max-width:600px) { .shell { grid-template-columns:minmax(0,1fr); } .sidebar { display:none; } .topbar { padding:0 14px; } main { padding:22px 14px; } .product-metrics { grid-template-columns:minmax(0,1fr); gap:10px; } .product-metric { gap:8px; padding:17px 18px; } .product-metric strong { font-size:29px; } .fee-metric strong { min-height:0; font-size:25px; } .right-column { grid-template-columns:minmax(0,1fr); } }
 @media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } * { transition:none!important; } }
+
+/* CHEFAS identity: warm copper accents, readable wordmark, quiet surfaces. */
+.mobile-brand { display:none; }
+:root { --accent:#deb18c; --bg:#11161c; --panel:#1a2129; --border:#343c46; }
+body { background:radial-gradient(ellipse at 75% 0%,#b7785112,transparent 55%),var(--bg); }
+.brand { gap:9px; margin-left:5px; margin-right:0; }
+.brand-mark { flex-shrink:0; transform:none; border-color:#deb18c; border-radius:9px; }
+.brand-mark span { border-color:#deb18c; border-radius:2px; }
+.brand b { font-size:15px; letter-spacing:.025em; white-space:nowrap; }
+.brand b em { font-style:normal; font-weight:400; color:#deb18c; letter-spacing:0; }
+.brand small { font-size:8px; letter-spacing:.09em; color:#b0b6bd; }
+.nav-link.selected { background:#deb18c12; color:#f1d4bd; box-shadow:inset 2px 0 #deb18c; }
+.nav-indicator,.title-dot,.eyebrow > span { color:#deb18c; }
+.nav-indicator { background:#deb18c; }
+input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible { outline-color:#deb18c; }
+button:hover { border-color:#deb18c; background:#2a3036; }
+.section-kicker { color:#deb18c; }
+.product-metric { border-top:2px solid #b77851; }
+.test-badge { color:#e3bb99; border-color:#b7785155; background:#b7785110; }
+@media(max-width:900px) and (min-width:601px) { .brand { margin-left:5px; } }
+@media(max-width:600px) {
+  .topbar { height:auto; min-height:67px; padding:14px; flex-wrap:wrap; gap:12px; }
+  .mobile-brand { display:block; font-size:17px; font-weight:700; letter-spacing:.02em; }
+  .mobile-brand span { color:#deb18c; font-weight:400; }
+  .top-actions { width:100%; flex-wrap:wrap; gap:8px; }
+}

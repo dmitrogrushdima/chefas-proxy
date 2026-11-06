@@ -37,7 +37,7 @@ class SecretStoreTests(unittest.TestCase):
         with self.assertRaises(SecretConfigurationError): store.open_routes(changed)
 
     def test_env_references_and_no_plaintext_fallback(self):
-        store=SecretStore(environment={'KONTUR_USER_PASSWORD':'env-secret-value'})
+        store=SecretStore(environment={'CHEFAS_PROXY_USER_PASSWORD':'env-secret-value'})
         saved=store.seal_routes(routes('env-secret-value'))
         self.assertNotIn('env-secret-value',json.dumps(saved))
         self.assertEqual(store.open_routes(saved),routes('env-secret-value'))
@@ -47,12 +47,12 @@ class SecretStoreTests(unittest.TestCase):
             self.assertEqual(SecretStore(environment={}).open_routes(SecretStore(environment={}).seal_routes(routes(value))),routes(value))
 
     def test_dotenv_never_overrides_server_env_or_expands_secrets(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ,{'KONTUR_ADMIN_TOKEN':'server-value'},clear=True):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ,{'CHEFAS_PROXY_ADMIN_TOKEN':'server-value'},clear=True):
             path=Path(directory)/'.env'
-            path.write_text('KONTUR_ADMIN_TOKEN=file-value\nKONTUR_USER_PASSWORD=literal-${HOME}\n',encoding='utf-8-sig')
+            path.write_text('CHEFAS_PROXY_ADMIN_TOKEN=file-value\nCHEFAS_PROXY_USER_PASSWORD=literal-${HOME}\n',encoding='utf-8-sig')
             load_environment(path)
-            self.assertEqual(os.environ['KONTUR_ADMIN_TOKEN'],'server-value')
-            self.assertEqual(os.environ['KONTUR_USER_PASSWORD'],'literal-${HOME}')
+            self.assertEqual(os.environ['CHEFAS_PROXY_ADMIN_TOKEN'],'server-value')
+            self.assertEqual(os.environ['CHEFAS_PROXY_USER_PASSWORD'],'literal-${HOME}')
 
     def test_legacy_control_migrates_atomically_without_plaintext_backup(self):
         with tempfile.TemporaryDirectory() as directory:

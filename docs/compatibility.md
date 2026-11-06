@@ -1,6 +1,6 @@
 # Hardware compatibility
 
-Compatibility is negotiated from protocol capabilities, not guessed from a manufacturer name. UA/firmware strings are untrusted hints. Antminer, Whatsminer, Avalon, Vnish and Braiins are **pilot targets**, not a certified-device list.
+Compatibility is negotiated from protocol capabilities, not guessed from a manufacturer name. UA/firmware strings are untrusted hints. Antminer, Whatsminer, Avalon, Innosilicon BTC models, Vnish and Braiins are **pilot targets**, not a certified-device list.
 
 ## Implemented behavior
 
@@ -22,9 +22,21 @@ The byte-translation mechanism has a two-pool cryptographic regression with upst
 | Antminer stock | BIP310, exact masks, reconnect and nonce-width tests | Pending exact model/firmware/pool |
 | Whatsminer stock | Generic Stratum V1 and declared capabilities | Pending exact model/firmware/pool |
 | Avalon stock | Generic Stratum V1; no guessed vendor workaround | Pending extranonce and reconnect tests |
+| Innosilicon BTC models | Generic Stratum V1; no model-specific qualification | Pending exact SHA-256d model and firmware |
 | Vnish | Version-rolling/capability paths, synthetic only | Pending specific release and hardware |
 | Braiins OS | BIP310 capability path, synthetic only | Pending specific release and hardware |
 
 Record: model, firmware build, agent string if available, pool/port/TLS, negotiated masks and nonce sizes, hours observed, rejects and forced reconnects. Redact wallets, passwords, tokens and public IPs before sharing traces.
 
 Sources: [BIP310](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki), [Braiins extranonce configuration caveats](https://academy.braiins.com/farm-proxy/configuration). We use these as protocol/design references, not as certification of our code.
+
+## Pool qualification targets
+
+| BTC pool | Connection model | Public-pool qualification |
+| --- | --- | --- |
+| f2pool | Configurable BTC Stratum V1 endpoint | Pending real account, endpoint and hardware pilot |
+| ViaBTC | Configurable BTC Stratum V1 endpoint | Pending real account, endpoint and hardware pilot |
+| AntPool | Configurable BTC Stratum V1 endpoint | Pending real account, endpoint and hardware pilot |
+| Poolin | Configurable BTC Stratum V1 endpoint | Pending real account, endpoint and hardware pilot |
+
+These names identify pilot targets, not endorsements or verified vendor-specific support. Use the BTC endpoint and account syntax supplied by your pool. Other BTC Stratum V1 endpoints may be configured; strict protocol checks can reject unimplemented extensions. No automatic pool discovery or endorsement is implied.

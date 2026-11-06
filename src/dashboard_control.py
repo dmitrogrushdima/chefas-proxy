@@ -22,7 +22,7 @@ class DashboardControl:
     def __init__(self, relay, stream, admin_token=None, state_path='state/control.json', secret_store=None):
         from dashboard_server import DashboardStream
         if admin_token is not None and len(admin_token) < 32:
-            raise ValueError('KONTUR_ADMIN_TOKEN must contain at least 32 characters')
+            raise ValueError('CHEFAS_PROXY_ADMIN_TOKEN must contain at least 32 characters')
         self.relay, self.stream, self.admin_token = relay, stream, admin_token
         self.path = Path(state_path)
         self.secrets = secret_store or SecretStore()
@@ -53,7 +53,7 @@ class DashboardControl:
                 if type(relay.route_generation) is not int or relay.route_generation < 0:
                     raise ValueError('invalid route generation')
             legacy = stored_routes and any(isinstance(route, dict) and 'password' in route for route in stored_routes.values())
-            if legacy or 'admin_token' in data or 'KONTUR_ADMIN_TOKEN' in data:
+            if legacy or 'admin_token' in data or 'CHEFAS_PROXY_ADMIN_TOKEN' in data:
                 self.save(self.relay.blacklist, self.tokens)
                 event(logging.WARNING, 'control_secrets_migrated')
         self.observer_stream = DashboardStream(self.observer_snapshot)
@@ -259,7 +259,7 @@ class DashboardControl:
                 result = await self.mutate(path, data)
             await self.respond(writer, b'200 OK', result)
         except SecretConfigurationError:
-            await self.respond(writer, b'503 Service Unavailable', {'error': 'Configure pool password ENV or KONTUR_SECRETS_KEY before saving secrets'})
+            await self.respond(writer, b'503 Service Unavailable', {'error': 'Configure pool password ENV or CHEFAS_PROXY_SECRETS_KEY before saving secrets'})
         except (ValueError, TypeError, OverflowError):
             await self.respond(writer, b'400 Bad Request', {'error': 'invalid request or stale configuration'})
         except KeyError:

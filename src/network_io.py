@@ -149,10 +149,10 @@ async def drain_bounded(writer, timeout, source_writer=None, source_reader=None,
             # User and fee RPC writers can simultaneously backpressure one
             # ASIC. Every stalled drain owns a reference, including drains that
             # arrive after another one has already paused the source.
-            pause_state = getattr(source_writer,'_kontur_read_pressure',None)
+            pause_state = getattr(source_writer,'_chefas_proxy_read_pressure',None)
             if pause_state is None:
                 pause_state = {'users':0,'owned':False}
-                source_writer._kontur_read_pressure = pause_state
+                source_writer._chefas_proxy_read_pressure = pause_state
             pause_state['users'] += 1
             if source.is_reading():
                 source.pause_reading()

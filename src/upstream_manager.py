@@ -107,10 +107,10 @@ def encode_packet(value):
 
 async def read_packet(reader):
     """Compatibility helper; production sessions own explicit role-specific readers."""
-    framing = getattr(reader, '_kontur_packet_reader', None)
+    framing = getattr(reader, '_chefas_proxy_packet_reader', None)
     if framing is None:
         framing = PacketReader(reader, max_bytes=MAX_LINE)
-        reader._kontur_packet_reader = framing
+        reader._chefas_proxy_packet_reader = framing
     return await framing.read_packet()
 
 

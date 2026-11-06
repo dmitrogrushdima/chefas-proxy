@@ -14,14 +14,14 @@ def _path(value):
     return '"' + str(path).replace("%", "%%") + '"'
 
 
-def service_text(install_dir="/opt/kontur", config="/etc/kontur/kontur.json", env_file="/etc/kontur/kontur.env", user="kontur"):
+def service_text(install_dir="/opt/chefas-proxy", config="/etc/chefas-proxy/chefas-proxy.json", env_file="/etc/chefas-proxy/chefas-proxy.env", user="chefas-proxy"):
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,30}", user):
         raise ValueError("Invalid service user")
-    executable = _path(install_dir.rstrip("/") + "/kontur")
+    executable = _path(install_dir.rstrip("/") + "/chefas-proxy")
     config_path, environment = _path(config), _path(env_file)
     working = _path(str(PurePosixPath(config).parent))
     return f'''[Unit]
-Description=KONTUR Stratum mining proxy
+Description=CHEFAS Proxy Stratum mining proxy
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=60
@@ -33,15 +33,15 @@ User={user}
 Group={user}
 WorkingDirectory={working}
 EnvironmentFile={environment}
-ExecStart={executable} --config {config_path} --control-state=/var/lib/kontur/control.json --history-file=/var/lib/kontur/history.json --compatibility-state=/var/lib/kontur/compatibility.json --log-dir=/var/log/kontur
+ExecStart={executable} --config {config_path} --control-state=/var/lib/chefas-proxy/control.json --history-file=/var/lib/chefas-proxy/history.json --compatibility-state=/var/lib/chefas-proxy/compatibility.json --log-dir=/var/log/chefas-proxy
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=45
 LimitNOFILE=65536
 UMask=0077
-StateDirectory=kontur
-LogsDirectory=kontur
+StateDirectory=chefas-proxy
+LogsDirectory=chefas-proxy
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -62,10 +62,10 @@ WantedBy=multi-user.target
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--install-dir", default="/opt/kontur")
-    parser.add_argument("--config", default="/etc/kontur/kontur.json")
-    parser.add_argument("--env-file", default="/etc/kontur/kontur.env")
-    parser.add_argument("--user", default="kontur")
+    parser.add_argument("--install-dir", default="/opt/chefas-proxy")
+    parser.add_argument("--config", default="/etc/chefas-proxy/chefas-proxy.json")
+    parser.add_argument("--env-file", default="/etc/chefas-proxy/chefas-proxy.env")
+    parser.add_argument("--user", default="chefas-proxy")
     args = parser.parse_args()
     try:
         text = service_text(args.install_dir, args.config, args.env_file, args.user)

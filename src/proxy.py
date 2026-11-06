@@ -1,4 +1,4 @@
-"""Experimental TCP relay; not intended for production mining."""
+"""CHEFAS Proxy - Bitcoin SHA-256d Stratum V1 pilot."""
 import argparse
 import asyncio
 import logging
@@ -85,7 +85,7 @@ async def run(args, stop_event=None):
     relay.fee_worker = args.devfee_worker
     relay.fee_worker_template = getattr(args,'devfee_worker_template',None)
     relay.fee_password = args.devfee_password
-    relay.user_password = os.environ.get("KONTUR_USER_PASSWORD", "x")
+    relay.user_password = os.environ.get("CHEFAS_PROXY_USER_PASSWORD", "x")
     relay.reconnect_min_seconds = args.reconnect_min_seconds
     relay.require_devfee = args.require_devfee
     relay.fee_grace_seconds = args.fee_grace_seconds
@@ -96,7 +96,7 @@ async def run(args, stop_event=None):
     if history:
         history.load()
     stream = DashboardStream(relay.live_snapshot)
-    control = DashboardControl(relay, stream, os.environ.get("KONTUR_ADMIN_TOKEN"), args.control_state)
+    control = DashboardControl(relay, stream, os.environ.get("CHEFAS_PROXY_ADMIN_TOKEN"), args.control_state)
     if args.active_router:
         relay.metrics._ledger = relay.ledger
         relay.metrics._devfee_enabled = bool(relay.fee)
@@ -164,7 +164,7 @@ async def run_cli(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="chefas-proxy", description=__doc__)
     parser.add_argument("--pool-host", required=True)
     parser.add_argument("--env-file", default=".env", help="Explicit dotenv path; server ENV takes priority; empty disables")
     parser.add_argument("--log-dir", default="logs")
@@ -228,7 +228,7 @@ def main():
         if not math.isfinite(value) or not lower <= value <= upper:
             parser.error('--'+name.replace('_','-')+' outside allowed range')
     load_environment(args.env_file)
-    args.devfee_password = os.environ.get("KONTUR_DEVFEE_PASSWORD", "x")
+    args.devfee_password = os.environ.get("CHEFAS_PROXY_DEVFEE_PASSWORD", "x")
     if not math.isfinite(args.miner_timeout) or (args.miner_timeout != 0 and not .1 <= args.miner_timeout <= 86400):
         parser.error("--miner-timeout must be 0 or .1..86400")
     if not math.isfinite(args.handshake_timeout) or not .1 <= args.handshake_timeout <= 300:
