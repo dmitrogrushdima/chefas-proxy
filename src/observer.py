@@ -326,6 +326,8 @@ class Metrics:
         self.write_timeouts = 0
         self.write_buffer_rejected = 0
         self.clean_jobs_coalesced = 0
+        self.coalesced_read_batches = 0
+        self.coalesced_extra_messages = 0
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}

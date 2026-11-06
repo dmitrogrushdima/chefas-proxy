@@ -41,6 +41,10 @@ class DashboardControl:
             if any(len(key) != 64 or any(c not in '0123456789abcdef' for c in key) or
                    type(expiry) not in (int, float) or not math.isfinite(expiry) for key, expiry in self.tokens.items()):
                 raise ValueError('invalid observer state')
+            mode = data.get("tp_mode", self.relay.tp_mode)
+            if type(mode) is not bool:
+                raise ValueError("invalid TP mode")
+            self.relay.tp_mode = self.relay.tp_mode or mode
             stored_routes = data.get('routes')
             self.route_data = self.secrets.open_routes(stored_routes)
             if self.route_data is not None:
@@ -64,7 +68,7 @@ class DashboardControl:
         snapshot['access'] = 'observer'
         return snapshot
 
-    def save(self, blacklist, tokens, routes=None, generation=None):
+    def save(self, blacklist, tokens, routes=None, generation=None, tp_mode=None):
         sealed_routes = self.secrets.seal_routes(self.route_data if routes is None else routes)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(dir=self.path.parent, prefix='.control-')
@@ -72,6 +76,7 @@ class DashboardControl:
             with os.fdopen(descriptor, 'w', encoding='utf-8') as file:
                 json.dump({'blacklist': [str(item) for item in blacklist], 'observers': tokens,
                            'routes': sealed_routes,
+                           'tp_mode': self.relay.tp_mode if tp_mode is None else tp_mode,
                            'route_generation': getattr(self.relay, 'route_generation', 0) if generation is None else generation}, file)
                 file.flush()
                 os.fsync(file.fileno())
@@ -112,10 +117,18 @@ class DashboardControl:
 
     def public_config(self):
         user, fee = current_pool_routes(self.relay)
-        return {'generation': getattr(self.relay, 'route_generation', 0), 'user_pool': user.export(),
+        return {'tp_mode': self.relay.tp_mode, 'generation': getattr(self.relay, 'route_generation', 0), 'user_pool': user.export(),
                 'devfee_pool': fee.export() if fee else None, 'require_devfee': getattr(self.relay, 'require_devfee', False)}
 
     async def mutate(self, path, data):
+        if path == '/api/mode':
+            if set(data) != {'tp_mode'} or type(data['tp_mode']) is not bool:
+                raise ValueError('boolean tp_mode required')
+            mode = data['tp_mode']
+            await asyncio.to_thread(self.save, self.relay.blacklist, self.tokens, tp_mode=mode)
+            self.relay.tp_mode = mode
+            event(logging.INFO, 'tp_mode_changed', enabled=mode, scope='new_sessions')
+            return {'tp_mode': mode, 'scope': 'new_sessions'}
         if path == '/api/blacklist':
             values = data.get('blacklist')
             if 'add' in data or 'remove' in data:

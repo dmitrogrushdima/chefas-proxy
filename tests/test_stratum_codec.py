@@ -11,6 +11,18 @@ def request(ident=1, method='mining.subscribe', params=None):
 
 
 class StratumCodecTests(unittest.IsolatedAsyncioTestCase):
+    async def test_read_batch_telemetry(self):
+        from observer import Metrics
+        metrics = Metrics()
+        reader = asyncio.StreamReader()
+        reader.feed_data(request(1) + request(2))
+        reader.feed_eof()
+        packets = PacketReader(reader, role='miner', metrics=metrics)
+        self.assertEqual((await packets.read_packet())['id'], 1)
+        self.assertEqual((await packets.read_packet())['id'], 2)
+        self.assertEqual(metrics.coalesced_read_batches, 1)
+        self.assertEqual(metrics.coalesced_extra_messages, 1)
+
     async def test_coalesced_objects_and_arbitrary_fragmentation(self):
         source=b'\r\n'+request(params=['firmware {x} [y] \\" 中文 🚀'])+request(2,'mining.configure')+b'\n'+request(3,'mining.authorize',['worker','x'])
         expected=[]

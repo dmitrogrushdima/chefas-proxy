@@ -152,8 +152,9 @@ class StratumDecoder:
 
 
 class PacketReader:
-    def __init__(self, reader, max_bytes=4096, role=None):
+    def __init__(self, reader, max_bytes=4096, role=None, metrics=None):
         self.reader = reader
+        self.metrics = metrics
         self.decoder = StratumDecoder(max_bytes, role)
         self.pending = deque()
 
@@ -163,5 +164,9 @@ class PacketReader:
             if not data:
                 self.decoder.eof()
                 return None
-            self.pending.extend(self.decoder.feed(data))
+            packets = self.decoder.feed(data)
+            if self.metrics is not None and len(packets) > 1:
+                self.metrics.coalesced_read_batches += 1
+                self.metrics.coalesced_extra_messages += len(packets) - 1
+            self.pending.extend(packets)
         return self.pending.popleft()

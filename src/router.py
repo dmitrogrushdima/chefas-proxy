@@ -6,7 +6,8 @@ async def copy_stream(source, destination, direction, observer, metrics, on_acti
         on_activity()
         write_bounded(destination,data,metrics)
         try:
-            observer.feed(direction, data)
+            if observer is not None:
+                observer.feed(direction, data)
         except Exception:
             metrics.observation_errors += 1
         await drain_bounded(destination,timeout,source_writer,source,metrics)
@@ -39,7 +40,7 @@ class StatefulRouter:
 
     def __init__(self, relay, reader, writer, session):
         self.relay, self.reader, self.writer, self.session = relay, reader, writer, session
-        self.packets = PacketReader(reader, getattr(relay, "max_miner_message", 4096), role="miner")
+        self.packets = PacketReader(reader, getattr(relay, "max_miner_message", 4096), role="miner", metrics=relay.metrics)
         self.fee = relay.fee
         self.fee_worker = getattr(relay, 'fee_worker', '')
         self.fee_password = getattr(relay, 'fee_password', 'x')
@@ -916,6 +917,7 @@ class StatefulRouter:
                     await self.relay.compatibility.remember(self.session.get('ip',''), self.auth,
                         self.capabilities.agent, self.last_transition[1])
                     self.relay.metrics.compatibility_fallbacks += 1
+                    event(logging.WARNING, "reconnect_fallback", session_id=self.session["id"])
                 except (OSError, ValueError):
                     event(logging.WARNING, 'compatibility_checkpoint_failed', session_id=self.session['id'])
             self.stopping = True

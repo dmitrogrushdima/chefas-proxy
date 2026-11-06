@@ -55,19 +55,32 @@ No separate Python installation is needed for a standalone package. Building fro
 
 ## Pools & hardware
 
-These are **qualification targets**, not certification badges or partnerships. Only **Bitcoin SHA-256d models** are in scope; a manufacturer's other algorithms are not supported.
+BTC Stratum V1 pool connections. Select your provider and configure its Bitcoin endpoint.
 
-![Antminer](https://img.shields.io/badge/ASIC-Antminer-334155?style=flat-square)
-![Whatsminer](https://img.shields.io/badge/ASIC-Whatsminer-334155?style=flat-square)
-![Avalon](https://img.shields.io/badge/ASIC-Avalon-334155?style=flat-square)
-![Innosilicon](https://img.shields.io/badge/ASIC-Innosilicon-334155?style=flat-square)
+<table>
+<tr>
+<td align="center" width="25%"><a href="https://www.f2pool.com"><strong>f2pool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.viabtc.com"><strong>ViaBTC</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.antpool.com"><strong>AntPool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.poolin.com"><strong>Poolin</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+</tr>
+<tr>
+<td align="center" width="25%"><a href="https://pool.braiins.com"><strong>Braiins Pool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://foundrydigital.com"><strong>Foundry USA</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" colspan="2"><strong>Your BTC pool</strong><br><sub>Custom host · TCP / TLS</sub></td>
+</tr>
+</table>
 
-![f2pool](https://img.shields.io/badge/Pool-f2pool-334155?style=flat-square)
-![ViaBTC](https://img.shields.io/badge/Pool-ViaBTC-334155?style=flat-square)
-![AntPool](https://img.shields.io/badge/Pool-AntPool-334155?style=flat-square)
-![Poolin](https://img.shields.io/badge/Pool-Poolin-334155?style=flat-square)
+### ASIC hardware
 
-Other BTC Stratum V1 pools can be configured by address. Compatibility depends on the **exact model, firmware, endpoint, version mask and extranonce limits**. See the [qualification matrix](docs/compatibility.md).
+| Family | Bitcoin models | Firmware qualification |
+| :--- | :--- | :--- |
+| **Bitmain Antminer** | S19 / S21 series | Stock, Vnish and Braiins OS+ builds require model-specific pilot verification |
+| **MicroBT Whatsminer** | M30 / M50 / M60 series | Stock firmware qualification pending |
+| **Canaan Avalon** | SHA-256d models | Exact model and stock firmware qualification pending |
+| **Innosilicon** | Bitcoin SHA-256d models | Exact model and firmware qualification pending |
+
+Protocol capabilities include version rolling and declared extranonce updates. Physical model, firmware and public-pool combinations remain under qualification. [Compatibility matrix](docs/compatibility.md).
 
 ## A commission you can inspect
 
@@ -87,9 +100,9 @@ Voluntary donations support CHEFAS Proxy development and are separate from DevFe
 
 | | Currency | Network | Address |
 | :---: | :--- | :--- | :--- |
-| <img src="docs/assets/bitcoin.svg" width="24" height="24" alt=""> | **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
-| <img src="docs/assets/tether.svg" width="24" height="24" alt=""> | **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
-| <img src="docs/assets/solana.svg" width="24" height="24" alt=""> | **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
+| <img src="https://cryptologos.cc/logos/bitcoin-btc-logo.svg?v=035" align="absmiddle" width="24" height="24" alt=""> | **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
+| <img src="https://cryptologos.cc/logos/tether-usdt-logo.svg?v=035" align="absmiddle" width="24" height="24" alt=""> | **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
+| <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=035" align="absmiddle" width="24" height="24" alt=""> | **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
 
 ## Documentation & source
 

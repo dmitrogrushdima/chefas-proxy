@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Bitcoin">
-  <circle cx="12" cy="12" r="12" fill="#f7931a"/>
-  <g transform="rotate(12 12 12)" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round">
-    <path d="M8.5 6.5h4.4c4 0 4 5.1 0 5.1H8.5m0 0h4.9c4.4 0 4.4 5.9 0 5.9H8.5V6.5M10.4 4v2.5m3-2.5v2.5m-3 11V20m3-2.5V20M7 6.5h1.5M7 17.5h1.5"/>
-  </g>
-</svg>

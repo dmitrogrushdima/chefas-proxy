@@ -75,6 +75,7 @@ class Relay:
         self.listeners = []
         self.allowed_networks = tuple(ipaddress.ip_network(network, strict=True) for network in allowed_networks)
         self.active_router = False
+        self.tp_mode = False
         self.fee = None
         self.fee_jitter_seconds = 180
         self.fee_connection_gate = FeeConnectionGate()
@@ -127,10 +128,10 @@ class Relay:
         session = {"id": session_id, "state": "connecting", "worker": None,
                    "pool": None, "started": time.monotonic(), "metrics": session_metrics,
                    "writer": writer, "ip": writer.get_extra_info("peername")[0],
-                   "route_id": route_id, "protocol_started": not self.active_router}
+                   "route_id": route_id, "protocol_started": not self.active_router or self.tp_mode}
         session["endpoint"] = self.route_configs.get(route_id, {}).get("endpoint", (self.host, self.port))
         self.sessions[session_id] = session
-        if not self.active_router:
+        if not self.active_router or self.tp_mode:
             event(logging.INFO, "session_started", session_id=session_id, active_router=False)
 
         def authorized(name):
@@ -143,12 +144,14 @@ class Relay:
 
         observer = Observer(session_metrics, on_authorized=authorized, on_share=share_observed)
         session["observer"] = observer
+        session["tp_mode"] = self.tp_mode
+        wire_observer = None if self.tp_mode else observer
         task = asyncio.current_task()
         self.tasks.add(task)
         upstream = None
         pumps = []
         try:
-            if self.active_router:
+            if self.active_router and not session["tp_mode"]:
                 from router import StatefulRouter
                 await StatefulRouter(self, reader, writer, session).run()
                 return
@@ -173,8 +176,8 @@ class Relay:
                 last_miner_activity = time.monotonic()
                 mark_activity()
 
-            pumps = [asyncio.create_task(copy_stream(reader,upstream,0,observer,self.metrics,mark_miner_activity,self.timeout,writer)),
-                     asyncio.create_task(copy_stream(remote_reader,writer,1,observer,self.metrics,mark_activity,self.timeout,upstream))]
+            pumps = [asyncio.create_task(copy_stream(reader,upstream,0,wire_observer,self.metrics,mark_miner_activity,self.timeout,writer)),
+                     asyncio.create_task(copy_stream(remote_reader,writer,1,wire_observer,self.metrics,mark_activity,self.timeout,upstream))]
             watchdog = None
             if self.idle_timeout:
                 async def watch_idle():
@@ -351,6 +354,7 @@ class Relay:
                 "handshake_timeout_seconds": self.handshake_timeout,
                 "max_miner_message_bytes": self.max_miner_message,
                 "active_router": self.active_router,
+                "tp_mode": self.tp_mode,
                 "require_devfee": getattr(self, "require_devfee", False),
                 "fee_policy_blocked": getattr(self, "fee_blocked", False),
                 "backup": {"host": self.backup[0], "port": self.backup[1],

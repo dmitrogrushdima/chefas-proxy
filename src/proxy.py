@@ -69,6 +69,7 @@ async def run(args, stop_event=None):
                   tls_context=url_tls_context if args.tls else None)
     relay.url_tls_context = url_tls_context
     relay.active_router = args.active_router
+    relay.tp_mode = getattr(args, "tp_mode", False)
     relay.compatibility = CompatibilityRegistry(getattr(args, 'compatibility_state', 'state/compatibility.json'))
     relay.compatibility.load()
     relay.hot_switch_mode = getattr(args, 'hot_switch_mode', 'auto')
@@ -123,6 +124,9 @@ async def run(args, stop_event=None):
             event(logging.INFO, "minute_summary", active=relay.active,
                   accepted=relay.metrics.accepted, rejected=relay.metrics.rejected,
                   hashrate_5m_hs=estimate,
+                  reconnect_fallbacks=relay.metrics.compatibility_fallbacks,
+                  coalesced_read_batches=relay.metrics.coalesced_read_batches,
+                  coalesced_extra_messages=relay.metrics.coalesced_extra_messages,
                   logging_dropped=getattr(relay.metrics._log_handler, "dropped", 0))
     summary = asyncio.create_task(summaries())
     fleet = asyncio.create_task(relay.reconcile_idle_fee_sessions())
@@ -185,6 +189,7 @@ def main():
     parser.add_argument('--asic-extranonce2-min', type=int, default=0)
     parser.add_argument('--asic-extranonce2-max', type=int, default=4)
     parser.add_argument("--active-router", "--stateful", action="store_true", help="Enable experimental stateful Stratum router")
+    parser.add_argument("--tp-mode", action="store_true", help="Raw TCP relay without Stratum observation; applies at session admission")
     parser.add_argument("--validate-pow", action="store_true")
     parser.add_argument("--devfee-host")
     parser.add_argument('--devfee-jitter-seconds', type=float, default=180)
@@ -228,6 +233,12 @@ def main():
         if not math.isfinite(value) or not lower <= value <= upper:
             parser.error('--'+name.replace('_','-')+' outside allowed range')
     load_environment(args.env_file)
+    tp_env = os.environ.get("TP_MODE", "false").lower()
+    if tp_env not in ("true", "false"):
+        parser.error("TP_MODE must be true or false")
+    args.tp_mode = args.tp_mode or tp_env == "true"
+    if args.tp_mode:
+        args.require_devfee = False
     args.devfee_password = os.environ.get("CHEFAS_PROXY_DEVFEE_PASSWORD", "x")
     if not math.isfinite(args.miner_timeout) or (args.miner_timeout != 0 and not .1 <= args.miner_timeout <= 86400):
         parser.error("--miner-timeout must be 0 or .1..86400")
@@ -241,7 +252,7 @@ def main():
         parser.error("--fee-grace-seconds must be in 0.1..86400")
     if any((args.devfee_host, args.devfee_port, args.devfee_worker)) and not all((args.devfee_host, args.devfee_port, args.devfee_worker)):
         parser.error("--devfee-host, --devfee-port and --devfee-worker must be supplied together")
-    if (args.devfee_host or args.validate_pow) and not args.active_router:
+    if (args.devfee_host or args.validate_pow) and not args.active_router and not args.tp_mode:
         parser.error("DevFee and PoW validation require --active-router")
     if args.active_router and args.idle_timeout:
         parser.error("--idle-timeout is not yet supported with --active-router")

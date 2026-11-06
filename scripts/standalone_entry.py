@@ -9,7 +9,7 @@ import sys
 
 CORE_MODULES = ()  # Replaced in the staged entry point; never import src/ here.
 CONFIG_OPTIONS = {
-    "pool_host", "pool_port", "listen_host", "listen_port", "active_router",
+    "tp_mode", "pool_host", "pool_port", "listen_host", "listen_port", "active_router",
     "validate_pow", "devfee_host", "devfee_port", "devfee_worker",
     "devfee_worker_template",
     "backup_host", "backup_port", "dashboard_port", "tls", "tls_ca_file",
@@ -22,7 +22,7 @@ CONFIG_OPTIONS = {
     "history_file", "compatibility_state",
 }
 BOOLEAN_OPTIONS = {
-    "active_router", "validate_pow", "tls", "allow_any_miner", "require_devfee", "debug_stratum",
+    "tp_mode", "active_router", "validate_pow", "tls", "allow_any_miner", "require_devfee", "debug_stratum",
 }
 
 
@@ -32,6 +32,10 @@ def configuration_arguments(path):
     if path.stat().st_size > 65536:
         raise ValueError("Configuration exceeds 64 KiB")
     config = json.loads(path.read_text(encoding="utf-8-sig"))
+    if isinstance(config, dict) and "TP_MODE" in config:
+        if "tp_mode" in config:
+            raise ValueError("Duplicate TP mode setting")
+        config["tp_mode"] = config.pop("TP_MODE")
     if not isinstance(config, dict) or not set(config).issubset(CONFIG_OPTIONS):
         raise ValueError("Unknown configuration key; passwords and tokens belong in ENV")
     result = []

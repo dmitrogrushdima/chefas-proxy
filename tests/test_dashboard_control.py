@@ -29,6 +29,19 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         await self.server.wait_closed()
         self.tmp.cleanup()
 
+    async def test_tp_mode_requires_admin_and_persists(self):
+        headers, _ = await self.request('/api/mode', data={'tp_mode': True})
+        self.assertIn(b'403', headers)
+        self.assertFalse(self.relay.tp_mode)
+        headers, body = await self.request('/api/mode', 'A'*32, {'tp_mode': True})
+        self.assertIn(b'200', headers)
+        self.assertEqual(body['scope'], 'new_sessions')
+        self.assertTrue(self.relay.tp_mode)
+        self.assertTrue(json.loads(self.path.read_text())['tp_mode'])
+        headers, _ = await self.request('/api/mode', 'A'*32, {'tp_mode': 'false'})
+        self.assertIn(b'400', headers)
+        self.assertTrue(self.relay.tp_mode)
+
     async def request(self, path, token='', data=None, method=None):
         reader,writer=await asyncio.open_connection('127.0.0.1',self.port)
         try:

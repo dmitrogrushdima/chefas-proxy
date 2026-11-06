@@ -120,7 +120,7 @@ class UpstreamConnection:
     def __init__(self, reader, writer, target, on_notification, on_disconnect, timeout=10,
                  miner_writer=None, miner_reader=None, metrics=None):
         self.reader, self.writer, self.target = reader, writer, target
-        self.packets = PacketReader(reader, max_bytes=MAX_LINE, role="pool")
+        self.packets = PacketReader(reader, max_bytes=MAX_LINE, role="pool", metrics=metrics)
         self.on_notification, self.on_disconnect = on_notification, on_disconnect
         self.timeout = timeout
         self.miner_writer, self.miner_reader, self.metrics = miner_writer,miner_reader,metrics

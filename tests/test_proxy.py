@@ -43,6 +43,25 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.writers.append(writer)
         return reader, writer
 
+    async def test_tp_mode_bypasses_stratum_observer(self):
+        payload = b'\xff\x00HTTP arbitrary binary\r\n'
+        async def pool(reader, writer):
+            data = await reader.readexactly(len(payload))
+            writer.write(data)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+        port = await self.start_relay(await self.start_server(pool))
+        self.relay.active_router = True
+        self.relay.tp_mode = True
+        with patch('observer.Observer.feed') as observe:
+            reader, writer = await self.connect(port)
+            writer.write(payload)
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(len(payload)), 3), payload)
+            observe.assert_not_called()
+        self.assertEqual(self.relay.metrics.submitted, 0)
+
     async def test_stratum_messages_forwarded_unchanged(self):
         received = []
         async def pool(reader, writer):

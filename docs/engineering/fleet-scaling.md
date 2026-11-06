@@ -133,3 +133,14 @@ The Windows archive SHA-256 for this build is
 `6bd893d7685a6aee64721fbbd9689a3ed0ba746f90c8078f8bc71a0d76fa534d`.
 These are local regression results, not a farm throughput benchmark. The
 generated Linux build/service still needs qualification on Linux.
+
+
+## Pilot telemetry and TP mode
+
+`TP_MODE=true` in the server environment or `"TP_MODE": true` in the standalone JSON configuration selects raw forwarding. The CLI equivalent is `--tp-mode`. The authenticated `POST /api/mode` accepts `{"tp_mode": true}` and persists the selection for new connections. Existing sessions retain their admission mode. `/api/config` and live status expose the selected mode.
+
+TP sessions bypass Stratum parsing, local PoW checks and DevFee routing. Basic connection admission, deadlines and backpressure still apply. Disabling TP restores the configured routing mode for subsequent connections.
+
+`coalesced_read_batches` counts socket reads containing multiple complete JSON messages. `coalesced_extra_messages` counts the additional messages in those batches. These describe application reads, whose boundaries can differ from TCP packets. Both counters and `compatibility_fallbacks` appear in the metrics API and minute-summary logs. Learning a compatibility fallback emits `reconnect_fallback`.
+
+Shared upstream TCP consolidation and socket-preserving route migration are still release gates. The aggregation primitives are not wired into live routing, so no aggregation-filter counter or working `AGGREGATION_ENABLED` switch is advertised yet. Independent DevFee sessions already retain the ASIC subscription agent via `independent_subscription`; pool-specific ban behavior requires a pilot.

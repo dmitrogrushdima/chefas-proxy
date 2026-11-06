@@ -325,6 +325,7 @@ async function runStream(controller) {
 
 async function loadConfig() {
   routeConfig = await api("/api/config");
+  $("tp-mode").checked = !!routeConfig.tp_mode;
   for (const [prefix, route] of [["user", routeConfig.user_pool], ["fee", routeConfig.devfee_pool]]) {
     $(prefix + "-host").value = route?.host || "";
     $(prefix + "-port").value = route?.port || "";
@@ -415,3 +416,13 @@ $("route-reload").onclick = async () => {
   try { await loadConfig(); managementMessage(t("Routes reloaded")); }
   catch (error) { managementMessage(error.message); }
 };
+
+$("tp-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/mode", {tp_mode: $("tp-mode").checked});
+    $("tp-result").textContent = "Applied to new connections. Existing sessions retain their current mode.";
+  } catch (error) {
+    $("tp-result").textContent = error.message;
+  }
+});
