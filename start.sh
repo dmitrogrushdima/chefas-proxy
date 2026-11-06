@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$base/dist/kontur-linux-x64/kontur" ]; then
+  cd "$base"
+  exec "$base/dist/kontur-linux-x64/kontur" "$@"
+fi
 if [ -d "$base/src" ]; then runtime="$base/bin/kontur"; else runtime="$base"; fi
 if [ ! -f "$runtime/launch.py" ]; then
   echo "Compiled runtime missing. Run: python build_ext.py" >&2

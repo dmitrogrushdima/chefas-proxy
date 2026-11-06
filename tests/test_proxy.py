@@ -74,7 +74,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
     async def test_unavailable_pool_closes_miner_connection(self):
         proxy_port = await self.start_relay(1)
         open_client = asyncio.open_connection
-        with patch("proxy.asyncio.open_connection", new=AsyncMock(side_effect=ConnectionRefusedError)):
+        with patch("upstream_manager.open_upstream", new=AsyncMock(side_effect=ConnectionRefusedError)):
             reader, writer = await open_client("127.0.0.1", proxy_port)
             self.writers.append(writer)
             self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
@@ -237,8 +237,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         port = server.sockets[0].getsockname()[1]
         self.relay.set_listeners(server)
         answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))]
-        loop = asyncio.get_running_loop()
-        with patch.object(loop, "getaddrinfo", new=AsyncMock(return_value=answer)):
+        with patch.object(self.relay.resolver, "resolve", new=AsyncMock(return_value=answer)):
             self.assertFalse(await self.relay.is_self_route(("external.test", port)))
 
     async def test_many_clients_keep_traffic_separate(self):

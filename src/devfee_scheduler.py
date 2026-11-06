@@ -13,6 +13,14 @@ import math
 import asyncio
 import random
 import time
+from dataclasses import dataclass
+import string
+import heapq
+
+
+def independent_subscription(params):
+    """Retain the original agent/version; never resume another pool's session."""
+    return list(params[:1])
 
 
 class FeeJitter:
@@ -179,6 +187,232 @@ class AcceptedWorkLedger:
             "rounding_bound_difficulty": _exact(max(self.max_fee_share_work, excess)),
             "rounding_bound_basis": "observed fee share quantum or current excess; excludes future in-flight responses",
         }
+
+
+@dataclass(frozen=True)
+class PendingFeeWork:
+    """Reservation for one submitted proof; never an accepted-work credit."""
+
+    worker_id: int | str
+    difficulty: Fraction
+
+
+class FairnessAllocator:
+    """Allocate concurrent fee windows against one exact accepted-work budget.
+
+    A grant reserves one *expected* fee share at that upstream's job difficulty.
+    Thus thousands of ASICs cannot each spend the same outstanding fee debt.
+    Allocation is proportional to difficulty units, not a count of workers or
+    shares. The last indivisible grant may cross the debt by one share quantum;
+    subsequent grants are denied until accepted user work funds them again.
+
+    The event-loop owner calls these synchronous methods without intervening
+    awaits. ``begin_submit`` transfers an unused grant into a pending reservation
+    and also tracks late proofs from old jobs, even without an active grant.
+    ``release`` never discards pending work. Record a positive pool response in
+    the ledger *before* ``finish_submit``. Rejected or ambiguous outcomes are not
+    income; an unknown outcome releases its reservation and is counted explicitly
+    rather than retried, because Stratum provides no definitive reconciliation.
+
+    This bounds allocation, not the stochastic number of proofs already being
+    computed or in transit. Valid late proofs must still be forwarded and counted.
+    No algorithm can promise exactly 1% after each indivisible share, or infer a
+    pool's acceptance after a lost response. This class does not open sockets or
+    merge ASIC nonce spaces; those are responsibilities of the live router.
+    """
+
+    def __init__(self, ledger: AcceptedWorkLedger, max_active: int = 128,
+                 max_pending: int = 10000) -> None:
+        if not isinstance(ledger, AcceptedWorkLedger):
+            raise ValueError('allocator requires an accepted-work ledger')
+        for name, value in (('max_active', max_active), ('max_pending', max_pending)):
+            if type(value) is not int or not 1 <= value <= 10000:
+                raise ValueError(name + ' must be 1..10000')
+        self.ledger = ledger
+        self.max_active = max_active
+        self.max_pending = max_pending
+        self._grants: dict[int | str, Fraction] = {}
+        self._pending: dict[int, PendingFeeWork] = {}
+        self._pending_workers: dict[int | str, int] = {}
+        self._reserved = Fraction(0)
+        self._sequence = 0
+        self.accepted_submissions = 0
+        self.rejected_submissions = 0
+        self.unknown_submissions = 0
+        self.unknown_difficulty = Fraction(0)
+
+    @staticmethod
+    def _worker(worker_id: int | str) -> None:
+        if ((type(worker_id) is int and worker_id >= 0 and worker_id.bit_length() <= 256)
+                or (isinstance(worker_id, str) and 0 < len(worker_id) <= 256)):
+            return
+        raise ValueError('invalid allocator worker identity')
+
+    @property
+    def outstanding(self) -> Fraction:
+        """Actual accepted-work debt, which may be negative after late proofs."""
+        return self.ledger.eligible_user_work / 99 - self.ledger.fee_work
+
+    @property
+    def reserved(self) -> Fraction:
+        return self._reserved
+
+    def active(self, worker_id: int | str) -> bool:
+        self._worker(worker_id)
+        return worker_id in self._grants
+
+    def should_continue(self, worker_id: int | str) -> bool:
+        """Revalidate an idle miner's grant after other pool responses settle."""
+        self._worker(worker_id)
+        own = self._grants.get(worker_id)
+        return (own is not None and self.ledger.should_fee() and
+                self.outstanding - (self._reserved - own) > 0)
+
+    def acquire(self, worker_id: int | str, difficulty) -> bool:
+        """Reserve one share; a duplicate acquire cannot reserve it twice.
+
+        Reacquiring an existing grant revalidates and, if needed, updates its
+        difficulty for a new job. A worker with an outstanding RPC cannot acquire
+        another speculative grant. The router should skip periodic reconciliation
+        while that submit is pending, then reconcile after its response settles.
+        """
+        self._worker(worker_id)
+        work = _difficulty(difficulty)
+        own = self._grants.get(worker_id, Fraction(0))
+        budget = self.outstanding - (self._reserved - own)
+        if (not self.ledger.should_fee() or budget <= 0 or
+                worker_id in self._pending_workers or
+                (worker_id not in self._grants and len(self._grants) >= self.max_active)):
+            self.release(worker_id)
+            return False
+        self._grants[worker_id] = work
+        self._reserved += work - own
+        return True
+
+    def release(self, worker_id: int | str) -> None:
+        """Release unsubmitted work only, including on disconnect or failover."""
+        self._worker(worker_id)
+        self._reserved -= self._grants.pop(worker_id, Fraction(0))
+
+    def begin_submit(self, worker_id: int | str, difficulty) -> int:
+        """Reserve exact work for a live or late proof before sending it upstream.
+
+        Admission limits may reject a new reservation before any bytes are sent;
+        the router must handle that as a local capacity failure, not an accepted
+        or rejected pool share. Old proofs do not need a new grant and remain
+        routable even when the accepted-work budget has already been repaid.
+        """
+        self._worker(worker_id)
+        work = _difficulty(difficulty)
+        if len(self._pending) >= self.max_pending:
+            raise ValueError('fee pending reservation capacity exhausted')
+        self.release(worker_id)
+        self._sequence += 1
+        self._pending[self._sequence] = PendingFeeWork(worker_id, work)
+        self._pending_workers[worker_id] = self._pending_workers.get(worker_id, 0) + 1
+        self._reserved += work
+        return self._sequence
+
+    def finish_submit(self, token: int, outcome: str = 'accepted') -> None:
+        """Release an RPC reservation exactly once; never mutate the ledger."""
+        if type(token) is not int or token not in self._pending:
+            raise ValueError('unknown or already settled fee reservation')
+        if outcome not in ('accepted', 'rejected', 'unknown'):
+            raise ValueError('invalid fee submission outcome')
+        pending = self._pending.pop(token)
+        self._reserved -= pending.difficulty
+        count = self._pending_workers[pending.worker_id] - 1
+        if count:
+            self._pending_workers[pending.worker_id] = count
+        else:
+            del self._pending_workers[pending.worker_id]
+        counter = outcome + '_submissions'
+        setattr(self, counter, getattr(self, counter) + 1)
+        if outcome == 'unknown':
+            self.unknown_difficulty += pending.difficulty
+
+    def snapshot(self) -> dict:
+        return {
+            'active_grants': len(self._grants),
+            'pending_submissions': len(self._pending),
+            'reserved_difficulty': _exact(self._reserved),
+            'available_difficulty': _exact(max(Fraction(0), self.outstanding - self._reserved)),
+            'accepted_submissions': self.accepted_submissions,
+            'rejected_submissions': self.rejected_submissions,
+            'unknown_submissions': self.unknown_submissions,
+            'unknown_difficulty': _exact(self.unknown_difficulty),
+            'max_active': self.max_active,
+            'max_pending': self.max_pending,
+        }
+
+
+class StableFeeSlots:
+    """Bounded, reusable slot names for concurrently live fee sessions.
+
+    Session identities may grow across weeks of uptime; the pool worker suffix
+    remains within ``1..limit``. A slot can be reused only after the owner has
+    closed *all* its old fee channels, so the router releases it at the end of
+    cleanup, not on a transient pool outage or on leaving a fee window.
+    """
+
+    def __init__(self, limit: int = 10000) -> None:
+        if type(limit) is not int or not 1 <= limit <= 10000:
+            raise ValueError('fee slot limit must be 1..10000')
+        self.limit = limit
+        self._owners: dict[int | str, int] = {}
+        self._free: list[int] = []
+        self._next = 1
+
+    def obtain(self, session_id: int | str) -> int:
+        FairnessAllocator._worker(session_id)
+        if session_id in self._owners:
+            return self._owners[session_id]
+        if self._free:
+            slot = heapq.heappop(self._free)
+        elif self._next <= self.limit:
+            slot = self._next
+            self._next += 1
+        else:
+            raise ValueError('fee worker slot capacity exhausted')
+        self._owners[session_id] = slot
+        return slot
+
+    def release(self, session_id: int | str) -> None:
+        FairnessAllocator._worker(session_id)
+        slot = self._owners.pop(session_id, None)
+        if slot is not None:
+            heapq.heappush(self._free, slot)
+
+
+def stable_fee_worker(worker: str, slot: int, template: str | None = None) -> str:
+    """Only an explicit operator template may alter an upstream account name.
+
+    For example, ``'{worker}_{slot}'`` expands ``wallet.worker`` to
+    ``wallet.worker_7``. Pool account and wallet syntaxes differ; the default
+    preserves the operator's exact authorization string instead of guessing.
+    Slots identify sessions, not hardware models or an assurance of invisibility.
+    """
+    if not isinstance(worker, str) or not worker or len(worker) > 128 or any(ord(c) < 32 for c in worker):
+        raise ValueError('invalid fee worker')
+    if type(slot) is not int or not 1 <= slot <= 10000:
+        raise ValueError('fee worker slot must be 1..10000')
+    if template is None:
+        return worker
+    if not isinstance(template, str) or not template or len(template) > 256:
+        raise ValueError('invalid fee worker template')
+    try:
+        fields = list(string.Formatter().parse(template))
+        for _, field, spec, conversion in fields:
+            if field is not None and (field not in ('worker', 'slot') or spec or conversion):
+                raise ValueError('template supports only {worker} and {slot}')
+        if not any(field == 'worker' for _, field, _, _ in fields):
+            raise ValueError('template must retain {worker}')
+        result = template.format(worker=worker, slot=slot)
+    except (KeyError, IndexError, AttributeError) as exc:
+        raise ValueError('invalid fee worker template') from exc
+    if not result or len(result) > 128 or any(ord(c) < 32 for c in result):
+        raise ValueError('expanded fee worker exceeds limits')
+    return result
 
 
 class FeeSimulation:

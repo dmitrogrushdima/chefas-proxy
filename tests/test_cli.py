@@ -25,6 +25,7 @@ class CLITests(unittest.TestCase):
                       ['--devfee-connect-interval','-1'],
                       ['--job-ttl','0'],
                       ['--job-gc-interval','inf'],
+                      ['--devfee-worker-template','{worker.__class__}'],
                       ["--allow-cidr", "192.168.0.1/24"],
                       ["--allow-cidr", "invalid"],
                       ["--listen-host", "0.0.0.0"],

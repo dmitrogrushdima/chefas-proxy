@@ -16,7 +16,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 MODULES = ('proxy','router','devfee_scheduler','pow_validator','history_store','stratum_session',
-           'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec','hardware_compatibility')
+           'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec','hardware_compatibility','network_io','aggregation')
 LAUNCHER = '''"""Launch the compiled KONTUR runtime; source fallback is rejected."""
 import importlib
 from importlib.machinery import EXTENSION_SUFFIXES

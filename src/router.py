@@ -1,15 +1,15 @@
 """Transparent stream forwarding with passive observation and backpressure."""
 
 
-async def copy_stream(source, destination, direction, observer, metrics, on_activity):
+async def copy_stream(source, destination, direction, observer, metrics, on_activity, timeout=10, source_writer=None):
     while data := await source.read(65536):
         on_activity()
-        destination.write(data)
+        write_bounded(destination,data,metrics)
         try:
             observer.feed(direction, data)
         except Exception:
             metrics.observation_errors += 1
-        await destination.drain()
+        await drain_bounded(destination,timeout,source_writer,source,metrics)
 
 
 import asyncio
@@ -17,12 +17,14 @@ import string
 import time
 import logging
 import ssl
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
-from upstream_manager import UpstreamConnection, ProtocolError, encode_packet, open_upstream
+from upstream_manager import UpstreamConnection, ProtocolError, encode_packet, open_upstream, UpstreamLoopError
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
-from devfee_scheduler import FeeHealth, FeeJitter
+from devfee_scheduler import (FeeHealth, FeeJitter, independent_subscription, FairnessAllocator,
+                              stable_fee_worker)
+from network_io import write_bounded, drain_bounded
 from pilot_logging import event, stratum_trace, remember_secret
 from stratum_codec import PacketReader
 from hardware_compatibility import (ClientCapabilities, validate_config, negotiated_mask,
@@ -75,6 +77,94 @@ class StatefulRouter:
         self.prefer_fee = False
         self.jitter = FeeJitter(getattr(relay, 'fee_jitter_seconds', 180))
         self.warmup_task = None
+        self.clean_revision = 0
+        self.urgent_job = self.normal_job = None
+        self.urgent_inflight = None
+        self.controls = deque()
+        self.control_bytes = 0
+        self.outbound_ready = asyncio.Event()
+        self.client_context = None
+        self.reconnect_task = None
+        self.reconcile_task = None
+        self.reconcile_lock = asyncio.Lock()
+        if not hasattr(relay,'fee_allocator'):
+            relay.fee_allocator = FairnessAllocator(relay.ledger)
+        self.allocator = relay.fee_allocator
+        self.fee_slot = None
+        if self.fee and getattr(relay,'fee_worker_template',None):
+            self.fee_slot = relay.fee_slots.obtain(session['id'])
+            try:
+                self.fee_worker = stable_fee_worker(self.fee_worker,self.fee_slot,relay.fee_worker_template)
+            except ValueError:
+                relay.fee_slots.release(session['id'])
+                raise
+
+    def schedule_reconcile(self):
+        if self.reconcile_task is None or self.reconcile_task.done():
+            async def update():
+                try:
+                    await self.reconcile()
+                except (OSError,ValueError,ProtocolError,asyncio.TimeoutError):
+                    self.close_client()
+            self.reconcile_task = asyncio.create_task(update())
+            self.tasks.add(self.reconcile_task)
+            self.reconcile_task.add_done_callback(self.tasks.discard)
+
+    def queue_job(self, ch, clean):
+        snapshot = (list(ch.job), ch.job_extranonce, ch.job_extra_size, ch.job_difficulty,
+                    self.mask, getattr(ch,'clean_generation',0))
+        item = (ch,snapshot)
+        if clean:
+            if self.urgent_job is not None or self.normal_job is not None:
+                self.relay.metrics.clean_jobs_coalesced += 1
+            self.urgent_job, self.normal_job = item, None
+        else:
+            self.normal_job = item
+        self.outbound_ready.set()
+
+    def queue_control(self, ch, packet):
+        size = len(encode_packet(packet))
+        if len(self.controls) >= 32 or self.control_bytes + size > 262144:
+            raise ProtocolError('notification queue limit')
+        self.controls.append((ch,packet,size))
+        self.control_bytes += size
+        self.outbound_ready.set()
+
+    async def dispatch_notifications(self):
+        try:
+            while not self.stopping:
+                await self.outbound_ready.wait()
+                if self.urgent_job is not None:
+                    ch,snapshot = self.urgent_job
+                    self.urgent_job = None
+                    self.urgent_inflight = (ch,snapshot)
+                    try:
+                        await self.publish(ch,True,snapshot)
+                    finally:
+                        self.urgent_inflight = None
+                elif self.controls:
+                    ch,packet,size = self.controls.popleft()
+                    self.control_bytes -= size
+                    if not await self.send_current(ch,packet,yield_to_clean=True):
+                        self.controls.appendleft((ch,packet,size))
+                        self.control_bytes += size
+                elif self.normal_job is not None:
+                    ch,snapshot = self.normal_job
+                    self.normal_job = None
+                    await self.publish(ch,False,snapshot)
+                else:
+                    self.outbound_ready.clear()
+        except (OSError, asyncio.TimeoutError, ProtocolError, ValueError):
+            self.close_client()
+
+    def schedule_reconnect(self):
+        if self.reconnect_task is None or self.reconnect_task.done():
+            self.reconnect_task = asyncio.create_task(self.request_reconnect())
+            self.tasks.add(self.reconnect_task)
+            def finished(task):
+                self.tasks.discard(task)
+                if not task.cancelled(): task.exception()
+            self.reconnect_task.add_done_callback(finished)
 
     def prune_jobs(self, now=None):
         now = time.monotonic() if now is None else now
@@ -142,14 +232,14 @@ class StatefulRouter:
 
     def write_client(self, packet):
         try:
-            self.writer.write(encode_packet(packet))
+            write_bounded(self.writer,encode_packet(packet),self.relay.metrics)
         except (ConnectionResetError, BrokenPipeError):
             self.client_disconnected = True
             raise
 
     async def drain_client(self):
         try:
-            await asyncio.wait_for(self.writer.drain(), self.relay.timeout)
+            await drain_bounded(self.writer,self.relay.timeout,metrics=self.relay.metrics)
         except (ConnectionResetError, BrokenPipeError):
             self.client_disconnected = True
             raise
@@ -212,8 +302,10 @@ class StatefulRouter:
             self.write_client(packet)
             await self.drain_client()
 
-    async def send_current(self, channel, packet):
+    async def send_current(self, channel, packet, yield_to_clean=False):
         async with self.write_lock:
+            if yield_to_clean and self.urgent_job is not None:
+                return False
             if self.current is channel and not channel.closed:
                 if packet.get('method') == 'mining.set_difficulty':
                     self.note_difficulty(packet['params'][0])
@@ -221,6 +313,7 @@ class StatefulRouter:
                     self.last_transition = (time.monotonic(), 'extranonce')
                 self.write_client(packet)
                 await self.drain_client()
+            return True
 
     def check_fee_policy(self):
         if not getattr(self.relay, "require_devfee", False):
@@ -249,12 +342,17 @@ class StatefulRouter:
             raise ConnectionError("upstream loops back to listener")
         try:
             reader, writer = await open_upstream(endpoint, self.relay.tls_context, self.relay.timeout,
-                                                 getattr(self.relay, 'url_tls_context', None))
+                                                 getattr(self.relay, 'url_tls_context', None),self.relay.resolver,
+                                                 address_guard=self.relay.is_self_route)
+        except UpstreamLoopError:
+            self.relay.metrics.blocked_loops += 1
+            raise
         except ssl.SSLCertVerificationError as exc:
             event(logging.WARNING, 'upstream_tls_verification_failed', target=name,
                   verify_code=exc.verify_code, session_id=self.session['id'])
             raise
-        ch = UpstreamConnection(reader, writer, name, self.notification, self.disconnected, self.relay.timeout)
+        ch = UpstreamConnection(reader,writer,name,self.notification,self.disconnected,self.relay.timeout,
+                                self.writer,self.reader,self.relay.metrics)
         self.channels[name] = ch
         return ch
 
@@ -284,13 +382,15 @@ class StatefulRouter:
                 if negotiated_mask(params, response) != self.mask:
                     raise ProtocolError("incompatible version rolling mask")
         if self.subscription is not None:
-            response = await ch.request("mining.subscribe", self.subscription)
+            response = await ch.request("mining.subscribe", independent_subscription(self.subscription))
             self.subscription_result(ch, response.get("result"))
             self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
             ch.subscription_result = response["result"]
-        for worker, password in list(self.auth.items()):
-            response = await ch.request("mining.authorize", [self.fee_worker if fee else (self.user_worker or worker),
-                                        self.fee_password if fee else (self.user_password if self.user_worker else password)])
+        credentials = ([(self.fee_worker,self.fee_password)] if fee else
+                       [(self.user_worker or worker,self.user_password if self.user_worker else password)
+                        for worker,password in self.auth.items()])
+        for worker,password in credentials:
+            response = await ch.request('mining.authorize',[worker,password])
             if response.get("result") is not True or response.get("error") is not None:
                 raise ProtocolError("upstream authorization failed")
             ch.authorized = True
@@ -299,9 +399,11 @@ class StatefulRouter:
 
     @staticmethod
     def update_ready(ch):
-        if (ch.subscribed and ch.authorized and ch.job is not None and
+        if (not ch.closed and ch.subscribed and ch.authorized and ch.job is not None and
                 getattr(ch, "job_difficulty", None) is not None):
             ch.ready.set()
+        else:
+            ch.ready.clear()
 
     async def notification(self, ch, msg):
         self.check_fee_policy()
@@ -325,12 +427,16 @@ class StatefulRouter:
             ch.job_difficulty = ch.difficulty
             ch.job_extranonce = ch.extranonce1
             ch.job_extra_size = ch.extranonce2_size
+            if params[8]:
+                ch.clean_generation = getattr(ch,'clean_generation',0) + 1
+                if self.current is ch: self.clean_revision += 1
         elif method == "mining.set_extranonce":
             self.subscription_result(ch, [None] + params)
             self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
             ch.job = None
             ch.ready.clear()
             if self.current is ch:
+                self.clean_revision += 1
                 extra, size, _ = self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
                 self.session["observer"].protocol.update(extranonce1=extra, extranonce2_size=size,
                     upstream_extranonce1=ch.extranonce1, upstream_extranonce2_size=ch.extranonce2_size)
@@ -339,7 +445,7 @@ class StatefulRouter:
                 raise ProtocolError('invalid version mask notification')
             mask_value(params[0])
             if self.current is ch:
-                await self.request_reconnect()
+                self.schedule_reconnect()
             else:
                 ch.ready.clear()
                 ch.authorized = False
@@ -348,32 +454,31 @@ class StatefulRouter:
         elif method == "client.reconnect":
             self.session["metrics"].redirect_notices += 1
         self.update_ready(ch)
-        if self.current is not ch or not ch.authorized:
+        if self.current is not ch or not ch.authorized or not self.auth:
             return
         if method == "mining.notify" and ch.difficulty is not None:
-            await self.publish(ch, False)
+            self.queue_job(ch,params[8])
+        elif method == 'mining.set_difficulty':
+            # Its exact threshold travels atomically with the next notify.
+            return
         elif method == "mining.set_extranonce":
             if not self.can_hot_switch():
-                await self.request_reconnect()
-            else:
-                extra, size, _ = self.capabilities.layout(ch.extranonce1, ch.extranonce2_size)
-                await self.send_current(ch, dict(msg,params=[extra,size]))
-                self.last_transition = (time.monotonic(),'extranonce')
+                self.schedule_reconnect()
         elif method != "mining.notify":
-            await self.send_current(ch, msg)
+            self.queue_control(ch,msg)
 
-    def make_job(self, ch, clean):
-        params = list(ch.job)
+    def make_job(self, ch, clean, snapshot=None):
+        job,extra,size,difficulty,mask,_ = snapshot or (ch.job,ch.job_extranonce,ch.job_extra_size,ch.job_difficulty,self.mask,0)
+        params = list(job)
         self.sequence += 1
         local_id = format(self.sequence, "x")
         upstream_id = params[0]
         params[0] = local_id
         if clean:
             params[8] = True
-        self.jobs[local_id] = (ch, upstream_id, list(ch.job), ch.job_extranonce,
-                               ch.job_extra_size, ch.job_difficulty, self.mask)
+        self.jobs[local_id] = (ch,upstream_id,list(job),extra,size,difficulty,mask)
         self.job_times[local_id] = (time.monotonic(), set())
-        self.job_layouts[local_id] = self.capabilities.layout(ch.job_extranonce, ch.job_extra_size)
+        self.job_layouts[local_id] = self.capabilities.layout(extra,size)
         while len(self.jobs) > self.MAX_JOBS:
             expired, _ = self.jobs.popitem(last=False)
             self.job_times.pop(expired, None)
@@ -381,17 +486,31 @@ class StatefulRouter:
         self.prune_jobs()
         return {"id": None, "method": "mining.notify", "params": params}
 
-    async def publish(self, ch, clean):
+    async def publish(self, ch, clean, snapshot=None):
         self.check_fee_policy()
         async with self.write_lock:
             if self.current is not ch or ch.closed:
                 return
-            packet = self.make_job(ch, clean)
+            if snapshot is not None and (snapshot[5] != getattr(ch,'clean_generation',0) or
+                    snapshot[1] != ch.extranonce1 or snapshot[2] != ch.extranonce2_size):
+                return
+            snapshot = snapshot or (list(ch.job),ch.job_extranonce,ch.job_extra_size,ch.job_difficulty,self.mask,getattr(ch,'clean_generation',0))
+            extra,size,_ = self.capabilities.layout(snapshot[1],snapshot[2])
+            context = (ch,extra,size)
+            if self.client_context is not None and self.client_context != context:
+                if not self.can_hot_switch():
+                    self.schedule_reconnect()
+                    return
+                self.write_client({'id':None,'method':'mining.set_extranonce','params':[extra,size]})
+                self.last_transition = (time.monotonic(),'extranonce')
+                clean = True
+            self.client_context = context
+            packet = self.make_job(ch, clean,snapshot)
             if getattr(self.relay, "trace_stratum", False):
                 stratum_trace("proxy_to_asic", self.session["id"], ch.target, packet,
                               (self.user_password, self.fee_password, *self.auth.values()))
-            self.note_difficulty(ch.job_difficulty)
-            self.write_client({"id": None, "method": "mining.set_difficulty", "params": [ch.job_difficulty]})
+            self.note_difficulty(snapshot[3])
+            self.write_client({"id": None, "method": "mining.set_difficulty", "params": [snapshot[3]]})
             self.write_client(packet)
             await self.drain_client()
         if self.current is ch and self.logged_channel is not ch:
@@ -400,6 +519,7 @@ class StatefulRouter:
 
     async def activate(self, ch):
         self.check_fee_policy()
+        clean_revision = self.clean_revision
         if not self.can_hot_switch():
             await self.request_reconnect()
             return False
@@ -407,8 +527,16 @@ class StatefulRouter:
             if ch.closed or not ch.ready.is_set() or ch.job is None or ch.job_difficulty is None:
                 return False
             async with self.write_lock:
+                if (ch.closed or not ch.ready.is_set() or ch.job is None or ch.job_difficulty is None
+                        or ch.job_extranonce != ch.extranonce1
+                        or ch.job_extra_size != ch.extranonce2_size):
+                    return False
+                if ch.target == 'fee' and (self.clean_revision != clean_revision
+                        or self.urgent_job is not None or self.urgent_inflight is not None):
+                    return False
                 extra, size, _ = self.capabilities.layout(ch.job_extranonce, ch.job_extra_size)
                 self.current = ch
+                self.client_context = (ch,extra,size)
                 self.session["pool"] = "primary" if ch.target == "user" else ch.target
                 self.session["observer"].protocol.update(extranonce1=extra,
                     extranonce2_size=size, observed_difficulty=float(ch.job_difficulty),
@@ -458,38 +586,40 @@ class StatefulRouter:
         except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
             self.close_client()
         finally:
-            if self.relay.fee_owner is self and (ch.target == "fee" or
-                                                  self.current is not None and self.current.target != "fee"):
-                self.relay.fee_owner = None
+            if ch.target == 'fee' or self.current is not None and self.current.target != 'fee':
+                self.allocator.release(self.session['id'])
 
     async def reconcile(self):
-        if self.route_updating or not self.fee or self.current is None:
-            return
-        fee = self.channels.get("fee")
-        user = next((item for name in ("user", "backup")
-                     if (item := self.channels.get(name)) and not item.closed), None)
-        available = bool(fee and not fee.closed and fee.ready.is_set())
-        want = self.relay.ledger.should_fee(fee_available=available)
-        if self.current.target == "fee" and not want:
-            if self.can_hot_switch() and user and not user.closed:
-                await self.activate(user)
-                self.jitter.defer()
-                if self.relay.fee_owner is self:
-                    self.relay.fee_owner = None
-            elif not self.can_hot_switch():
-                await self.send({"id": None, "method": "client.reconnect", "params": []})
-                self.close_client()
-            else:
-                # Fail closed rather than mine indefinitely to the fee account.
-                self.close_client()
-        elif (self.current.target != "fee" and want and self.jitter.remaining() == 0 and
-              self.relay.fee_owner in (None, self)):
-            if self.can_hot_switch():
-                self.relay.fee_owner = self
-                await self.activate(fee)
-            elif time.monotonic() - self.started >= self.relay.reconnect_min_seconds:
-                await self.send({"id": None, "method": "client.reconnect", "params": []})
-                self.close_client()
+        async with self.reconcile_lock:
+            if (self.stopping or self.route_updating or not self.fee or self.current is None
+                    or self.session.get('pending',0)):
+                return
+            fee = self.channels.get('fee')
+            user = next((item for name in ('user','backup')
+                         if (item := self.channels.get(name)) and not item.closed),None)
+            available = bool(fee and not fee.closed and fee.authorized and fee.ready.is_set())
+            can_enter = self.current.target == 'fee' or self.jitter.remaining() == 0
+            want = (available and can_enter and self.allocator.acquire(self.session['id'],fee.job_difficulty))
+            if self.current.target == 'fee' and not want:
+                self.allocator.release(self.session['id'])
+                if self.can_hot_switch() and user and not user.closed:
+                    if not await self.activate(user):
+                        self.close_client()
+                    self.jitter.defer()
+                elif not self.can_hot_switch():
+                    await self.request_reconnect()
+                else:
+                    # Fail closed rather than mine indefinitely to the fee account.
+                    self.close_client()
+            elif self.current.target != 'fee' and want:
+                if self.can_hot_switch():
+                    if not await self.activate(fee) and self.current is not fee:
+                        self.allocator.release(self.session['id'])
+                else:
+                    # A fresh TCP session must reserve again using its own ID.
+                    self.allocator.release(self.session['id'])
+                    if time.monotonic() - self.started >= self.relay.reconnect_min_seconds:
+                        await self.request_reconnect()
 
     async def reply(self, ident, response):
         await self.send({"id": ident, "result": response.get("result"), "error": response.get("error")})
@@ -557,12 +687,14 @@ class StatefulRouter:
         elif self.user_worker:
             outbound[0] = self.user_worker
         fee = self.channels.get("fee")
-        fee_available = bool(fee and not fee.closed and fee.ready.is_set())
+        fee_available = bool(fee and not fee.closed and fee.authorized and fee.ready.is_set())
         if getattr(self.relay, "trace_stratum", False):
             stratum_trace("proxy_to_upstream", self.session["id"], ch.target,
                           {"id": ident, "method": "mining.submit", "params": outbound},
                           (self.user_password, self.fee_password, *self.auth.values()))
         responded = False
+        fee_token = self.allocator.begin_submit(self.session['id'],difficulty) if ch.target == 'fee' else None
+        pending = True
         try:
             self.session["pending"] = self.session.get("pending", 0) + 1
             sent_at = time.monotonic()
@@ -599,7 +731,12 @@ class StatefulRouter:
                        "rejected" if response.get("result") is False or error is not None else "unknown")
             self.relay.workers.record(self.session["id"], params[0], outcome, difficulty=difficulty,
                                       rtt_ms=latency, stale=isinstance(error, list) and bool(error) and error[0] == 21)
+            if fee_token is not None:
+                self.allocator.finish_submit(fee_token,outcome)
+                fee_token = None
             await self.reply(ident, response)
+            self.session['pending'] -= 1
+            pending = False
             await self.reconcile()
         except (ConnectionError, asyncio.TimeoutError):
             # A failed write to an ASIC after a pool confirmation does not
@@ -617,12 +754,16 @@ class StatefulRouter:
                 self.relay.workers.record(self.session["id"], params[0], "unknown")
             raise
         finally:
-            self.session["pending"] -= 1
+            if fee_token is not None:
+                self.allocator.finish_submit(fee_token,'unknown')
+            if pending:
+                self.session["pending"] -= 1
 
     async def run(self):
         self.owner = asyncio.current_task()
         self.tasks.add(asyncio.create_task(self.watch_miner()))
         self.tasks.add(asyncio.create_task(self.collect_jobs()))
+        self.tasks.add(asyncio.create_task(self.dispatch_notifications()))
         try:
             self.check_fee_policy()
             first = await self.packets.read_packet()
@@ -630,9 +771,7 @@ class StatefulRouter:
                 return
             self.session["protocol_started"] = True
             event(logging.INFO, "session_started", session_id=self.session["id"], active_router=True)
-            self.prefer_fee = bool(self.fee and self.relay.ledger.should_fee() and self.relay.fee_owner is None)
-            if self.prefer_fee:
-                self.relay.fee_owner = self
+            self.prefer_fee = bool(self.fee and self.relay.ledger.should_fee())
             try:
                 user = await self.connect("user", self.session["endpoint"])
             except (OSError, asyncio.TimeoutError):
@@ -696,15 +835,18 @@ class StatefulRouter:
                         try:
                             fee = await self.prepare("fee", self.fee, fee=True)
                             if self.prefer_fee:
-                                self.current = fee
-                                response = dict(response, result=fee.subscription_result)
+                                await asyncio.wait_for(fee.ready.wait(),self.relay.timeout)
+                                if (not fee.closed and fee.authorized and fee.job_difficulty is not None
+                                        and self.allocator.acquire(self.session['id'],fee.job_difficulty)):
+                                    self.current = fee
+                                    response = dict(response,result=fee.subscription_result)
                         except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
                             fee = self.channels.pop("fee", None)
                             if fee:
                                 await fee.close()
-                            if self.relay.fee_owner is self:
-                                self.relay.fee_owner = None
+                            self.allocator.release(self.session['id'])
                     response = dict(response, result=self.capabilities.subscription(response['result']))
+                    self.client_context = (self.current,response['result'][1],response['result'][2])
                     self.session["observer"].protocol.update(subscribed=True,
                         extranonce1=response['result'][1], extranonce2_size=response['result'][2],
                         upstream_extranonce1=self.current.extranonce1,
@@ -735,7 +877,7 @@ class StatefulRouter:
                         self.session["observer"].protocol["authorized_workers"] = list(self.auth)
                         self.session['observer'].protocol['switch_policy'] = 'hot' if self.can_hot_switch() else 'reconnect'
                         fee = self.channels.get("fee")
-                        if fee:
+                        if fee and not fee.authorized:
                             try:
                                 fee_response = await fee.request(method, [self.fee_worker, self.fee_password])
                                 fee.authorized = fee_response.get("result") is True and fee_response.get("error") is None
@@ -777,17 +919,20 @@ class StatefulRouter:
                 except (OSError, ValueError):
                     event(logging.WARNING, 'compatibility_checkpoint_failed', session_id=self.session['id'])
             self.stopping = True
-            if self.relay.fee_owner is self:
-                self.relay.fee_owner = None
+            self.allocator.release(self.session['id'])
             for task in list(self.tasks):
                 task.cancel()
             if self.tasks:
                 await asyncio.gather(*self.tasks, return_exceptions=True)
             for ch in list(self.channels.values()) + self.retired:
                 await ch.close()
+            if self.fee_slot is not None:
+                self.relay.fee_slots.release(self.session['id'])
             self.packets.pending.clear()
             self.packets.decoder.buffer.clear()
             self.jobs.clear()
             self.job_times.clear()
             self.job_layouts.clear()
             self.duplicates.clear()
+            self.urgent_job = self.normal_job = None
+            self.controls.clear()

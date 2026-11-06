@@ -14,6 +14,7 @@ from collections import deque
 from upstream_manager import PoolRoute, current_pool_routes, apply_pool_routes, open_upstream
 from secret_store import SecretStore, SecretConfigurationError
 from pilot_logging import remember_secret, event
+from devfee_scheduler import stable_fee_worker
 import logging
 
 
@@ -101,7 +102,8 @@ class DashboardControl:
         if await self.relay.is_self_route(endpoint):
             raise ValueError('route points to listener')
         _, writer = await open_upstream(endpoint, self.relay.tls_context, self.relay.timeout,
-                                        getattr(self.relay, 'url_tls_context', None))
+                                        getattr(self.relay, 'url_tls_context', None), self.relay.resolver,
+                                        address_guard=self.relay.is_self_route)
         writer.close()
         try:
             await asyncio.wait_for(writer.wait_closed(), 1)
@@ -172,6 +174,8 @@ class DashboardControl:
                 fee = PoolRoute.parse(data['devfee_pool'], fee) if data['devfee_pool'] is not None else None
             if fee is not None and not fee.worker:
                 raise ValueError('fee worker required')
+            if fee is not None and getattr(self.relay,'fee_worker_template',None):
+                stable_fee_worker(fee.worker,self.relay.limit,self.relay.fee_worker_template)
             if getattr(self.relay, 'require_devfee', False) and fee is None:
                 raise ValueError('required fee cannot be disabled')
             await asyncio.wait_for(self._probe(user), 4)

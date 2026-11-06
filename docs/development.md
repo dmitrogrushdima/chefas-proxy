@@ -26,13 +26,15 @@ python -m pip install -r requirements-build.txt
 python build_ext.py
 ```
 
-Windows requires MSVC/Windows SDK; Linux requires a C compiler and Python development headers. Default output: ignored `bin/kontur/`. An existing output is never overwritten; pass `--output bin/ANOTHER_NAME` for a fresh build. `--generate-only` checks Cython translation without linking. Compiled distributions include 15 native modules, the bootstrap, local UI, launcher scripts, dependency files and a hash manifest, without runtime source, real ENV files, state or logs.
+Windows requires MSVC/Windows SDK; Linux requires a C compiler and Python development headers. Default output: ignored `bin/kontur/`. An existing output is never overwritten; pass `--output bin/ANOTHER_NAME` for a fresh build. `--generate-only` checks Cython translation without linking. Compiled distributions include 17 native modules, the bootstrap, local UI, launcher scripts, dependency files and a hash manifest, without runtime source, real ENV files, state or logs.
+
+For an executable that bundles Python, use the [standalone release scripts](release.md). Root launchers prefer `dist/kontur-windows-x64/kontur.exe` or `dist/kontur-linux-x64/kontur` when present, and otherwise use the native development runtime.
 
 To test the compiled CLI, set `KONTUR_TEST_ENTRYPOINT` to its absolute `launch.py`, then run `tests/test_live_devfee_router.py` with `-k "not graceful_proxy_shutdown and not sigterm_closes_live"`. The excluded tests invoke the source entrypoint in-process. Verify manifest hashes and actual import paths; successful compilation alone is insufficient.
 
 Before release: qualify Linux packaging, long-running lossy-network behavior, signed distribution/update integrity and real hardware/pool combinations. Performance targets require measurement; the existing 400-session regression does not certify thousands of ASICs.
 
-## Validation of this packaging/compatibility update — 2026-11-06
+## Previous milestone: packaging/compatibility — 1858ccf
 
 | Check | Result |
 | --- | --- |
@@ -45,4 +47,4 @@ Before release: qualify Linux packaging, long-running lossy-network behavior, si
 
 Source checks were run in parts: the main run had 161 passes and two timing failures; both failed cases passed on targeted rerun, with the localhost loop check hardened to avoid DNS queuing. Five further targeted source regressions were added/passed after that run. The separate source/debug 400-client run timed out on this Windows host; this is recorded rather than relabeled green or solved by extending the test's deadline. Native results above are for the actual generated `.pyd` runtime, not source fallback. These tests do not establish real-device compatibility or a large-farm performance target.
 
-The next major functional gate is [fleet DevFee allocation](engineering/roadmap.md): a single global fee owner cannot supply 1% of arbitrarily large farm work. Packaging and single-miner PoW correctness do not resolve that scheduling limit.
+The concurrent allocator supersedes this milestone's single global fee owner. [Fleet scaling](engineering/fleet-scaling.md) records the implemented reservation model and the remaining shared-upstream integration gate.

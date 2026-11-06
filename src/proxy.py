@@ -14,7 +14,7 @@ from pathlib import Path
 from observer import Metrics, Observer, WorkAudit
 from stratum_session import Relay, HALF_CLOSE_GRACE
 from dashboard_server import dashboard_request, ASSET_DIR, ASSETS, DashboardStream
-from devfee_scheduler import AcceptedWorkLedger
+from devfee_scheduler import AcceptedWorkLedger, FairnessAllocator, stable_fee_worker
 from dashboard_control import DashboardControl
 from history_store import HistoryStore
 from secret_store import load_environment, SecretConfigurationError
@@ -37,9 +37,9 @@ def is_loopback_bind(host):
         return False
 
 
-def fd_limit_warning(limit, soft_limit):
+def fd_limit_warning(limit, soft_limit, upstreams_per_session=1):
     """Conservative estimate, not a guarantee that the OS will accept the load."""
-    required = 2 * limit + 64
+    required = (1 + upstreams_per_session) * limit + 64
     if soft_limit >= 0 and soft_limit < required:
         return (f"File descriptor limit {soft_limit} is below the estimated {required} "
                 f"needed for {limit} sessions and overhead")
@@ -55,7 +55,7 @@ async def run(args, stop_event=None):
         pass  # Windows does not expose RLIMIT_NOFILE via resource.
     else:
         soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
-        warning = fd_limit_warning(args.max_connections, soft)
+        warning = fd_limit_warning(args.max_connections,soft,2 if args.active_router else 1)
         if warning:
             LOG.warning("%s; test capacity before use", warning)
     backup = (args.backup_host, args.backup_port) if args.backup_host else None
@@ -83,6 +83,7 @@ async def run(args, stop_event=None):
     relay.validate_pow = args.validate_pow
     relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
     relay.fee_worker = args.devfee_worker
+    relay.fee_worker_template = getattr(args,'devfee_worker_template',None)
     relay.fee_password = args.devfee_password
     relay.user_password = os.environ.get("KONTUR_USER_PASSWORD", "x")
     relay.reconnect_min_seconds = args.reconnect_min_seconds
@@ -90,6 +91,7 @@ async def run(args, stop_event=None):
     relay.fee_grace_seconds = args.fee_grace_seconds
     relay.fee_blocked = False
     relay.ledger = AcceptedWorkLedger(args.fee_min_work)
+    relay.fee_allocator = FairnessAllocator(relay.ledger, max_active=relay.limit, max_pending=relay.limit)
     history = HistoryStore(relay.workers, args.history_file) if args.history_file else None
     if history:
         history.load()
@@ -123,6 +125,7 @@ async def run(args, stop_event=None):
                   hashrate_5m_hs=estimate,
                   logging_dropped=getattr(relay.metrics._log_handler, "dropped", 0))
     summary = asyncio.create_task(summaries())
+    fleet = asyncio.create_task(relay.reconcile_idle_fee_sessions())
     try:
         async with server, dashboard:
             if stop_event is None:
@@ -131,7 +134,8 @@ async def run(args, stop_event=None):
                 await stop_event.wait()
     finally:
         summary.cancel()
-        await asyncio.gather(summary, return_exceptions=True)
+        fleet.cancel()
+        await asyncio.gather(summary, fleet, return_exceptions=True)
         server.close()
         dashboard.close()
         await server.wait_closed()
@@ -189,6 +193,7 @@ def main():
     parser.add_argument('--job-gc-interval', type=float, default=60)
     parser.add_argument("--devfee-port", type=int, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--devfee-worker")
+    parser.add_argument('--devfee-worker-template',help='Explicit fee session suffix, e.g. {worker}_{slot}; default preserves the account exactly')
     parser.add_argument("--fee-min-work", type=float, default=0)
     parser.add_argument("--require-devfee", action="store_true", help="Stop all active sessions after sustained DevFee failure; restart required")
     parser.add_argument("--fee-grace-seconds", type=float, default=180, help="DevFee outage/rejection grace in required mode")
@@ -246,6 +251,11 @@ def main():
         parser.error("--backup-host and --backup-port must be supplied together")
     if not 1 <= args.max_connections <= 10000:
         parser.error("--max-connections must be in 1..10000")
+    if args.devfee_worker_template is not None:
+        try:
+            stable_fee_worker(args.devfee_worker,args.max_connections,args.devfee_worker_template)
+        except ValueError:
+            parser.error('invalid --devfee-worker-template or expanded worker name')
     if not math.isfinite(args.connect_timeout) or not 0.1 <= args.connect_timeout <= 120:
         parser.error("--connect-timeout must be in 0.1..120 seconds")
     if not math.isfinite(args.idle_timeout) or (args.idle_timeout != 0 and not 0.1 <= args.idle_timeout <= 86400):

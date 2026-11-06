@@ -322,6 +322,10 @@ class Metrics:
         self.zombie_reaped = 0
         self.keepalive_unavailable = 0
         self.compatibility_fallbacks = 0
+        self.backpressure_pauses = 0
+        self.write_timeouts = 0
+        self.write_buffer_rejected = 0
+        self.clean_jobs_coalesced = 0
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}

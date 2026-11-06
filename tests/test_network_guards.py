@@ -45,12 +45,13 @@ class NetworkGuardsTests(unittest.IsolatedAsyncioTestCase):
         session = {'id':1,'worker':'worker','observer':SimpleNamespace(protocol={})}
         router = StatefulRouter(relay,asyncio.StreamReader(),Writer(),session)
         router.hot = True
+        router.auth['worker'] = 'x'
         return router
 
     def channel(self, target='fee', difficulty=Decimal('0.000000000123456789')):
         ready = asyncio.Event()
         ready.set()
-        return SimpleNamespace(closed=False, ready=ready, target=target, extranonce1='22222222',
+        return SimpleNamespace(closed=False, ready=ready, target=target, extranonce1='22222222',extranonce2_size=4,
             job_extranonce='22222222',job_extra_size=4,job_difficulty=difficulty,
             job=['pool-job','00'*32,'','',[],'20000000','207fffff','65000000',False])
 

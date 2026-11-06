@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from fractions import Fraction
 from pathlib import Path
 from cryptography.fernet import Fernet
 
@@ -65,6 +66,8 @@ class CheckedPool:
     def __init__(self, extranonce, worker):
         self.extranonce = int(extranonce, 16)
         self.worker = worker
+        self.allowed_workers = {worker}
+        self.authorize_requests = []
         self.accepted = 0
         self.rejected = 0
         self.connections = 0
@@ -72,10 +75,13 @@ class CheckedPool:
         self.writers = set()
         self.errors = []
         self.configure_requests = []
+        self.subscribe_requests = []
         self.reject_submits = False
         self.submit_delay = 0
         self.extra_size = 4
         self.version_mask = '1fffe000'
+        self.difficulty = DIFFICULTY
+        self.share_target = SHARE_TARGET
 
     async def start(self, ssl_context=None):
         self.server = await asyncio.start_server(self.handle, "127.0.0.1", 0, ssl=ssl_context)
@@ -115,12 +121,14 @@ class CheckedPool:
                         requested_mask = params[1].get('version-rolling.mask','ffffffff')
                         response["result"]["version-rolling.mask"] = f'{int(requested_mask,16) & int(self.version_mask,16):08x}'
                 elif method == "mining.subscribe":
+                    self.subscribe_requests.append(params)
                     subscribed = True
                     response["result"] = [[["mining.notify", "session"]], extra, self.extra_size]
                 elif method == "mining.extranonce.subscribe":
                     response["result"] = True
                 elif method == "mining.authorize":
-                    response["result"] = subscribed and params[0] == self.worker
+                    self.authorize_requests.append(params[0])
+                    response["result"] = subscribed and params[0] in self.allowed_workers
                     if response["result"]:
                         authorized.add(params[0])
                 elif method == "mining.submit":
@@ -130,7 +138,7 @@ class CheckedPool:
                     key = (job, ex2, ntime, nonce, *params[5:])
                     valid = (not self.reject_submits and len(ex2) == self.extra_size * 2 and worker in authorized and job == "shared-job" and
                              ntime == NTIME and key not in seen and
-                             meets_target(checked_header(extra, ex2, nonce, params[5] if len(params) > 5 else None), SHARE_TARGET))
+                             meets_target(checked_header(extra, ex2, nonce, params[5] if len(params) > 5 else None), self.share_target))
                     response["result"] = valid
                     if valid:
                         seen.add(key)
@@ -145,7 +153,7 @@ class CheckedPool:
                     await asyncio.sleep(self.submit_delay)
                 writer.write(encode(response))
                 if method == "mining.authorize" and response["result"]:
-                    writer.write(encode({"id": None, "method": "mining.set_difficulty", "params": [DIFFICULTY]}))
+                    writer.write(encode({"id": None, "method": "mining.set_difficulty", "params": [self.difficulty]}))
                     writer.write(encode({"id": None, "method": "mining.notify", "params": [
                         "shared-job", PREVHASH, COINB1, COINB2, [], VERSION, NBITS, NTIME, True]}))
                 await writer.drain()
@@ -180,6 +188,7 @@ class Miner:
         self.configure = configure
         self.version_bits = None
         self.password = password
+        self.subscribe_params = ["kontur-integration/1"]
 
     async def connect(self):
         self.reader, self.writer = await asyncio.open_connection("127.0.0.1", self.port)
@@ -190,7 +199,7 @@ class Miner:
             if configured.get("error") or configured.get('result',{}).get('version-rolling') is not True:
                 raise AssertionError(configured)
             self.version_bits = "00002000"
-        subscribed = await self.request("mining.subscribe", ["kontur-integration/1"])
+        subscribed = await self.request("mining.subscribe", self.subscribe_params)
         if subscribed.get("error"):
             raise AssertionError(subscribed)
         self.extra = subscribed["result"][1]
@@ -249,11 +258,12 @@ class Miner:
         extra = job["extra"]
         start = self.nonces.get(extra, 0)
         ex2 = '00' * job.get('size',4)
-        if self.version_bits is None and len(extra) == 8 and len(ex2) == 8:
+        threshold=compact_target(0x1D00FFFF) // Fraction(str(job['diff']))
+        if self.version_bits is None and len(extra) == 8 and len(ex2) == 8 and job['diff']==DIFFICULTY:
             nonce = find_nonce(extra, start=start)
         else:
-            nonce = next((f"{number:08x}" for number in range(start, start + 100000)
-                          if meets_target(checked_header(extra, ex2, f"{number:08x}", self.version_bits), SHARE_TARGET)), None)
+            nonce = next((f"{number:08x}" for number in range(start, start + 1000000)
+                          if meets_target(checked_header(extra, ex2, f"{number:08x}", self.version_bits), threshold)), None)
             if nonce is None:
                 raise AssertionError("No test share found")
         self.nonces[extra] = int(nonce, 16) + 1
@@ -310,7 +320,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
     async def launch(self, *, fee=True, backup=None, require_fee=False, admin_token=None, debug=False,
                      miner_timeout=600, handshake_timeout=30, jitter=0, connect_interval=0,
                      job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False,
-                     user_extra_size=4, fee_extra_size=4, user_mask='1fffe000', asic_min=0):
+                     user_extra_size=4, fee_extra_size=4, user_mask='1fffe000', asic_min=0,
+                     fee_min_shares=0,fee_template=None,fee_difficulty_multiplier=1):
         self.admin_token = admin_token
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT/'tests'/'fixtures'/'lab-cert.pem', ROOT/'tests'/'fixtures'/'lab-key.pem')
@@ -320,6 +331,10 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         if fee:
             self.fee_pool = await self.pool("22222222", "fee.worker", context if ssl_fee else None)
             self.fee_pool.extra_size = fee_extra_size
+            self.fee_pool.difficulty=DIFFICULTY*fee_difficulty_multiplier
+            self.fee_pool.share_target=SHARE_TARGET//fee_difficulty_multiplier
+            if fee_template:
+                self.fee_pool.allowed_workers={f'fee.worker_{slot}' for slot in range(1,4)}
         self.port, self.dashboard = unused_ports(2)
         entrypoint = os.environ.get("KONTUR_TEST_ENTRYPOINT", str(ROOT / "launch.py"))
         args = [sys.executable, entrypoint, "--active-router", "--validate-pow",
@@ -334,9 +349,11 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 "--devfee-jitter-seconds", str(jitter), '--devfee-connect-interval', str(connect_interval),
                 '--job-ttl', str(job_ttl), '--job-gc-interval', str(job_gc_interval)]
         args += ['--asic-extranonce2-min',str(asic_min)]
+        if fee_template:
+            args += ['--devfee-worker-template',fee_template]
         if fee:
             args += ["--devfee-host", "stratum+ssl://localhost" if ssl_fee else "127.0.0.1", "--devfee-port", str(self.fee_pool.port),
-                     "--devfee-worker", "fee.worker", "--fee-min-work", "0"]
+                     "--devfee-worker", "fee.worker", "--fee-min-work", str(fee_min_shares*DIFFICULTY)]
         if require_fee:
             # Include both real TCP handshakes on a loaded Windows runner.
             # Exact deadline arithmetic is covered by test_fee_health.
@@ -348,6 +365,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         if ssl_user or ssl_fee:
             args += ['--tls-ca-file', str(ROOT/'tests'/'fixtures'/'lab-cert.pem')]
         environment = dict(os.environ)
+        if environment.get('KONTUR_TEST_EXECUTABLE'):
+            args = [environment['KONTUR_TEST_EXECUTABLE'],*args[2:]]
         environment["KONTUR_SECRETS_KEY"] = Fernet.generate_key().decode()
         environment["KONTUR_USER_PASSWORD"] = "x"
         environment["KONTUR_DEVFEE_PASSWORD"] = "x"
@@ -402,6 +421,16 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.user_pool.connections, 0)
         metrics = await self.api('/api/metrics')
         self.assertEqual(metrics['protocol_drops'], 4)
+
+    async def test_fee_reuses_exact_agent_but_not_other_pool_session_id(self):
+        await self.launch()
+        miner=Miner(self.port)
+        miner.subscribe_params=['cgminer/4.11.1 vendor/custom-version','user-pool-session-resume-id']
+        self.miners.append(miner)
+        await miner.connect()
+        self.assertEqual(self.user_pool.subscribe_requests[0],miner.subscribe_params)
+        self.assertEqual(self.fee_pool.subscribe_requests[0],[miner.subscribe_params[0]])
+        self.assertTrue((await miner.submit())['result'])
 
     async def test_extranonce_width_translation_preserves_pow_across_pools(self):
         await self.launch(user_extra_size=6,fee_extra_size=8)
@@ -681,6 +710,58 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(worker["hashrate_windows"]["15m"]["hashrate_hs"], 0)
         self.assertTrue(any(item["switched_to_devfee"] for item in snapshot["events"]))
         self.assertNotIn("protocol_observation", snapshot["sessions"][0])
+
+    async def test_two_fee_windows_run_concurrently_against_one_reserved_budget(self):
+        await self.launch(fee_min_shares=197.5)
+        first,second=await self.miner(),await self.miner()
+        for _ in range(198):
+            self.assertTrue((await first.submit())['result'])
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline and not (first.extra.startswith('2222') and second.extra.startswith('2222')):
+            await asyncio.sleep(.02)
+        self.assertTrue(first.extra.startswith('2222'))
+        self.assertTrue(second.extra.startswith('2222'))
+        self.assertNotEqual(first.extra,second.extra)
+        status=await self.api('/api/status')
+        self.assertEqual(status['fee_allocation']['active_grants'],2)
+        results=await asyncio.gather(first.submit(),second.submit())
+        self.assertTrue(all(result['result'] for result in results))
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(198,2))
+        self.assertEqual((self.user_pool.rejected,self.fee_pool.rejected),(0,0))
+        self.assertFalse(first.closed.is_set() or second.closed.is_set())
+        report=await self.api('/api/audit-export')
+        self.assertAlmostEqual(report['fee_percentage'],1.0)
+        status=await self.api('/api/status')
+        self.assertEqual(status['fee_allocation']['pending_submissions'],0)
+        self.assertEqual(status['fee_allocation']['reserved_difficulty'],'0')
+
+    async def test_explicit_fee_worker_template_has_distinct_live_upstream_sessions(self):
+        await self.launch(fee_template='{worker}_{slot}')
+        miners=[await self.miner() for _ in range(3)]
+        self.assertEqual(set(self.fee_pool.authorize_requests),{'fee.worker_1','fee.worker_2','fee.worker_3'})
+        self.assertEqual(self.fee_pool.connections,3)
+        self.assertTrue((await miners[0].submit())['result'])
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline and not any(miner.extra.startswith('2222') for miner in miners):
+            await asyncio.sleep(.02)
+        selected=next(miner for miner in miners if miner.extra.startswith('2222'))
+        self.assertTrue((await selected.submit())['result'])
+        self.assertEqual(self.fee_pool.accepted,1)
+        self.assertEqual(self.fee_pool.rejected,0)
+        self.assertTrue(all(not miner.closed.is_set() for miner in miners))
+
+    async def test_fee_four_times_harder_is_charged_by_accepted_work(self):
+        await self.launch(fee_difficulty_multiplier=4)
+        miner=await self.miner()
+        for _ in range(397):
+            self.assertTrue((await miner.submit())['result'])
+        self.assertEqual((self.user_pool.accepted,self.fee_pool.accepted),(396,1))
+        self.assertEqual((self.user_pool.rejected,self.fee_pool.rejected),(0,0))
+        report=await self.api('/api/audit-export')
+        self.assertAlmostEqual(report['fee_percentage'],1.0)
+        self.assertEqual(Fraction(report['fee_difficulty'])*99,
+                         Fraction(report['accepted_difficulty']))
+        self.assertFalse(miner.closed.is_set() or miner.reconnect.is_set())
 
     async def test_legacy_miner_reconnects_and_rebuilds_pow_with_new_extranonce(self):
         await self.launch()

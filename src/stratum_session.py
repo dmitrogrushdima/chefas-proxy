@@ -13,11 +13,12 @@ from collections import deque
 from datetime import datetime, timezone
 from router import copy_stream
 from upstream_manager import connect_upstream, parse_endpoint
-from devfee_scheduler import AcceptedWorkLedger, FeeConnectionGate
+from devfee_scheduler import AcceptedWorkLedger, FeeConnectionGate, FairnessAllocator, StableFeeSlots
 from pilot_logging import event
 # Public framing types are re-exported here for session-level integrations.
 from stratum_codec import PacketReader, StratumDecoder
 from hardware_compatibility import CompatibilityRegistry
+from network_io import AsyncResolver, configure_writer
 
 LOG = logging.getLogger("mining_proxy")
 HALF_CLOSE_GRACE = 3.0
@@ -75,17 +76,20 @@ class Relay:
         self.allowed_networks = tuple(ipaddress.ip_network(network, strict=True) for network in allowed_networks)
         self.active_router = False
         self.fee = None
-        self.fee_owner = None
         self.fee_jitter_seconds = 180
         self.fee_connection_gate = FeeConnectionGate()
         self.job_ttl = 900
         self.job_gc_interval = 60
         self.url_tls_context = None
         self.compatibility = CompatibilityRegistry()
+        self.resolver = AsyncResolver(query_timeout=timeout)
         self.hot_switch_mode = 'auto'
         self.asic_extranonce2_min = 0
         self.asic_extranonce2_max = 4
         self.ledger = AcceptedWorkLedger()
+        self.fee_allocator = FairnessAllocator(self.ledger, max_active=limit, max_pending=limit)
+        self.fee_slots = StableFeeSlots(limit)
+        self.fee_worker_template = None
         self.events = deque(maxlen=500)
         self.workers = WorkerRegistry()
         self.blacklist = ()
@@ -113,6 +117,7 @@ class Relay:
             return
         if not enable_tcp_keepalive(writer):
             self.metrics.keepalive_unavailable += 1
+        configure_writer(writer)
         self.active += 1
         self.metrics.active += 1
         self.metrics.connections += 1
@@ -149,7 +154,7 @@ class Relay:
                 return
             remote_reader, upstream, index = await connect_upstream(
                 session["endpoint"], self.backup, self.tls_context, self.timeout,
-                self.is_self_route, self.metrics, self.url_tls_context
+                self.is_self_route, self.metrics, self.url_tls_context, self.resolver
             )
             if upstream is None:
                 return
@@ -168,8 +173,8 @@ class Relay:
                 last_miner_activity = time.monotonic()
                 mark_activity()
 
-            pumps = [asyncio.create_task(copy_stream(reader, upstream, 0, observer, self.metrics, mark_miner_activity)),
-                     asyncio.create_task(copy_stream(remote_reader, writer, 1, observer, self.metrics, mark_activity))]
+            pumps = [asyncio.create_task(copy_stream(reader,upstream,0,observer,self.metrics,mark_miner_activity,self.timeout,writer)),
+                     asyncio.create_task(copy_stream(remote_reader,writer,1,observer,self.metrics,mark_activity,self.timeout,upstream))]
             watchdog = None
             if self.idle_timeout:
                 async def watch_idle():
@@ -281,7 +286,7 @@ class Relay:
                 for _,address in relevant):
             return True
         loop = asyncio.get_running_loop()
-        addresses = await asyncio.wait_for(loop.getaddrinfo(endpoint[0], endpoint[1], type=socket.SOCK_STREAM), self.timeout)
+        addresses = await self.resolver.resolve(endpoint[0],endpoint[1],self.timeout)
         for family, _, _, _, remote in addresses:
             for listen_family, local in relevant:
                 if family != listen_family:
@@ -339,6 +344,7 @@ class Relay:
                             "tls": self.tls or parse_endpoint(self.host,self.port)[2]},
                 "devfee_jitter_seconds": self.fee_jitter_seconds,
                 "devfee_connect_interval": self.fee_connection_gate.interval,
+                "fee_allocation": self.fee_allocator.snapshot(),
                 "job_ttl_seconds": self.job_ttl,
                 "job_gc_interval_seconds": self.job_gc_interval,
                 "miner_timeout_seconds": self.miner_timeout,
@@ -357,3 +363,33 @@ class Relay:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await self.resolver.close()
+
+    async def reconcile_idle_fee_sessions(self):
+        """Revoke idle fee grants after another miner repays the shared debt.
+
+        One fleet timer avoids another permanent timer per ASIC. Each writer is
+        independently scheduled, so a stalled ASIC cannot hold up its peers.
+        """
+        cursor = 0
+        while True:
+            await asyncio.sleep(.5)
+            sessions = tuple(self.sessions.values())
+            for session in sessions:
+                router = session.get('router')
+                if (router and router.current is not None and router.current.target == 'fee'
+                        and not session.get('pending',0) and not router.stopping):
+                    router.schedule_reconcile()
+            # Round-robin bounded admission work; accepted user submissions also
+            # reconcile directly. No permanent polling task per miner is needed.
+            if sessions and self.ledger.should_fee():
+                start = cursor % len(sessions)
+                count = min(32,len(sessions))
+                for offset in range(count):
+                    session = sessions[(start+offset)%len(sessions)]
+                    router = session.get('router')
+                    if (router and router.auth and router.current is not None
+                            and router.current.target != 'fee' and not session.get('pending',0)
+                            and not router.stopping):
+                        router.schedule_reconcile()
+                cursor = start + count

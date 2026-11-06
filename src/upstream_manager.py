@@ -4,11 +4,13 @@ import json
 import ssl
 import logging
 import re
+import socket
 from pilot_logging import event
 from decimal import Decimal
 from stratum_codec import ProtocolError, PacketReader
 from urllib.parse import urlsplit
 from functools import lru_cache
+from network_io import AsyncResolver, configure_writer, write_bounded, drain_bounded
 
 MAX_LINE = 65536
 MAX_PENDING = 1024
@@ -43,15 +45,46 @@ def default_tls_context():
     return ssl.create_default_context()
 
 
-async def open_upstream(endpoint, tls_context, timeout, url_tls_context=None):
+class UpstreamLoopError(OSError):
+    """An actual resolved destination would connect to our own listener."""
+
+
+async def open_upstream(endpoint, tls_context, timeout, url_tls_context=None, resolver=None,
+                        address_guard=None):
     host, port, secure = parse_endpoint(*endpoint)
-    context = tls_context or ((url_tls_context or default_tls_context()) if secure else None)
-    if context is not None and (not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED):
-        raise ValueError('upstream TLS requires certificate and hostname verification')
-    kwargs = {'ssl': context}
-    if context is not None:
-        kwargs['server_hostname'] = host
-    return await asyncio.wait_for(asyncio.open_connection(host, port, **kwargs), timeout)
+    owned = resolver is None
+    resolver = resolver or AsyncResolver()
+    async def connect():
+        context = tls_context or (url_tls_context if secure else None)
+        if context is None and secure:
+            context = await resolver.tls_context(default_tls_context)
+        if context is not None and (not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED):
+            raise ValueError('upstream TLS requires certificate and hostname verification')
+        addresses = await resolver.resolve(host,port,timeout)
+        last_error = None
+        for family,socktype,proto,_,address in addresses:
+            # Check the exact numeric destination that will be connected. A
+            # hostname preflight alone is vulnerable to TTL-zero DNS rebinding.
+            if address_guard is not None and await address_guard((address[0],address[1])):
+                raise UpstreamLoopError('upstream loops back to listener')
+            sock = socket.socket(family,socktype,proto)
+            sock.setblocking(False)
+            try:
+                await asyncio.get_running_loop().sock_connect(sock,address)
+                kwargs = {'sock':sock,'ssl':context}
+                if context is not None: kwargs['server_hostname'] = host
+                reader,writer = await asyncio.open_connection(**kwargs)
+                configure_writer(writer)
+                return reader,writer
+            except BaseException as exc:
+                sock.close()
+                if not isinstance(exc,OSError): raise
+                last_error = exc
+        raise last_error or OSError('no usable upstream address')
+    try:
+        return await asyncio.wait_for(connect(),timeout)
+    finally:
+        if owned: await resolver.close()
 
 
 def encode_packet(value):
@@ -84,11 +117,14 @@ async def read_packet(reader):
 class UpstreamConnection:
     """Own IDs, pending futures and bounded writes; no miner IDs cross channels."""
 
-    def __init__(self, reader, writer, target, on_notification, on_disconnect, timeout=10):
+    def __init__(self, reader, writer, target, on_notification, on_disconnect, timeout=10,
+                 miner_writer=None, miner_reader=None, metrics=None):
         self.reader, self.writer, self.target = reader, writer, target
         self.packets = PacketReader(reader, max_bytes=MAX_LINE, role="pool")
         self.on_notification, self.on_disconnect = on_notification, on_disconnect
         self.timeout = timeout
+        self.miner_writer, self.miner_reader, self.metrics = miner_writer,miner_reader,metrics
+        configure_writer(writer)
         self.pending = {}
         self.sequence = 0
         self.write_lock = asyncio.Lock()
@@ -112,8 +148,8 @@ class UpstreamConnection:
         self.pending[ident] = future
         try:
             async with self.write_lock:
-                self.writer.write(encode_packet({"id": ident, "method": method, "params": params}))
-                await asyncio.wait_for(self.writer.drain(), self.timeout)
+                write_bounded(self.writer,encode_packet({"id":ident,"method":method,"params":params}),self.metrics)
+                await drain_bounded(self.writer,self.timeout,self.miner_writer,self.miner_reader,self.metrics)
             return await asyncio.wait_for(future, self.timeout)
         finally:
             self.pending.pop(ident, None)
@@ -152,7 +188,7 @@ class UpstreamConnection:
             pass
 
 
-async def connect_upstream(primary, backup, tls_context, timeout, is_self_route, metrics, url_tls_context=None):
+async def connect_upstream(primary, backup, tls_context, timeout, is_self_route, metrics, url_tls_context=None, resolver=None):
     endpoints = [primary] + ([backup] if backup else [])
     for index, endpoint in enumerate(endpoints):
         try:
@@ -160,10 +196,14 @@ async def connect_upstream(primary, backup, tls_context, timeout, is_self_route,
                 metrics.blocked_loops += 1
                 metrics.upstream_failures += 1
                 continue
-            reader, writer = await open_upstream(endpoint, tls_context, timeout, url_tls_context)
+            reader, writer = await open_upstream(endpoint, tls_context, timeout, url_tls_context,resolver,
+                                                 address_guard=is_self_route)
             if index:
                 metrics.backup_connections += 1
             return reader, writer, index
+        except UpstreamLoopError:
+            metrics.blocked_loops += 1
+            metrics.upstream_failures += 1
         except (OSError, asyncio.TimeoutError, ssl.SSLError):
             metrics.upstream_failures += 1
             event(logging.WARNING, "upstream_connect_failed", target="primary" if index == 0 else "backup")
