@@ -10,12 +10,11 @@
 [![Linux](https://img.shields.io/badge/Linux-x64_build_target-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
 [![License](https://img.shields.io/badge/license-not_declared-64748b?style=flat-square)](#license)
 
-[![Releases](https://img.shields.io/badge/GitHub-Releases-181717?style=flat-square&logo=github)](https://github.com/dmitrogrushdima/mining-proxy/releases)
+[![Releases](https://img.shields.io/badge/GitHub-Releases-181717?style=flat-square&logo=github)](https://github.com/dmitrogrushdima/chefas-proxy/releases)
 [![Telegram](https://img.shields.io/badge/Telegram-News-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxy)
 [![Community](https://img.shields.io/badge/Telegram-Community-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxychat)
-[![Discord](https://img.shields.io/badge/Discord-coming_soon-64748b?style=flat-square&logo=discord&logoColor=white)](#community)
 
-[Quick start](#-running-in-three-steps) · [Compatibility](#-pools--hardware) · [Documentation](docs/README.md) · [Support development](#-support-development)
+[Quick start](#running-in-three-steps) · [Compatibility](#pools--hardware) · [Documentation](docs/README.md) · [Support development](#support-development)
 
 </div>
 
@@ -23,7 +22,7 @@
 
 > **Pilot candidate:** Windows standalone packaging has been tested. Linux deployment and physical ASIC/pool combinations still need qualification. Public downloads appear on Releases when published; this README does not announce a signed production release.
 
-## ✦ Built around your farm
+## Built around your farm
 
 | Capability | What you get |
 | :--- | :--- |
@@ -36,7 +35,7 @@
 
 Dashboard languages: **English · Русский · 简体中文**. No cloud account is needed for the local dashboard.
 
-## 🚀 Running in three steps
+## Running in three steps
 
 ### Windows x64
 
@@ -54,7 +53,7 @@ Dashboard languages: **English · Русский · 简体中文**. No cloud acc
 
 No separate Python installation is needed for a standalone package. Building from source is covered in the [release guide](docs/release.md).
 
-## ⛏ Pools & hardware
+## Pools & hardware
 
 These are **qualification targets**, not certification badges or partnerships. Only **Bitcoin SHA-256d models** are in scope; a manufacturer's other algorithms are not supported.
 
@@ -70,7 +69,7 @@ These are **qualification targets**, not certification badges or partnerships. O
 
 Other BTC Stratum V1 pools can be configured by address. Compatibility depends on the **exact model, firmware, endpoint, version mask and extranonce limits**. See the [qualification matrix](docs/compatibility.md).
 
-## ◈ A commission you can inspect
+## A commission you can inspect
 
 The **1% DevFee target is measured in pool-confirmed difficulty**, not raw share count or monetary payouts. Parallel fee sessions reserve work against one shared budget; the dashboard exposes accepted user/fee work and the remaining balance. Whole shares and network outages can cause short-term deviations.
 
@@ -80,17 +79,17 @@ The **1% DevFee target is measured in pool-confirmed difficulty**, not raw share
 
 ## Community
 
-Join [CHEFAS Proxy News](https://t.me/Chefasproxy) for announcements or [the community chat](https://t.me/Chefasproxychat) for discussion. Discord is not open yet. Use [GitHub Issues](https://github.com/dmitrogrushdima/mining-proxy/issues) for reproducible bug reports; remove credentials and identifying network details from traces.
+Join [CHEFAS Proxy News](https://t.me/Chefasproxy) for announcements or [the community chat](https://t.me/Chefasproxychat) for discussion. Use [GitHub Issues](https://github.com/dmitrogrushdima/chefas-proxy/issues) for reproducible bug reports; remove credentials and identifying network details from traces.
 
-## ♡ Support development
+## Support development
 
 Voluntary donations support CHEFAS Proxy development and are separate from DevFee.
 
-| Currency | Network | Address |
-| :--- | :--- | :--- |
-| ₿ **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
-| 💵 **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
-| ◎ **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
+| | Currency | Network | Address |
+| :---: | :--- | :--- | :--- |
+| <img src="docs/assets/bitcoin.svg" width="24" height="24" alt=""> | **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
+| <img src="docs/assets/tether.svg" width="24" height="24" alt=""> | **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
+| <img src="docs/assets/solana.svg" width="24" height="24" alt=""> | **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
 
 ## Documentation & source
 

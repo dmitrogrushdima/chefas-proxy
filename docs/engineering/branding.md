@@ -1,6 +1,6 @@
 # CHEFAS Proxy naming and upgrade notes
 
-Public name: **CHEFAS Proxy**. Executable, package, systemd unit and directory slug: `chefas-proxy`. Scope: Bitcoin SHA-256d over Stratum V1 only. The GitHub repository URL stays unchanged; do not invent a renamed remote or release URL.
+Public name: **CHEFAS Proxy**. Executable, package, systemd unit and directory slug: `chefas-proxy`. Scope: Bitcoin SHA-256d over Stratum V1 only. Canonical repository: `https://github.com/dmitrogrushdima/chefas-proxy`. Update existing Git remotes to this URL after the repository rename.
 
 ## Upgrading a previous pilot
 
@@ -17,4 +17,4 @@ Use `python launch.py` for source development. Root launchers prefer a matching 
 
 ## Public claims
 
-Version `0.1.0rc1` identifies the existing build line, not a production certification. Physical ASIC models and pool combinations remain pilot targets. The shared TCP aggregation path is unfinished. Official Telegram: [news](https://t.me/Chefasproxy), [community](https://t.me/Chefasproxychat). Discord and a project license have not been chosen; placeholders must never impersonate official channels or permissions.
+Version `0.1.0rc1` identifies the existing build line, not a production certification. Physical ASIC models and pool combinations remain pilot targets. The shared TCP aggregation path is unfinished. Official Telegram: [news](https://t.me/Chefasproxy), [community](https://t.me/Chefasproxychat). A project license has not been chosen; do not display a license badge claiming permissions that have not been granted.

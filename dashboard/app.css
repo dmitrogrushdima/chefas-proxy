@@ -73,8 +73,7 @@ table td { font-size:12px; border-color:#253340; }
 :root { --accent:#deb18c; --bg:#11161c; --panel:#1a2129; --border:#343c46; }
 body { background:radial-gradient(ellipse at 75% 0%,#b7785112,transparent 55%),var(--bg); }
 .brand { gap:9px; margin-left:5px; margin-right:0; }
-.brand-mark { flex-shrink:0; transform:none; border-color:#deb18c; border-radius:9px; }
-.brand-mark span { border-color:#deb18c; border-radius:2px; }
+.brand-mark { flex-shrink:0; width:35px; height:38px; transform:none; border:0; border-radius:0; display:block; }
 .brand b { font-size:15px; letter-spacing:.025em; white-space:nowrap; }
 .brand b em { font-style:normal; font-weight:400; color:#deb18c; letter-spacing:0; }
 .brand small { font-size:8px; letter-spacing:.09em; color:#b0b6bd; }
