@@ -8,7 +8,7 @@
 [![Stage](https://img.shields.io/badge/stage-pilot_candidate-64748b?style=flat-square)](docs/compatibility.md)
 [![Windows](https://img.shields.io/badge/Windows-x64-334155?style=flat-square)](docs/release.md)
 [![Linux](https://img.shields.io/badge/Linux-x64_build_target-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
-[![License](https://img.shields.io/badge/license-not_declared-64748b?style=flat-square)](#license)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](#license)
 
 [![Releases](https://img.shields.io/badge/GitHub-Releases-181717?style=flat-square&logo=github)](https://github.com/dmitrogrushdima/chefas-proxy/releases)
 [![Telegram](https://img.shields.io/badge/Telegram-News-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxy)
