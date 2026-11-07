@@ -83,6 +83,11 @@ async def run(args, stop_event=None):
     relay.trace_stratum = getattr(args, "debug_stratum", False)
     relay.metrics._log_handler = next((handler for handler in LOG.handlers if isinstance(handler, SafeQueueHandler)), None)
     relay.validate_pow = args.validate_pow
+    relay.failover_health = (
+        getattr(args, 'failover_job_timeout', 120),
+        getattr(args, 'failover_max_rtt', 2),
+        getattr(args, 'failover_recovery', 30),
+    )
     relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
     relay.fee_worker = args.devfee_worker
     relay.fee_worker_template = getattr(args,'devfee_worker_template',None)
@@ -202,7 +207,7 @@ def main():
     parser.add_argument('--asic-extranonce2-max', type=int, default=4)
     parser.add_argument("--active-router", "--stateful", action="store_true", help="Enable experimental stateful Stratum router")
     parser.add_argument("--aggregate", action="store_true",
-                        help="Share compatible pool connections (requires active routing without backup)")
+                        help="Share compatible pool connections (requires active routing)")
     parser.add_argument("--tp-mode", action="store_true", help="Raw TCP relay without Stratum observation; applies at session admission")
     parser.add_argument("--validate-pow", action="store_true")
     parser.add_argument("--devfee-host")
@@ -219,6 +224,12 @@ def main():
     parser.add_argument("--reconnect-min-seconds", type=float, default=5940)
     parser.add_argument("--backup-host", help="Backup pool, used when initial connection fails")
     parser.add_argument("--backup-port", type=int, choices=range(1, 65536), metavar="PORT")
+    parser.add_argument("--failover-job-timeout", type=float, default=120, metavar="SECONDS",
+                        help="Maximum age of a shared pool job before failover")
+    parser.add_argument("--failover-max-rtt", type=float, default=2, metavar="SECONDS",
+                        help="Shared pool submit latency threshold")
+    parser.add_argument("--failover-recovery", type=float, default=30, metavar="SECONDS",
+                        help="Fresh-job stability period before returning to a degraded pool")
     parser.add_argument("--dashboard-port", type=int, default=8080, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--max-connections", type=int, default=512, metavar="N")
     parser.add_argument("--connect-timeout", type=float, default=10, metavar="SECONDS")
@@ -251,8 +262,8 @@ def main():
     if tp_env not in ("true", "false"):
         parser.error("TP_MODE must be true or false")
     args.tp_mode = args.tp_mode or tp_env == "true"
-    if args.aggregate and (not args.active_router or args.tp_mode or args.backup_host):
-        parser.error('--aggregate requires --active-router without TP mode or backup')
+    if args.aggregate and (not args.active_router or args.tp_mode):
+        parser.error('--aggregate requires --active-router without TP mode')
     if args.aggregate and (args.require_devfee or args.devfee_worker_template):
         parser.error('--aggregate requires optional DevFee and a fixed fee worker')
     if args.tp_mode:
@@ -278,6 +289,11 @@ def main():
         parser.error("fee work and reconnect interval must be finite and non-negative")
     if bool(args.backup_host) != bool(args.backup_port):
         parser.error("--backup-host and --backup-port must be supplied together")
+    for option, minimum, maximum in (('failover_job_timeout', 1, 3600),
+                                      ('failover_max_rtt', .1, 120),
+                                      ('failover_recovery', 0, 3600)):
+        if not minimum <= getattr(args, option) <= maximum:
+            parser.error('--' + option.replace('_', '-') + ' outside allowed range')
     if not 1 <= args.max_connections <= 10000:
         parser.error("--max-connections must be in 1..10000")
     if args.devfee_worker_template is not None:

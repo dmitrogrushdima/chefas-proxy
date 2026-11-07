@@ -3,10 +3,31 @@ import json
 import unittest
 
 from aggregation import AggregationKey, InsufficientNonceSpace, NoncePartitioner
-from upstream_manager import SharedUpstreamManager, UpstreamConnection
+from upstream_manager import SharedPoolHealth, SharedUpstreamManager, UpstreamConnection
 
 
 class SharedUpstreamTests(unittest.IsolatedAsyncioTestCase):
+    def test_health_requires_fresh_jobs_and_hysteresis_after_slow_submits(self):
+        now = [0]
+        health = SharedPoolHealth(10, 1, 3, clock=lambda: now[0])
+        self.assertFalse(health.healthy())
+        health.job_received()
+        for _ in range(3):
+            health.submitted('rejected', .2, [21, 'stale', None])
+        self.assertTrue(health.healthy())
+        for _ in range(3):
+            health.submitted('accepted', 2, None)
+        self.assertFalse(health.healthy())
+        now[0] = 4
+        self.assertFalse(health.healthy())
+        health.job_received()
+        now[0] = 6
+        self.assertFalse(health.healthy())
+        now[0] = 7
+        self.assertTrue(health.healthy())
+        now[0] = 14
+        self.assertFalse(health.healthy())
+
     async def test_concurrent_miners_share_authenticated_socket_and_unique_prefixes(self):
         connections = []
         async def pool(reader, writer):

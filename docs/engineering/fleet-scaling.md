@@ -149,4 +149,4 @@ The mode can share a separate optional DevFee connection using a fixed fee worke
 
 For BIP310 version rolling, the proxy first negotiates with the user pool on a temporary connection. Shared sockets are keyed by the effective version mask, and both routes must confirm that exact mask before receiving work. An incompatible optional fee pool leaves the ASIC on user work. Pool-driven changes to the negotiated mask retire the affected shared socket.
 
-Required DevFee, fee worker templates, backup routing and socket-preserving route migration are outside this mode. Qualification on physical ASICs and production pools remains open.
+Shared routes can keep a warm backup with `--backup-host` and `--backup-port`. Health monitoring switches ASIC work on the same downstream socket and resumes the primary after recovery. See [Smart Failover](failover.md) for thresholds and compatibility. Required DevFee, fee worker templates and socket-preserving configuration reloads are outside this mode. Qualification on physical ASICs and production pools remains open.

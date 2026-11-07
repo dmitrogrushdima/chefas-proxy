@@ -6,6 +6,7 @@ import logging
 import re
 import socket
 import copy
+import time
 from pilot_logging import event
 from decimal import Decimal
 from stratum_codec import ProtocolError, PacketReader
@@ -17,6 +18,56 @@ from hardware_compatibility import negotiated_mask
 
 MAX_LINE = 65536
 MAX_PENDING = 1024
+
+
+class SharedPoolHealth:
+    """Health observations shared by all ASICs on one pool connection."""
+
+    def __init__(self, job_timeout, max_rtt, recovery_delay, *, clock=time.monotonic):
+        self.job_timeout = job_timeout
+        self.max_rtt = max_rtt
+        self.recovery_delay = recovery_delay
+        self.clock = clock
+        self.last_job = None
+        self.bad_samples = 0
+        self.degraded = False
+        self.recovery_started = None
+
+    def job_received(self):
+        now = self.clock()
+        if self.last_job is not None and now - self.last_job >= self.job_timeout:
+            self.mark_degraded()
+        self.last_job = now
+        if self.degraded and self.recovery_started is None:
+            self.recovery_started = now
+
+    def mark_degraded(self):
+        self.degraded = True
+        self.recovery_started = None
+
+    def submitted(self, outcome, elapsed, error):
+        # Stale and duplicate shares do not indicate a broken pool.
+        if isinstance(error, list) and error and error[0] in (21, 22):
+            return
+        if outcome == 'accepted' and elapsed <= self.max_rtt:
+            self.bad_samples = 0
+        else:
+            self.bad_samples += 1
+            if self.bad_samples >= 3:
+                self.mark_degraded()
+
+    def healthy(self):
+        now = self.clock()
+        if self.last_job is None:
+            return False
+        if now - self.last_job >= self.job_timeout:
+            self.mark_degraded()
+            return False
+        if self.degraded and self.recovery_started is not None:
+            if now - self.recovery_started >= self.recovery_delay:
+                self.degraded = False
+                self.bad_samples = 0
+        return not self.degraded
 
 
 class SharedUpstreamGroup:

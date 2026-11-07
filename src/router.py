@@ -21,7 +21,8 @@ import ssl
 from collections import OrderedDict, deque
 from decimal import Decimal
 
-from upstream_manager import UpstreamConnection, ProtocolError, encode_packet, open_upstream, UpstreamLoopError, parse_endpoint
+from upstream_manager import (UpstreamConnection, ProtocolError, SharedPoolHealth, encode_packet,
+                              open_upstream, UpstreamLoopError, parse_endpoint)
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
 from devfee_scheduler import (FeeHealth, FeeJitter, independent_subscription, FairnessAllocator,
@@ -1025,6 +1026,14 @@ class AggregateSession:
         self.width = None
         self.write_lock = asyncio.Lock()
         self.job_generation = None
+        self.job_sequence = 0
+        self.backup_group = None
+        self.backup_jobs = None
+        self.backup_generation = None
+        self.backup_endpoint = relay.backup
+        self.failover_tasks = []
+        self.base_route = 'user'
+        self.primary_return_after = 0
         self.fee_group = None
         self.fee_jobs = None
         self.fee_generation = None
@@ -1060,7 +1069,16 @@ class AggregateSession:
                 return
             if self.worker is None and not self.version_probed:
                 self.version_probed = True
-                self.version_mask = await probe_aggregate_mask(self.relay, self.endpoint, requested, minimum_bits)
+                primary_probe = probe_aggregate_mask(self.relay, self.endpoint, requested, minimum_bits)
+                if self.backup_endpoint:
+                    primary, backup = await asyncio.gather(primary_probe, probe_aggregate_mask(
+                        self.relay, self.backup_endpoint, requested, minimum_bits))
+                    if primary is not None and backup is not None:
+                        self.version_mask = f'{mask_value(primary) & mask_value(backup):08x}'
+                    else:
+                        self.version_mask = primary if primary is not None else backup
+                else:
+                    self.version_mask = await primary_probe
             if self.version_mask is not None:
                 result.update({'version-rolling': True, 'version-rolling.mask': self.version_mask})
                 self.session['observer'].protocol.update(
@@ -1073,23 +1091,32 @@ class AggregateSession:
             if self.route == route:
                 await self.publish(packet, route)
 
+    def binding(self, route):
+        if route == 'fee':
+            return self.fee_group, self.fee_jobs, 'fee_generation'
+        if route == 'backup':
+            return self.backup_group, self.backup_jobs, 'backup_generation'
+        return self.group, self.jobs, 'job_generation'
+
     async def publish(self, packet, route, *, clean=False):
         if packet.get('method') != 'mining.notify':
             return
-        group, jobs = (self.fee_group, self.fee_jobs) if route == 'fee' else (self.group, self.jobs)
+        group, jobs, generation_attr = self.binding(route)
         channel = group.connection
         generation = packet['generation']
         if channel.closed or generation != channel.generation:
             return
-        attr = 'fee_generation' if route == 'fee' else 'job_generation'
-        if getattr(self, attr) != generation:
+        if getattr(self, generation_attr) != generation:
             jobs.jobs.clear()
-            setattr(self, attr, generation)
+            setattr(self, generation_attr, generation)
         difficulty = packet['difficulty']
         local = Decimal(str(difficulty)) / 2
         translated = virtual_subscription_job(packet['params'], channel.extranonce1,
                                               channel.extranonce2_size, self.prefix, self.width)
+        # Keep aliases unique when a pool reconnect resets its nonce space.
+        jobs.sequence = self.job_sequence
         params = jobs.issue(translated, local, difficulty)
+        self.job_sequence = jobs.sequence
         params[0] = route[0] + params[0]
         if clean:
             params[8] = True
@@ -1099,15 +1126,93 @@ class AggregateSession:
     async def close_client(self):
         self.writer.close()
 
+    def user_key(self, endpoint, worker, password):
+        host, port, tls = parse_endpoint(*endpoint)
+        return AggregationKey(host, port, tls or self.relay.tls,
+                              self.route_worker or worker,
+                              self.route_password if self.route_worker else password,
+                              version_mask=self.version_mask, user_agent=self.agent)
+
+    def pool_healthy(self, route):
+        group, _, _ = self.binding(route)
+        return (group is not None and not group.connection.closed
+                and self.identity in group.subscribers and group.connection.health.healthy())
+
+    async def switch_route(self, route, *, kind='switch'):
+        group, _, _ = self.binding(route)
+        if group is None or group.connection.closed or group.connection.job is None:
+            return
+        self.route = route
+        self.session['pool'] = 'primary' if route == 'user' else route
+        await self.publish(group.connection.job, route, clean=True)
+        self.relay.event(self.session, route, kind=kind)
+
+    async def reconcile_base(self):
+        async with self.route_lock:
+            primary_ready = self.pool_healthy('user')
+            backup_ready = self.pool_healthy('backup')
+            returning = self.base_route == 'backup' and time.monotonic() < self.primary_return_after
+            route = ('user' if primary_ready and (not returning or not backup_ready) else
+                     'backup' if backup_ready else None)
+            if route is not None and route != self.base_route:
+                self.base_route = route
+                self.relay.fee_allocator.release(self.session['id'])
+                await self.switch_route(route, kind='failback' if route == 'user' else 'failover')
+
+    async def watch_routes(self):
+        while True:
+            await self.reconcile_base()
+            await asyncio.sleep(.25)
+
+    async def attach_base(self, route, group):
+        channel = group.connection
+        if channel.closed or channel.extranonce2_size < len(self.prefix) // 2 + self.width:
+            raise ProtocolError('incompatible shared pool nonce layout')
+        jobs = AggregatedJobRouter(self.lease, self.version_mask, ttl=self.relay.job_ttl)
+        async def notify(packet):
+            await self.notify(packet, route)
+        group.subscribe(self.identity, notify, self.reconcile_base if self.backup_endpoint else self.close_client)
+        if route == 'user':
+            if self.base_route == 'backup':
+                self.primary_return_after = time.monotonic() + self.relay.failover_health[2]
+            self.group, self.jobs, self.job_generation = group, jobs, None
+        else:
+            self.backup_group, self.backup_jobs, self.backup_generation = group, jobs, None
+        if channel.job is not None:
+            await self.notify(channel.job, route)
+
+    async def maintain_base(self, route, key):
+        manager = self.relay.shared_upstreams
+        while True:
+            old, _, _ = self.binding(route)
+            if old is not None and not old.connection.closed and self.identity in old.subscribers:
+                await asyncio.sleep(.5)
+                continue
+            if old is not None:
+                await manager.release(old, self.identity)
+            group = None
+            try:
+                group, _ = await manager.acquire(key, self.identity)
+                if group.connection.extranonce2_size < len(self.prefix) // 2 + self.width:
+                    event(logging.WARNING, 'shared_backup_nonce_incompatible', route=route,
+                          session_id=self.session['id'])
+                    return
+                await self.attach_base(route, group)
+                group = None  # ownership transferred to the route
+                await self.reconcile_base()
+            except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
+                self.relay.metrics.upstream_failures += 1
+            finally:
+                if group is not None:
+                    await manager.release(group, self.identity)
+            await asyncio.sleep(2)
+
     async def fee_unavailable(self):
         async with self.route_lock:
             self.fee_disabled = True
             self.relay.fee_allocator.release(self.session['id'])
             if self.route == 'fee':
-                self.route = 'user'
-                self.session['pool'] = 'primary'
-                if not self.group.connection.closed and self.group.connection.job:
-                    await self.publish(self.group.connection.job, 'user', clean=True)
+                await self.switch_route(self.base_route)
 
     async def run_fee(self):
         group = None
@@ -1117,14 +1222,14 @@ class AggregateSession:
             host, port, tls = parse_endpoint(*self.fee_endpoint)
             key = AggregationKey(host, port, tls or self.relay.tls, self.fee_worker,
                                  self.fee_password, version_mask=self.version_mask, user_agent=self.agent)
-            if key == self.group.key:
+            if key in self.base_keys.values():
                 return
             group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
             channel = group.connection
             if channel.extranonce2_size < len(self.prefix) // 2 + self.width:
                 return
             self.fee_group = group
-            self.fee_jobs = AggregatedJobRouter(self.jobs.lease, self.version_mask, ttl=self.relay.job_ttl)
+            self.fee_jobs = AggregatedJobRouter(self.lease, self.version_mask, ttl=self.relay.job_ttl)
             group.subscribe(self.identity, self.notify_fee, self.fee_unavailable)
             while not self.fee_disabled and not channel.closed and self.identity in group.subscribers:
                 await self.reconcile_fee()
@@ -1143,7 +1248,8 @@ class AggregateSession:
         await self.notify(packet, 'fee')
 
     def fee_ready(self):
-        return (not self.fee_disabled and self.fee_group is not None and not self.fee_group.connection.closed
+        return (self.base_route == 'user' and not self.fee_disabled and self.fee_group is not None
+                and not self.fee_group.connection.closed
                 and self.identity in self.fee_group.subscribers
                 and self.fee_group.connection.job is not None)
 
@@ -1153,14 +1259,9 @@ class AggregateSession:
                 return
             fee_job = self.fee_group.connection.job
             want = self.relay.fee_allocator.acquire(self.session['id'], fee_job['difficulty'])
-            route = 'fee' if want else 'user'
+            route = 'fee' if want else self.base_route
             if route != self.route:
-                self.route = route
-                self.session['pool'] = 'fee' if want else 'primary'
-                packet = fee_job if want else self.group.connection.job
-                if packet is not None:
-                    await self.publish(packet, route, clean=True)
-                self.relay.event(self.session, route)
+                await self.switch_route(route)
 
     async def authorize(self, ident, params):
         if self.agent is None or self.worker is not None or len(params) != 2 or not all(
@@ -1170,13 +1271,24 @@ class AggregateSession:
         if not worker or len(worker) > 128 or len(password) > 1024:
             raise ProtocolError('invalid aggregated credentials')
         remember_secret(password)
-        host, port, tls = parse_endpoint(*self.endpoint)
-        key = AggregationKey(host, port, tls or self.relay.tls,
-                             self.route_worker or worker,
-                             self.route_password if self.route_worker else password,
-                             version_mask=self.version_mask, user_agent=self.agent)
-        self.group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
-        channel = self.group.connection
+        self.base_keys = {'user': self.user_key(self.endpoint, worker, password)}
+        if self.backup_endpoint:
+            backup_key = self.user_key(self.backup_endpoint, worker, password)
+            if backup_key != self.base_keys['user']:
+                self.base_keys['backup'] = backup_key
+            else:
+                self.backup_endpoint = None
+        manager = self.relay.shared_upstreams
+        try:
+            group, _ = await manager.acquire(self.base_keys['user'], self.identity)
+            self.group = group
+        except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
+            if 'backup' not in self.base_keys:
+                raise
+            group, _ = await manager.acquire(self.base_keys['backup'], self.identity)
+            self.backup_group = group
+            self.route = self.base_route = 'backup'
+        channel = group.connection
         available = channel.extranonce2_size - len(self.prefix) // 2
         if available < self.relay.asic_extranonce2_min:
             await self.reply(ident, False, [20, 'Pool nonce space cannot support aggregation', None])
@@ -1186,22 +1298,19 @@ class AggregateSession:
             await self.send({'id': None, 'method': 'client.reconnect', 'params': []})
             return False
         # The translated job presents the virtual prefix as extranonce1.
-        lease = NonceLease(self.identity, self.prefix, self.width, '', self.width)
-        self.jobs = AggregatedJobRouter(lease, self.version_mask, ttl=self.relay.job_ttl)
+        self.lease = NonceLease(self.identity, self.prefix, self.width, '', self.width)
         self.worker = worker
-        self.session.update(state='connected', pool='primary', worker=worker, protocol_started=True)
+        self.session.update(state='connected', pool='primary' if self.route == 'user' else self.route,
+                            worker=worker, protocol_started=True)
         self.session['observer'].protocol.update(subscribed=True, extranonce1=self.prefix,
                                                  extranonce2_size=self.width, authorized_workers=[worker])
         self.relay.workers.authorize(self.session['id'], worker, self.session['ip'])
-        # Capture the latest job and register synchronously so no notification
-        # can slip between taking the snapshot and joining the broadcast.
         await self.reply(ident, True)
-        if channel.closed:
-            return False
-        initial = channel.job
-        self.group.subscribe(self.identity, self.notify, self.close_client)
-        if initial is not None:
-            await self.notify(initial)
+        await self.attach_base(self.base_route, group)
+        if self.backup_endpoint:
+            self.failover_tasks = [asyncio.create_task(self.maintain_base(route, key))
+                                   for route, key in self.base_keys.items()]
+            self.failover_tasks.append(asyncio.create_task(self.watch_routes()))
         if self.fee_endpoint:
             self.fee_task = asyncio.create_task(self.run_fee())
         return True
@@ -1212,15 +1321,14 @@ class AggregateSession:
         try:
             if len(params) < 2 or params[0] != self.worker or not isinstance(params[1], str) or not params[1]:
                 raise ValueError('unauthorized share')
-            route = {'u': 'user', 'f': 'fee'}.get(params[1][0])
+            route = {'u': 'user', 'b': 'backup', 'f': 'fee'}.get(params[1][0])
             if route is None:
                 raise ValueError('unknown route')
-            group, jobs, generation = ((self.fee_group, self.fee_jobs, self.fee_generation) if route == 'fee'
-                                       else (self.group, self.jobs, self.job_generation))
+            group, jobs, generation_attr = self.binding(route)
             if group is None or jobs is None:
                 raise ValueError('unknown job')
             channel = group.connection
-            if channel.closed or channel.generation != generation:
+            if channel.closed or channel.generation != getattr(self, generation_attr):
                 raise ValueError('stale job')
             params = list(params)
             params[1] = params[1][1:]
@@ -1240,6 +1348,7 @@ class AggregateSession:
         token = allocator.begin_submit(self.session['id'], difficulty) if route == 'fee' else None
         self.pending_fee = token is not None
         outcome = 'unknown'
+        sent_at = time.monotonic()
         try:
             response = await channel.request('mining.submit', outbound)
             if response.get('result') is True and response.get('error') is None:
@@ -1252,10 +1361,12 @@ class AggregateSession:
             if token is not None:
                 allocator.finish_submit(token, outcome)
             self.pending_fee = False
+        channel.health.submitted(outcome, time.monotonic() - sent_at, response.get('error'))
+        account = 'fee' if route == 'fee' else 'user'
         if outcome == 'accepted':
             metrics.accepted += 1
-            self.relay.ledger.record(route, difficulty, fee_available=self.fee_ready())
-            self.relay.metrics._audit.record(route, difficulty)
+            self.relay.ledger.record(account, difficulty, fee_available=route == 'user' and self.fee_ready())
+            self.relay.metrics._audit.record(account, difficulty)
         elif outcome == 'rejected':
             metrics.rejected += 1
         else:
@@ -1264,6 +1375,8 @@ class AggregateSession:
         await self.reply(ident, response.get('result'), response.get('error'))
         if route == 'fee' and outcome != 'accepted':
             await self.fee_unavailable()
+        if self.backup_endpoint:
+            await self.reconcile_base()
         await self.reconcile_fee()
 
     async def run(self):
@@ -1307,12 +1420,17 @@ class AggregateSession:
         except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
             self.relay.metrics.transport_errors += 1
         finally:
+            for task in self.failover_tasks:
+                task.cancel()
+            await asyncio.gather(*self.failover_tasks, return_exceptions=True)
             if self.fee_task is not None:
                 self.fee_task.cancel()
                 await asyncio.gather(self.fee_task, return_exceptions=True)
             self.relay.fee_allocator.release(self.session['id'])
             if self.group is not None:
                 await self.relay.shared_upstreams.release(self.group, self.identity)
+            if self.backup_group is not None:
+                await self.relay.shared_upstreams.release(self.backup_group, self.identity)
             self.relay.aggregate_prefixes.release(self.identity)
             if not self.relay.shared_upstreams.groups:
                 self.relay.aggregate_prefixes.reset_if_idle()
@@ -1354,6 +1472,7 @@ async def open_aggregate_channel(relay, key):
                 channel.generation += 1
             packet.update(generation=channel.generation, difficulty=channel.difficulty)
             channel.job = packet
+            channel.health.job_received()
             channel.ready.set()
         elif method == 'mining.set_version_mask':
             if (not isinstance(params, list) or len(params) != 1 or key.version_mask is None
@@ -1374,6 +1493,7 @@ async def open_aggregate_channel(relay, key):
     channel = UpstreamConnection(reader, writer, 'user', notification, disconnected,
                                  relay.timeout, metrics=relay.metrics)
     channel.generation = 0
+    channel.health = SharedPoolHealth(*relay.failover_health)
     try:
         if key.version_mask is not None:
             if await channel.configure_version_rolling(key.version_mask) != key.version_mask:

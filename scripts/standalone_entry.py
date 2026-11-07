@@ -13,6 +13,7 @@ CONFIG_OPTIONS = {
     "validate_pow", "devfee_host", "devfee_port", "devfee_worker",
     "devfee_worker_template",
     "backup_host", "backup_port", "dashboard_port", "tls", "tls_ca_file",
+    "failover_job_timeout", "failover_max_rtt", "failover_recovery",
     "max_connections", "connect_timeout", "miner_timeout", "handshake_timeout",
     "max_miner_message", "idle_timeout", "allow_cidr", "allow_any_miner",
     "require_devfee", "fee_grace_seconds", "fee_min_work", "reconnect_min_seconds",
