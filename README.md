@@ -71,8 +71,6 @@ Configure a Bitcoin Stratum V1 endpoint for your pool. These are examples, not e
 </tr>
 </table>
 
-<sub>Pool icons: <a href="https://github.com/mempool/mining-pool-logos">mempool mining pool logos</a>. Trademarks belong to their respective owners.</sub>
-
 ### ASIC hardware
 
 | Family | Bitcoin models | Firmware qualification |
@@ -106,7 +104,6 @@ Voluntary donations support CHEFAS Proxy development and are separate from DevFe
 | <img src="https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/usdt.svg" align="absmiddle" width="24" height="24" alt=""> | **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
 | <img src="https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/sol.svg" align="absmiddle" width="24" height="24" alt=""> | **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
 
-<sub>Icons: <a href="https://github.com/spothq/cryptocurrency-icons">Cryptocurrency Icons</a> · CC0 · served by jsDelivr.</sub>
 
 ## Documentation & source
 
