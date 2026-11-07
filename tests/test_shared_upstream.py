@@ -2,7 +2,7 @@ import asyncio
 import json
 import unittest
 
-from aggregation import AggregationKey, NoncePartitioner
+from aggregation import AggregationKey, InsufficientNonceSpace, NoncePartitioner
 from upstream_manager import SharedUpstreamManager, UpstreamConnection
 
 
@@ -24,9 +24,14 @@ class SharedUpstreamTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(server.wait_closed)
         self.addCleanup(server.close)
         port = server.sockets[0].getsockname()[1]
+        slow_open_started = asyncio.Event()
+        resume_slow_open = asyncio.Event()
         async def noop(*args):
             pass
         async def factory(key):
+            if key.worker == 'slow.worker':
+                slow_open_started.set()
+                await resume_slow_open.wait()
             reader, writer = await asyncio.open_connection(key.host, key.port)
             connection = UpstreamConnection(reader, writer, 'user', noop, noop)
             result = await connection.request('mining.subscribe', ['test'])
@@ -35,7 +40,7 @@ class SharedUpstreamTests(unittest.IsolatedAsyncioTestCase):
             result = await connection.request('mining.authorize', [key.worker, key.password])
             connection.authorized = result['result'] is True
             return connection, NoncePartitioner(connection.extranonce1, connection.extranonce2_size, 3, maximum_workers=2)
-        manager = SharedUpstreamManager(factory)
+        manager = SharedUpstreamManager(factory, max_groups=4)
         self.addAsyncCleanup(manager.close)
         key = AggregationKey('127.0.0.1', port, False, 'farm.worker', 'x')
         (group1, first), (group2, second) = await asyncio.gather(manager.acquire(key, 'one'), manager.acquire(key, 'two'))
@@ -65,5 +70,29 @@ class SharedUpstreamTests(unittest.IsolatedAsyncioTestCase):
         _, third = await manager.acquire(key, 'three')
         self.assertNotEqual(first.prefix, third.prefix)
         other = AggregationKey('127.0.0.1', port, False, 'another.worker', 'x')
-        await manager.acquire(other, 'four')
+        other_group, _ = await manager.acquire(other, 'four')
         self.assertEqual(len(connections), 2)
+
+        slow = AggregationKey('127.0.0.1', port, False, 'slow.worker', 'x')
+        pending = asyncio.create_task(manager.acquire(slow, 'slow'))
+        try:
+            await asyncio.wait_for(slow_open_started.wait(), 2)
+            joined, _ = await asyncio.wait_for(manager.acquire(other, 'five'), 2)
+            self.assertIs(joined, other_group)
+            await asyncio.wait_for(manager.release(other_group, 'four'), 2)
+            self.assertFalse(other_group.connection.closed)
+            self.assertEqual(len(connections), 2)
+
+            healthy = AggregationKey('127.0.0.1', port, False, 'healthy.worker', 'x')
+            await asyncio.wait_for(manager.acquire(healthy, 'healthy'), 2)
+            self.assertEqual(len(connections), 3)
+            overflow = AggregationKey('127.0.0.1', port, False, 'overflow.worker', 'x')
+            with self.assertRaises(InsufficientNonceSpace):
+                await asyncio.wait_for(manager.acquire(overflow, 'overflow'), 2)
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+        resume_slow_open.set()
+        await asyncio.wait_for(manager.acquire(slow, 'retry'), 2)
+        self.assertEqual(len(connections), 4)

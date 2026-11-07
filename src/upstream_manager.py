@@ -105,8 +105,8 @@ class SharedUpstreamManager:
     """Own a bounded collection of compatible, independently authenticated sockets.
 
     ``factory(key)`` establishes and authenticates a socket and returns an
-    UpstreamConnection and its nonce partitioner. Creation is serialized so
-    simultaneous miners cannot create duplicate sockets for the same group.
+    UpstreamConnection and its nonce partitioner. Only one socket can be
+    opening per key. Other keys and existing groups can make progress meanwhile.
     The owner releases leases after downstream requests have finished.
     """
 
@@ -116,13 +116,15 @@ class SharedUpstreamManager:
         self.factory = factory
         self.max_groups = max_groups
         self.groups = []
-        self.lock = asyncio.Lock()
+        self.opening = {}
         self.closed = False
 
     async def acquire(self, key, session_id):
         if not isinstance(key, AggregationKey):
             raise ValueError('invalid aggregation key')
-        async with self.lock:
+        # All bookkeeping runs on the owning event loop without suspension.
+        # Reserve capacity before starting network I/O.
+        while True:
             if self.closed:
                 raise RuntimeError('shared upstream manager is closed')
             self.groups[:] = [group for group in self.groups if not group.connection.closed]
@@ -132,10 +134,19 @@ class SharedUpstreamManager:
                         return group, group.allocate(session_id)
                     except InsufficientNonceSpace:
                         pass
-            if len(self.groups) >= self.max_groups:
+            opening = self.opening.get(key)
+            if opening is not None:
+                await opening.wait()
+                continue
+            if len(self.groups) + len(self.opening) >= self.max_groups:
                 raise InsufficientNonceSpace('shared upstream group limit reached')
+            opening = self.opening[key] = asyncio.Event()
+            break
+        try:
             connection, partitioner = await self.factory(key)
             try:
+                if self.closed:
+                    raise RuntimeError('shared upstream manager is closed')
                 group = SharedUpstreamGroup(key, connection, partitioner)
                 lease = group.allocate(session_id)
             except BaseException:
@@ -143,20 +154,23 @@ class SharedUpstreamManager:
                 raise
             self.groups.append(group)
             return group, lease
+        finally:
+            del self.opening[key]
+            opening.set()
 
     async def release(self, group, session_id):
-        async with self.lock:
-            group.release(session_id)
-            if group not in self.groups or group.partitioner.active_count:
-                return
-            self.groups.remove(group)
+        group.release(session_id)
+        if group not in self.groups or group.partitioner.active_count:
+            return
+        self.groups.remove(group)
         await group.close()
 
     async def close(self):
-        async with self.lock:
-            self.closed = True
-            groups, self.groups = self.groups, []
-        await asyncio.gather(*(group.close() for group in groups), return_exceptions=True)
+        self.closed = True
+        groups, self.groups = self.groups, []
+        await asyncio.gather(*(group.close() for group in groups),
+                             *(opening.wait() for opening in self.opening.values()),
+                             return_exceptions=True)
 
 
 def parse_endpoint(host, port=None):
