@@ -466,6 +466,82 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01)
         self.assertFalse(self.user_pool.writers)
 
+    async def test_aggregate_fee_uses_one_socket_and_preserves_miner_extranonce(self):
+        from pow_validator import build_stratum_header
+
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8,
+                          fee_min_shares=98.5)
+        miners = [await self.miner(hot=False) for _ in range(2)]
+        prefixes = [miner.extra for miner in miners]
+        self.assertEqual(len(set(prefixes)), 2)
+        deadline = time.monotonic() + 5
+        while not self.fee_pool.authorize_requests and time.monotonic() < deadline:
+            await asyncio.sleep(.02)
+        self.assertEqual(self.fee_pool.authorize_requests, ['fee.worker'])
+        # Allow the shared authorize response and job to reach both subscribers.
+        await asyncio.sleep(.3)
+        nonces = {}
+
+        def proof(miner, job=None):
+            job = job or miner.job
+            params = job['params']
+            ex2 = '00' * job['size']
+            key = (miner.extra, params[0])
+            for number in range(nonces.get(key, 0), 1000000):
+                nonce = f'{number:08x}'
+                if meets_target(build_stratum_header(params, miner.extra, ex2, NTIME, nonce), SHARE_TARGET):
+                    nonces[key] = number + 1
+                    return ['user.worker', params[0], ex2, NTIME, nonce]
+            self.fail('could not find pool-valid share')
+
+        user_job = miners[0].job
+        for _ in range(99):
+            self.assertIs((await miners[0].submit(proof(miners[0], user_job)))['result'], True)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(m.job['params'][0].startswith('f') for m in miners):
+            await asyncio.sleep(.02)
+        selected = [m for m in miners if m.job['params'][0].startswith('f')]
+        self.assertEqual(len(selected), 1)
+        self.assertIs((await selected[0].submit(proof(selected[0])))['result'], True)
+        self.assertEqual((self.user_pool.accepted, self.fee_pool.accepted), (99, 1))
+        self.assertEqual((self.user_pool.connections, self.fee_pool.connections), (1, 1))
+        self.assertEqual((self.user_pool.rejected, self.fee_pool.rejected), (0, 0))
+        self.assertEqual([miner.extra for miner in miners], prefixes)
+        self.assertFalse(any(miner.closed.is_set() for miner in miners))
+        self.assertAlmostEqual((await self.api('/api/audit-export'))['fee_percentage'], 1.0)
+        self.assertIs((await miners[0].submit(proof(miners[0], user_job)))['result'], True)
+        self.assertEqual(self.user_pool.accepted, 100)
+
+    async def test_aggregate_fee_disconnect_restores_user_job_on_same_socket(self):
+        from pow_validator import build_stratum_header
+
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8)
+        miner = await self.miner(hot=False)
+        prefix = miner.extra
+        deadline = time.monotonic() + 5
+        while not self.fee_pool.authorize_requests and time.monotonic() < deadline:
+            await asyncio.sleep(.02)
+        self.assertTrue(self.fee_pool.authorize_requests)
+        await asyncio.sleep(.3)
+        job = miner.job['params']
+        extra2 = '00' * miner.extra_size
+        nonce = next(f'{i:08x}' for i in range(1000000) if meets_target(
+            build_stratum_header(job, prefix, extra2, NTIME, f'{i:08x}'), SHARE_TARGET))
+        self.assertIs((await miner.submit(['user.worker', job[0], extra2, NTIME, nonce]))['result'], True)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not miner.job['params'][0].startswith('f'):
+            await asyncio.sleep(.02)
+        self.assertTrue(miner.job['params'][0].startswith('f'))
+        for writer in tuple(self.fee_pool.writers):
+            writer.close()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not miner.job['params'][0].startswith('u'):
+            await asyncio.sleep(.02)
+        self.assertTrue(miner.job['params'][0].startswith('u'))
+        self.assertFalse(miner.closed.is_set())
+        self.assertEqual(miner.extra, prefix)
+        self.assertEqual(self.fee_pool.accepted, 0)
+
     async def test_scanners_dropped_before_upstream_connect(self):
         await self.launch(fee=False)
         for payload in (b'GET / HTTP/1.1\r\n', b'\x16\x03\x01', b'\xff',

@@ -145,4 +145,6 @@ TP sessions bypass Stratum parsing, local PoW checks and DevFee routing. Basic c
 
 Use `--active-router --aggregate` (standalone JSON: `"active_router": true, "aggregate": true`) to pilot shared user-pool sockets. The mode supports up to 100 simultaneous local subscriptions and 50 miners per shared socket. The pool, effective worker, password, transport and ASIC agent must match. A cached nonce width is scoped by route, client address and agent because credentials are unavailable at subscription time. The actual upstream response is always checked. A mismatch that can be corrected updates the hint and sends `client.reconnect`.
 
-The aggregation mode supports a user pool only and declines version rolling. It acknowledges local-only shares without crediting pool work. DevFee, backup routing and socket-preserving route migration are outside this mode. Qualification on physical ASICs and production pools remains open.
+The mode can share a separate optional DevFee connection using a fixed fee worker. Both routes use the same virtual extranonce for each ASIC, so switching jobs preserves the ASIC connection. Previously issued jobs remain bound to their issuing pool. Only confirmed upstream work enters the fee ledger. A fee connection failure returns the miner to user work.
+
+Version rolling, required DevFee, fee worker templates, backup routing and socket-preserving route migration are outside this mode. Qualification on physical ASICs and production pools remains open.

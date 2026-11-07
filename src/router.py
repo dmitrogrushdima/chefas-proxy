@@ -1008,7 +1008,7 @@ class StatefulRouter:
             self.urgent_job = self.normal_job = None
             self.controls.clear()
 class AggregateSession:
-    """Opt-in user-pool route. A shared channel never owns an ASIC transport."""
+    """Shared user and optional fee routes with a stable virtual extranonce."""
 
     def __init__(self, relay, reader, writer, session):
         self.relay, self.writer, self.session = relay, writer, session
@@ -1025,6 +1025,17 @@ class AggregateSession:
         self.width = None
         self.write_lock = asyncio.Lock()
         self.job_generation = None
+        self.fee_group = None
+        self.fee_jobs = None
+        self.fee_generation = None
+        self.fee_task = None
+        self.fee_disabled = False
+        self.route = 'user'
+        self.route_lock = asyncio.Lock()
+        self.pending_fee = False
+        self.fee_endpoint = relay.fee
+        self.fee_worker = relay.fee_worker
+        self.fee_password = relay.fee_password
 
     async def send(self, *packets):
         async with self.write_lock:
@@ -1035,26 +1046,99 @@ class AggregateSession:
     async def reply(self, ident, result, error=None):
         await self.send({'id': ident, 'result': result, 'error': error})
 
-    async def notify(self, packet):
+    async def notify(self, packet, route='user'):
+        async with self.route_lock:
+            if self.route == route:
+                await self.publish(packet, route)
+
+    async def publish(self, packet, route, *, clean=False):
         if packet.get('method') != 'mining.notify':
             return
-        channel = self.group.connection
+        group, jobs = (self.fee_group, self.fee_jobs) if route == 'fee' else (self.group, self.jobs)
+        channel = group.connection
         generation = packet['generation']
-        if generation != channel.generation:
+        if channel.closed or generation != channel.generation:
             return
-        if self.job_generation != generation:
-            self.jobs.jobs.clear()
-            self.job_generation = generation
+        attr = 'fee_generation' if route == 'fee' else 'job_generation'
+        if getattr(self, attr) != generation:
+            jobs.jobs.clear()
+            setattr(self, attr, generation)
         difficulty = packet['difficulty']
         local = Decimal(str(difficulty)) / 2
         translated = virtual_subscription_job(packet['params'], channel.extranonce1,
                                               channel.extranonce2_size, self.prefix, self.width)
-        params = self.jobs.issue(translated, local, difficulty)
+        params = jobs.issue(translated, local, difficulty)
+        params[0] = route[0] + params[0]
+        if clean:
+            params[8] = True
         await self.send({'id': None, 'method': 'mining.set_difficulty', 'params': [local]},
                         {'id': None, 'method': 'mining.notify', 'params': params})
 
     async def close_client(self):
         self.writer.close()
+
+    async def fee_unavailable(self):
+        async with self.route_lock:
+            self.fee_disabled = True
+            self.relay.fee_allocator.release(self.session['id'])
+            if self.route == 'fee':
+                self.route = 'user'
+                self.session['pool'] = 'primary'
+                if not self.group.connection.closed and self.group.connection.job:
+                    await self.publish(self.group.connection.job, 'user', clean=True)
+
+    async def run_fee(self):
+        group = None
+        try:
+            jitter = FeeJitter(self.relay.fee_jitter_seconds)
+            await self.relay.fee_connection_gate.wait(jitter.remaining())
+            host, port, tls = parse_endpoint(*self.fee_endpoint)
+            key = AggregationKey(host, port, tls or self.relay.tls, self.fee_worker,
+                                 self.fee_password, user_agent=self.agent)
+            if key == self.group.key:
+                return
+            group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
+            channel = group.connection
+            if channel.extranonce2_size < len(self.prefix) // 2 + self.width:
+                return
+            self.fee_group = group
+            self.fee_jobs = AggregatedJobRouter(self.jobs.lease, ttl=self.relay.job_ttl)
+            group.subscribe(self.identity, self.notify_fee, self.fee_unavailable)
+            while not self.fee_disabled and not channel.closed and self.identity in group.subscribers:
+                await self.reconcile_fee()
+                await asyncio.sleep(.25)
+        except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
+            self.relay.metrics.upstream_failures += 1
+        finally:
+            try:
+                if not self.writer.is_closing():
+                    await self.fee_unavailable()
+            finally:
+                if group is not None:
+                    await self.relay.shared_upstreams.release(group, self.identity)
+
+    async def notify_fee(self, packet):
+        await self.notify(packet, 'fee')
+
+    def fee_ready(self):
+        return (not self.fee_disabled and self.fee_group is not None and not self.fee_group.connection.closed
+                and self.identity in self.fee_group.subscribers
+                and self.fee_group.connection.job is not None)
+
+    async def reconcile_fee(self):
+        async with self.route_lock:
+            if self.pending_fee or not self.fee_ready():
+                return
+            fee_job = self.fee_group.connection.job
+            want = self.relay.fee_allocator.acquire(self.session['id'], fee_job['difficulty'])
+            route = 'fee' if want else 'user'
+            if route != self.route:
+                self.route = route
+                self.session['pool'] = 'fee' if want else 'primary'
+                packet = fee_job if want else self.group.connection.job
+                if packet is not None:
+                    await self.publish(packet, route, clean=True)
+                self.relay.event(self.session, route)
 
     async def authorize(self, ident, params):
         if self.agent is None or self.worker is not None or len(params) != 2 or not all(
@@ -1079,7 +1163,6 @@ class AggregateSession:
             self.relay.aggregate_sizes.remember(self.hint, channel.extranonce2_size)
             await self.send({'id': None, 'method': 'client.reconnect', 'params': []})
             return False
-        self.padding = '00' * (available - self.width)
         # The translated job presents the virtual prefix as extranonce1.
         lease = NonceLease(self.identity, self.prefix, self.width, '', self.width)
         self.jobs = AggregatedJobRouter(lease, ttl=self.relay.job_ttl)
@@ -1097,18 +1180,29 @@ class AggregateSession:
         self.group.subscribe(self.identity, self.notify, self.close_client)
         if initial is not None:
             await self.notify(initial)
+        if self.fee_endpoint:
+            self.fee_task = asyncio.create_task(self.run_fee())
         return True
 
     async def submit(self, ident, params):
         metrics = self.session['metrics']
         metrics.submitted += 1
         try:
-            if not params or params[0] != self.worker or self.jobs is None:
+            if len(params) < 2 or params[0] != self.worker or not isinstance(params[1], str) or not params[1]:
                 raise ValueError('unauthorized share')
-            channel = self.group.connection
-            if channel.closed or channel.generation != self.job_generation:
+            route = {'u': 'user', 'f': 'fee'}.get(params[1][0])
+            if route is None:
+                raise ValueError('unknown route')
+            group, jobs, generation = ((self.fee_group, self.fee_jobs, self.fee_generation) if route == 'fee'
+                                       else (self.group, self.jobs, self.job_generation))
+            if group is None or jobs is None:
+                raise ValueError('unknown job')
+            channel = group.connection
+            if channel.closed or channel.generation != generation:
                 raise ValueError('stale job')
-            _, outbound = self.jobs.submit(params)
+            params = list(params)
+            params[1] = params[1][1:]
+            _, outbound = jobs.submit(params)
         except ValueError:
             metrics.invalid_local += 1
             await self.reply(ident, False, [23, 'Invalid, stale or duplicate share', None])
@@ -1116,20 +1210,39 @@ class AggregateSession:
         if outbound is None:
             await self.reply(ident, True)
             return
-        difficulty = self.jobs.jobs[params[1]][2]
-        outbound[0] = self.group.key.worker
-        outbound[2] = self.prefix + outbound[2] + self.padding
-        response = await channel.request('mining.submit', outbound)
-        accepted = response.get('result') is True and response.get('error') is None
-        if accepted:
+        difficulty = jobs.jobs[params[1]][2]
+        outbound[0] = group.key.worker
+        padding = channel.extranonce2_size - len(self.prefix) // 2 - self.width
+        outbound[2] = self.prefix + outbound[2] + '00' * padding
+        allocator = self.relay.fee_allocator
+        token = allocator.begin_submit(self.session['id'], difficulty) if route == 'fee' else None
+        self.pending_fee = token is not None
+        outcome = 'unknown'
+        try:
+            response = await channel.request('mining.submit', outbound)
+            if response.get('result') is True and response.get('error') is None:
+                outcome = 'accepted'
+            elif response.get('result') is False or response.get('error') is not None:
+                outcome = 'rejected'
+        except (OSError, asyncio.TimeoutError):
+            response = {'result': None, 'error': [20, 'Upstream unavailable', None]}
+        finally:
+            if token is not None:
+                allocator.finish_submit(token, outcome)
+            self.pending_fee = False
+        if outcome == 'accepted':
             metrics.accepted += 1
-            self.relay.ledger.record('user', difficulty, fee_available=False)
-            self.relay.metrics._audit.record('user', difficulty)
-        else:
+            self.relay.ledger.record(route, difficulty, fee_available=self.fee_ready())
+            self.relay.metrics._audit.record(route, difficulty)
+        elif outcome == 'rejected':
             metrics.rejected += 1
-        self.relay.workers.record(self.session['id'], self.worker,
-                                  'accepted' if accepted else 'rejected', difficulty=difficulty)
+        else:
+            metrics.unmatched += 1
+        self.relay.workers.record(self.session['id'], self.worker, outcome, difficulty=difficulty)
         await self.reply(ident, response.get('result'), response.get('error'))
+        if route == 'fee' and outcome != 'accepted':
+            await self.fee_unavailable()
+        await self.reconcile_fee()
 
     async def run(self):
         handshake_deadline = time.monotonic() + self.relay.handshake_timeout
@@ -1173,6 +1286,10 @@ class AggregateSession:
         except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
             self.relay.metrics.transport_errors += 1
         finally:
+            if self.fee_task is not None:
+                self.fee_task.cancel()
+                await asyncio.gather(self.fee_task, return_exceptions=True)
+            self.relay.fee_allocator.release(self.session['id'])
             if self.group is not None:
                 await self.relay.shared_upstreams.release(self.group, self.identity)
             self.relay.aggregate_prefixes.release(self.identity)
