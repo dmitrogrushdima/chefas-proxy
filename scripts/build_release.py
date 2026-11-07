@@ -193,6 +193,7 @@ def main():
         validate_core_archive(bundle, native_manifest["modules"])
         validate_example_environment(ROOT / ".env.example")
         shutil.copyfile(ROOT / ".env.example", bundle / ".env.example")
+        shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
         shutil.copyfile(ROOT / "docs" / "release.md", bundle / "RELEASE.md")
         example = {"pool_host": "stratum+tcp://POOL_HOST:3333", "listen_host": "127.0.0.1",
                    "listen_port": 3333, "active_router": True, "validate_pow": True,

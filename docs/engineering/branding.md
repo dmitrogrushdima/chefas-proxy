@@ -17,4 +17,4 @@ Use `python launch.py` for source development. Root launchers prefer a matching 
 
 ## Public claims
 
-Version `0.1.0rc1` identifies the existing build line, not a production certification. Physical ASIC models and pool combinations remain pilot targets. The shared TCP aggregation path is unfinished. Official Telegram: [news](https://t.me/Chefasproxy), [community](https://t.me/Chefasproxychat). A project license has not been chosen; do not display a license badge claiming permissions that have not been granted.
+Version `0.1.0rc1` identifies the existing build line, not a production certification. Physical ASIC models and pool combinations remain pilot targets. The shared TCP aggregation path is unfinished. Official Telegram: [news](https://t.me/Chefasproxy), [community](https://t.me/Chefasproxychat). The project uses the [MIT License](../../LICENSE); third-party dependencies retain their own terms.

@@ -100,9 +100,11 @@ Voluntary donations support CHEFAS Proxy development and are separate from DevFe
 
 | | Currency | Network | Address |
 | :---: | :--- | :--- | :--- |
-| <img src="https://cryptologos.cc/logos/bitcoin-btc-logo.svg?v=035" align="absmiddle" width="24" height="24" alt=""> | **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
-| <img src="https://cryptologos.cc/logos/tether-usdt-logo.svg?v=035" align="absmiddle" width="24" height="24" alt=""> | **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
-| <img src="https://cryptologos.cc/logos/solana-sol-logo.svg?v=035" align="absmiddle" width="24" height="24" alt=""> | **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
+| <img src="https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/btc.svg" align="absmiddle" width="24" height="24" alt=""> | **Bitcoin (BTC)** | BTC | `bc1qkwkjk0cgu6zdawx6j5tqlqzl4dcftvt3408rzx` |
+| <img src="https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/usdt.svg" align="absmiddle" width="24" height="24" alt=""> | **Tether (USDT)** | TRON · TRC-20 | `TPZyEeqNMv9yZmAZWKYnDUkz3sJKxnK8YM` |
+| <img src="https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/sol.svg" align="absmiddle" width="24" height="24" alt=""> | **Solana (SOL)** | Solana | `CDY7UUREaDZz56ss4yXfpWvovrw53dSeWyD5koW9y5gN` |
+
+<sub>Icons: <a href="https://github.com/spothq/cryptocurrency-icons">Cryptocurrency Icons</a> · CC0 · served by jsDelivr.</sub>
 
 ## Documentation & source
 
@@ -112,4 +114,4 @@ Voluntary donations support CHEFAS Proxy development and are separate from DevFe
 
 ## License
 
-No project license has been declared yet. A public repository is not a license grant. Distribution terms must be settled before a public binary release; bundled dependencies retain their own license terms.
+CHEFAS Proxy is available under the [MIT License](LICENSE). Bundled dependencies retain their own license terms.
