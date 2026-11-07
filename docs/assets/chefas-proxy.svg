@@ -1,25 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
   <title id="title">CHEFAS Proxy</title>
-  <desc id="desc">Your farm. Your pools. One clear view. Bitcoin SHA-256d Stratum V1 proxy.</desc>
-  <defs>
-    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101820"/><stop offset="1" stop-color="#1d2227"/></linearGradient>
-    <linearGradient id="copper"><stop stop-color="#e9bc94"/><stop offset="1" stop-color="#b77851"/></linearGradient>
-  </defs>
-  <rect width="1200" height="340" rx="20" fill="url(#bg)"/>
-  <path d="M760 0v340M840 0v340M920 0v340M1000 0v340M1080 0v340M1160 0v340M720 90h480M720 170h480M720 250h480" stroke="#e9bc94" stroke-opacity=".045"/>
-  <path d="M93 85h45v12h-33v33h33v12H93z" fill="url(#copper)"/>
-  <path d="M116 106h45v36h-33v21h-12z M128 118v12h21v-12z" fill="#b98762" fill-rule="evenodd"/>
-  <text x="190" y="128" fill="#f4f1eb" font-family="Segoe UI,Arial,sans-serif" font-size="55" font-weight="650" letter-spacing="1">CHEFAS <tspan fill="#d7a47c" font-weight="350">Proxy</tspan></text>
-  <text x="94" y="211" fill="#f4f1eb" font-family="Segoe UI,Arial,sans-serif" font-size="28">Your farm. Your pools. One clear view.</text>
-  <text x="95" y="264" fill="#a5adb5" font-family="Segoe UI,Arial,sans-serif" font-size="13" letter-spacing="2.8">BITCOIN ONLY  /  SHA-256d  /  STRATUM V1</text>
-  <g fill="none" stroke="#d7a47c" stroke-width="2">
-    <path d="M850 115h40v55h36M850 225h40v-55M978 170h55v-55h40M1033 170v55h40" stroke-opacity=".45"/>
-    <rect x="816" y="100" width="34" height="30" rx="6"/><rect x="816" y="210" width="34" height="30" rx="6"/>
-    <rect x="926" y="144" width="52" height="52" rx="12" fill="#d7a47c" fill-opacity=".08"/>
-    <circle cx="1088" cy="115" r="15"/><circle cx="1088" cy="225" r="15"/>
-    <g transform="translate(938 154) scale(.35)" stroke="none"><path d="M6 6h44v12H18v32h32v12H6z" fill="#e9bc94"/><path d="M30 26h44v34H42v20H30z M42 38v10h20V38z" fill="#b98762" fill-rule="evenodd"/></g>
-  </g>
-  <g fill="#a5adb5" font-family="Segoe UI,Arial,sans-serif" font-size="11" text-anchor="middle" letter-spacing="1.4">
-    <text x="833" y="272">ASICS</text><text x="952" y="272">PROXY</text><text x="1088" y="272">POOLS</text>
+  <desc id="desc">Bitcoin mining proxy for SHA-256d and Stratum V1.</desc>
+  <rect width="1200" height="300" rx="14" fill="#11191f"/>
+  <path d="M64 64h28v8H72v20h20v8H64z" fill="#d7a47e"/>
+  <path d="M79 78h28v22H87v13h-8zm8 8v6h12v-6z" fill="#d7a47e" fill-rule="evenodd"/>
+  <text x="125" y="95" fill="#f3f0e9" font-family="Arial,Helvetica,sans-serif" font-size="34" font-weight="700" letter-spacing="1.1">CHEFAS<tspan fill="#d7a47e" font-weight="400" letter-spacing="0"> Proxy</tspan></text>
+  <path d="M64 148h1072" stroke="#495057" stroke-width="1"/>
+  <text x="64" y="205" fill="#f3f0e9" font-family="Arial,Helvetica,sans-serif" font-size="24" font-weight="400">Mining, with clarity.</text>
+  <text x="65" y="238" fill="#9da8ad" font-family="Arial,Helvetica,sans-serif" font-size="12" letter-spacing="1.5">BITCOIN MINING INFRASTRUCTURE</text>
+  <g font-family="Arial,Helvetica,sans-serif" text-anchor="end">
+    <text x="1135" y="202" fill="#d7a47e" font-size="14" font-weight="700" letter-spacing="1.4">SHA-256d</text>
+    <text x="1135" y="233" fill="#9da8ad" font-size="12" letter-spacing="1.4">STRATUM V1</text>
   </g>
 </svg>

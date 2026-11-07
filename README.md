@@ -1,6 +1,6 @@
 <div align="center">
 
-![CHEFAS Proxy — Your farm. Your pools. One clear view.](docs/assets/chefas-proxy.svg)
+![CHEFAS Proxy — Mining, with clarity.](docs/assets/chefas-proxy.svg)
 
 **Bitcoin mining, with a clearer view of every connection.**
 
