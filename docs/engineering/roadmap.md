@@ -6,7 +6,7 @@ Implemented: active Stratum routing, exact accepted-work ledger, concurrent fee 
 
 ## Remaining release gates
 
-0. **Connection consolidation:** qualify shared user and optional fee routes on physical ASICs and production pools. Extend coverage to version rolling, failover and required DevFee before combining these modes. See [fleet scaling](fleet-scaling.md).
+0. **Connection consolidation:** qualify shared user and optional fee routes with negotiated version rolling on physical ASICs and production pools. Extend coverage to failover and required DevFee before combining these modes. See [fleet scaling](fleet-scaling.md).
 
 1. **Hardware pilot:** exact Antminer/Whatsminer/Avalon models and stock/Vnish/Braiins builds, including varying nonce widths, masks and hot-change reactions. No firmware family is certified by its user-agent string.
 2. **Protocol breadth:** pool-initiated RPC (`client.get_version` and response correlation), uncommon extensions and validation of all pool job fields before publication. Unknown methods currently meet a strict allowlist; do not claim universal compatibility.

@@ -25,6 +25,7 @@ from devfee_scheduler import FeeConnectionGate
 from hardware_compatibility import CompatibilityRegistry
 
 LOG = logging.getLogger("mining_proxy")
+DEFAULT_LAN_CIDRS = ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 
 
 def is_loopback_bind(host):
@@ -191,7 +192,7 @@ def main():
     parser.add_argument("--control-state", default="state/control.json")
     parser.add_argument("--history-file", default="state/history.json", help="Worker history checkpoint path; empty disables persistence")
     parser.add_argument("--pool-port", type=int, choices=range(1, 65536), metavar="PORT")
-    parser.add_argument("--listen-host", default="127.0.0.1")
+    parser.add_argument("--listen-host", help="Stratum bind address (default 0.0.0.0 with private IPv4 access)")
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--tls", action="store_true", help="Verify TLS certificate on upstream connection")
     parser.add_argument('--tls-ca-file', help='Optional trusted CA PEM for TLS URLs and --tls; verification remains mandatory')
@@ -288,6 +289,10 @@ def main():
         parser.error("--connect-timeout must be in 0.1..120 seconds")
     if not math.isfinite(args.idle_timeout) or (args.idle_timeout != 0 and not 0.1 <= args.idle_timeout <= 86400):
         parser.error("--idle-timeout must be 0 or in 0.1..86400 seconds")
+    if args.listen_host is None:
+        args.listen_host = "0.0.0.0"
+        if not args.allow_cidr and not args.allow_any_miner:
+            args.allow_cidr = DEFAULT_LAN_CIDRS
     try:
         args.allow_cidr = [ipaddress.ip_network(value, strict=True) for value in args.allow_cidr]
     except ValueError as exc:

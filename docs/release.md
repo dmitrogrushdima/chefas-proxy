@@ -8,8 +8,9 @@ Keep the executable and its `_internal` directory together.
 
 1. Unpack the **matching Windows x64 or Linux x64** release. Copy
    `chefas-proxy.example.json` to `chefas-proxy.json`, replace `POOL_HOST`, and set the
-   pool address/port. The default listener is local only. For LAN ASICs set
-   `listen_host` and an explicit `allow_cidr` list (for example
+   pool address/port. The default Stratum listener binds to `0.0.0.0` and
+   accepts loopback and private IPv4 addresses. Use an explicit `allow_cidr`
+   list to restrict access to the farm subnet (for example
    `["192.168.10.0/24"]`). ASIC wallet/worker credentials normally come from
    each ASIC's Stratum authorization. Route overrides are configured in CHEFAS Proxy.
 2. Copy `.env.example` to `.env`, generate your own admin token and encryption

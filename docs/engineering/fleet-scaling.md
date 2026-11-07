@@ -147,4 +147,6 @@ Use `--active-router --aggregate` (standalone JSON: `"active_router": true, "agg
 
 The mode can share a separate optional DevFee connection using a fixed fee worker. Both routes use the same virtual extranonce for each ASIC, so switching jobs preserves the ASIC connection. Previously issued jobs remain bound to their issuing pool. Only confirmed upstream work enters the fee ledger. A fee connection failure returns the miner to user work.
 
-Version rolling, required DevFee, fee worker templates, backup routing and socket-preserving route migration are outside this mode. Qualification on physical ASICs and production pools remains open.
+For BIP310 version rolling, the proxy first negotiates with the user pool on a temporary connection. Shared sockets are keyed by the effective version mask, and both routes must confirm that exact mask before receiving work. An incompatible optional fee pool leaves the ASIC on user work. Pool-driven changes to the negotiated mask retire the affected shared socket.
+
+Required DevFee, fee worker templates, backup routing and socket-preserving route migration are outside this mode. Qualification on physical ASICs and production pools remains open.

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from functools import lru_cache
 from network_io import AsyncResolver, configure_writer, write_bounded, drain_bounded
 from aggregation import AggregationKey, InsufficientNonceSpace, NoncePartitioner
+from hardware_compatibility import negotiated_mask
 
 MAX_LINE = 65536
 MAX_PENDING = 1024
@@ -30,7 +31,8 @@ class SharedUpstreamGroup:
             raise ValueError('invalid shared upstream context')
         if (connection.closed or not connection.subscribed or not connection.authorized or
                 connection.extranonce1 != partitioner.upstream_extranonce1 or
-                connection.extranonce2_size != partitioner.upstream_extranonce2_size):
+                connection.extranonce2_size != partitioner.upstream_extranonce2_size or
+                connection.version_mask != key.version_mask):
             raise ValueError('upstream is not authenticated or nonce context differs')
         self.key = key
         self.connection = connection
@@ -295,6 +297,12 @@ class UpstreamConnection:
         self.authorized = False
         self.ready = asyncio.Event()
         self.task = asyncio.create_task(self._read())
+
+    async def configure_version_rolling(self, mask, minimum_bits=0):
+        params = [['version-rolling'], {'version-rolling.mask': mask,
+                                        'version-rolling.min-bit-count': minimum_bits}]
+        self.version_mask = negotiated_mask(params, await self.request('mining.configure', params))
+        return self.version_mask
 
     async def request(self, method, params):
         if self.closed or len(self.pending) >= MAX_PENDING:

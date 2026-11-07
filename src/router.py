@@ -1036,6 +1036,8 @@ class AggregateSession:
         self.fee_endpoint = relay.fee
         self.fee_worker = relay.fee_worker
         self.fee_password = relay.fee_password
+        self.version_mask = None
+        self.version_probed = False
 
     async def send(self, *packets):
         async with self.write_lock:
@@ -1045,6 +1047,26 @@ class AggregateSession:
 
     async def reply(self, ident, result, error=None):
         await self.send({'id': ident, 'result': result, 'error': error})
+
+    async def configure(self, ident, params):
+        validate_config(params)
+        extensions, options = params
+        result = dict.fromkeys(extensions, False)
+        if 'version-rolling' in extensions:
+            requested = options.get('version-rolling.mask', 'ffffffff')
+            minimum_bits = options.get('version-rolling.min-bit-count', 0)
+            if self.version_mask is not None and mask_value(self.version_mask) & ~mask_value(requested):
+                await self.reply(ident, None, [20, 'Version mask cannot change during this session', None])
+                return
+            if self.worker is None and not self.version_probed:
+                self.version_probed = True
+                self.version_mask = await probe_aggregate_mask(self.relay, self.endpoint, requested, minimum_bits)
+            if self.version_mask is not None:
+                result.update({'version-rolling': True, 'version-rolling.mask': self.version_mask})
+                self.session['observer'].protocol.update(
+                    configured=True, version_rolling=True, version_mask=self.version_mask,
+                    version_rolling_degraded=mask_value(self.version_mask).bit_count() < minimum_bits)
+        await self.reply(ident, result)
 
     async def notify(self, packet, route='user'):
         async with self.route_lock:
@@ -1094,7 +1116,7 @@ class AggregateSession:
             await self.relay.fee_connection_gate.wait(jitter.remaining())
             host, port, tls = parse_endpoint(*self.fee_endpoint)
             key = AggregationKey(host, port, tls or self.relay.tls, self.fee_worker,
-                                 self.fee_password, user_agent=self.agent)
+                                 self.fee_password, version_mask=self.version_mask, user_agent=self.agent)
             if key == self.group.key:
                 return
             group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
@@ -1102,7 +1124,7 @@ class AggregateSession:
             if channel.extranonce2_size < len(self.prefix) // 2 + self.width:
                 return
             self.fee_group = group
-            self.fee_jobs = AggregatedJobRouter(self.jobs.lease, ttl=self.relay.job_ttl)
+            self.fee_jobs = AggregatedJobRouter(self.jobs.lease, self.version_mask, ttl=self.relay.job_ttl)
             group.subscribe(self.identity, self.notify_fee, self.fee_unavailable)
             while not self.fee_disabled and not channel.closed and self.identity in group.subscribers:
                 await self.reconcile_fee()
@@ -1152,7 +1174,7 @@ class AggregateSession:
         key = AggregationKey(host, port, tls or self.relay.tls,
                              self.route_worker or worker,
                              self.route_password if self.route_worker else password,
-                             user_agent=self.agent)
+                             version_mask=self.version_mask, user_agent=self.agent)
         self.group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
         channel = self.group.connection
         available = channel.extranonce2_size - len(self.prefix) // 2
@@ -1165,7 +1187,7 @@ class AggregateSession:
             return False
         # The translated job presents the virtual prefix as extranonce1.
         lease = NonceLease(self.identity, self.prefix, self.width, '', self.width)
-        self.jobs = AggregatedJobRouter(lease, ttl=self.relay.job_ttl)
+        self.jobs = AggregatedJobRouter(lease, self.version_mask, ttl=self.relay.job_ttl)
         self.worker = worker
         self.session.update(state='connected', pool='primary', worker=worker, protocol_started=True)
         self.session['observer'].protocol.update(subscribed=True, extranonce1=self.prefix,
@@ -1257,8 +1279,7 @@ class AggregateSession:
                 if type(ident) not in (str, int) or not isinstance(params, list):
                     raise ProtocolError('invalid miner request')
                 if method == 'mining.configure':
-                    validate_config(params)
-                    await self.reply(ident, dict.fromkeys(params[0], False))
+                    await self.configure(ident, params)
                 elif method == 'mining.subscribe' and self.agent is None:
                     self.agent = params[0] if params else ''
                     if not isinstance(self.agent, str) or len(self.agent) > 128:
@@ -1297,6 +1318,26 @@ class AggregateSession:
                 self.relay.aggregate_prefixes.reset_if_idle()
 
 
+async def probe_aggregate_mask(relay, endpoint, requested, minimum_bits):
+    """Negotiate before the miner supplies account credentials or starts work."""
+    async def ignore(*args):
+        pass
+
+    channel = None
+    try:
+        reader, writer = await open_upstream(endpoint, relay.tls_context, relay.timeout,
+                                             relay.url_tls_context, relay.resolver,
+                                             address_guard=relay.is_self_route)
+        channel = UpstreamConnection(reader, writer, 'user', ignore, ignore,
+                                     relay.timeout, metrics=relay.metrics)
+        return await channel.configure_version_rolling(requested, minimum_bits)
+    except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
+        return None
+    finally:
+        if channel is not None:
+            await channel.close()
+
+
 async def open_aggregate_channel(relay, key):
     """Pool-side state and its reader task live independently of any ASIC."""
     async def notification(channel, packet):
@@ -1314,7 +1355,11 @@ async def open_aggregate_channel(relay, key):
             packet.update(generation=channel.generation, difficulty=channel.difficulty)
             channel.job = packet
             channel.ready.set()
-        elif method in ('mining.set_extranonce', 'mining.set_version_mask', 'client.reconnect'):
+        elif method == 'mining.set_version_mask':
+            if (not isinstance(params, list) or len(params) != 1 or key.version_mask is None
+                    or mask_value(params[0]) != mask_value(key.version_mask)):
+                raise ProtocolError('pool changed its shared version mask')
+        elif method in ('mining.set_extranonce', 'client.reconnect'):
             raise ProtocolError('pool changed its shared connection context')
 
     async def disconnected(channel):
@@ -1330,6 +1375,9 @@ async def open_aggregate_channel(relay, key):
                                  relay.timeout, metrics=relay.metrics)
     channel.generation = 0
     try:
+        if key.version_mask is not None:
+            if await channel.configure_version_rolling(key.version_mask) != key.version_mask:
+                raise ProtocolError('pool did not preserve the negotiated shared version mask')
         response = await channel.request('mining.subscribe', [key.user_agent])
         StatefulRouter.subscription_result(channel, response.get('result'))
         response = await channel.request('mining.authorize', [key.worker, key.password])

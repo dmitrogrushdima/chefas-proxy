@@ -37,7 +37,7 @@ Run `start.bat` on Windows or `./start.sh` on Linux. The root scripts prefer the
 
 ## Pool and miner addresses
 
-The default miner listener is `127.0.0.1:3333`. For a farm LAN, set `--listen-host 0.0.0.0 --allow-cidr YOUR_LAN_CIDR`; allow only the intended network through the host firewall. The dashboard stays on `127.0.0.1:8080`. For a remote server, access it through an SSH tunnel, for example `ssh -L 8080:127.0.0.1:8080 USER@SERVER`.
+The default miner listener is `0.0.0.0:3333`, restricted to loopback and private IPv4 sources. Use `--allow-cidr YOUR_LAN_CIDR` and restrict the port in the host firewall to your farm subnet. For local-only use, set `--listen-host 127.0.0.1`. The dashboard stays on `127.0.0.1:8080`. For a remote server, access it through an SSH tunnel, for example `ssh -L 8080:127.0.0.1:8080 USER@SERVER`.
 
 `--pool-host` and `--devfee-host` accept bare hosts with separate port flags or full `stratum+ssl://HOST:PORT` URLs. SSL URLs verify the certificate and hostname. `--tls-ca-file PATH` supplies a private CA; it does not disable verification. `--tls` forces TLS for every upstream; omit that global flag when intentionally mixing TCP and SSL routes.
 

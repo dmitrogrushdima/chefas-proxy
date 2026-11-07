@@ -31,7 +31,7 @@ def encode(value):
     return json.dumps(value, separators=(",", ":")).encode() + b"\n"
 
 
-def checked_header(extra, ex2, nonce, version_bits=None):
+def checked_header(extra, ex2, nonce, version_bits=None, mask=0x1FFFE000):
     """Independent fixture construction, including the negotiated BIP310 mask."""
     coinbase = bytes.fromhex(COINB1 + extra + ex2 + COINB2)
     root = hashlib.sha256(hashlib.sha256(coinbase).digest()).digest()
@@ -40,7 +40,6 @@ def checked_header(extra, ex2, nonce, version_bits=None):
     if version_bits is None:
         return header
     bits = int(version_bits, 16)
-    mask = 0x1FFFE000
     if bits & ~mask:
         raise ValueError("Version bits outside negotiated mask")
     version = (int(VERSION, 16) & ~mask) | bits
@@ -107,6 +106,7 @@ class CheckedPool:
         authorized = set()
         seen = set()
         subscribed = False
+        rolling_mask = None
         try:
             while line := await reader.readline():
                 req = json.loads(line)
@@ -119,7 +119,8 @@ class CheckedPool:
                     response["result"] = {name: name == "version-rolling" for name in requested}
                     if "version-rolling" in requested:
                         requested_mask = params[1].get('version-rolling.mask','ffffffff')
-                        response["result"]["version-rolling.mask"] = f'{int(requested_mask,16) & int(self.version_mask,16):08x}'
+                        rolling_mask = int(requested_mask, 16) & int(self.version_mask, 16)
+                        response["result"]["version-rolling.mask"] = f'{rolling_mask:08x}'
                 elif method == "mining.subscribe":
                     self.subscribe_requests.append(params)
                     subscribed = True
@@ -136,9 +137,13 @@ class CheckedPool:
                     # Only routing and the original session extranonce differ.
                     worker, job, ex2, ntime, nonce = params[:5]
                     key = (job, ex2, ntime, nonce, *params[5:])
-                    valid = (not self.reject_submits and len(ex2) == self.extra_size * 2 and worker in authorized and job == "shared-job" and
+                    version_bits = params[5] if len(params) > 5 else None
+                    valid_version = ((version_bits is None and rolling_mask is None) or
+                                     (version_bits is not None and rolling_mask is not None and
+                                      not int(version_bits, 16) & ~rolling_mask))
+                    valid = (valid_version and not self.reject_submits and len(ex2) == self.extra_size * 2 and worker in authorized and job == "shared-job" and
                              ntime == NTIME and key not in seen and
-                             meets_target(checked_header(extra, ex2, nonce, params[5] if len(params) > 5 else None), self.share_target))
+                             meets_target(checked_header(extra, ex2, nonce, version_bits, rolling_mask), self.share_target))
                     response["result"] = valid
                     if valid:
                         seen.add(key)
@@ -199,6 +204,7 @@ class Miner:
             if configured.get("error") or configured.get('result',{}).get('version-rolling') is not True:
                 raise AssertionError(configured)
             self.version_bits = "00002000"
+            self.version_mask = configured['result']['version-rolling.mask']
         subscribed = await self.request("mining.subscribe", self.subscribe_params)
         if subscribed.get("error"):
             raise AssertionError(subscribed)
@@ -322,7 +328,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                      job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False,
                      user_extra_size=4, fee_extra_size=4, user_mask='1fffe000', asic_min=0,
                      fee_min_shares=0,fee_template=None,fee_difficulty_multiplier=1,
-                     aggregate=False):
+                     aggregate=False, connect_timeout=None):
         self.admin_token = admin_token
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT/'tests'/'fixtures'/'lab-cert.pem', ROOT/'tests'/'fixtures'/'lab-key.pem')
@@ -345,7 +351,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 '--compatibility-state', str(Path(self.history.name)/'compatibility.json'),
                 "--pool-host", "stratum+ssl://localhost" if ssl_user else "127.0.0.1", "--pool-port", str(self.user_pool.port),
                 "--listen-port", str(self.port), "--dashboard-port", str(self.dashboard),
-                "--connect-timeout", "3" if ssl_user or ssl_fee else "1", "--reconnect-min-seconds", "0",
+                "--connect-timeout", str(connect_timeout or (3 if ssl_user or ssl_fee else 1)),
+                "--reconnect-min-seconds", "0",
                 "--miner-timeout", str(miner_timeout), "--handshake-timeout", str(handshake_timeout),
                 "--devfee-jitter-seconds", str(jitter), '--devfee-connect-interval', str(connect_interval),
                 '--job-ttl', str(job_ttl), '--job-gc-interval', str(job_gc_interval)]
@@ -466,12 +473,13 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01)
         self.assertFalse(self.user_pool.writers)
 
-    async def test_aggregate_fee_uses_one_socket_and_preserves_miner_extranonce(self):
+    async def test_aggregate_fee_rolls_versions_on_shared_sockets_without_reconnecting(self):
         from pow_validator import build_stratum_header
 
         await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8,
-                          fee_min_shares=98.5)
-        miners = [await self.miner(hot=False) for _ in range(2)]
+                          fee_min_shares=98.5, user_mask='00006000', connect_timeout=5)
+        miners = [await self.miner(hot=False, configure=True) for _ in range(2)]
+        self.assertEqual([miner.version_mask for miner in miners], ['00006000'] * 2)
         prefixes = [miner.extra for miner in miners]
         self.assertEqual(len(set(prefixes)), 2)
         deadline = time.monotonic() + 5
@@ -489,12 +497,17 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             key = (miner.extra, params[0])
             for number in range(nonces.get(key, 0), 1000000):
                 nonce = f'{number:08x}'
-                if meets_target(build_stratum_header(params, miner.extra, ex2, NTIME, nonce), SHARE_TARGET):
+                header = build_stratum_header(params, miner.extra, ex2, NTIME, nonce,
+                                             miner.version_bits, miner.version_mask)
+                if meets_target(header, SHARE_TARGET):
                     nonces[key] = number + 1
-                    return ['user.worker', params[0], ex2, NTIME, nonce]
+                    return ['user.worker', params[0], ex2, NTIME, nonce, miner.version_bits]
             self.fail('could not find pool-valid share')
 
         user_job = miners[0].job
+        invalid = proof(miners[0], user_job)
+        invalid[-1] = '00008000'
+        self.assertIs((await miners[0].submit(invalid))['result'], False)
         for _ in range(99):
             self.assertIs((await miners[0].submit(proof(miners[0], user_job)))['result'], True)
         deadline = time.monotonic() + 5
@@ -504,7 +517,9 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(selected), 1)
         self.assertIs((await selected[0].submit(proof(selected[0])))['result'], True)
         self.assertEqual((self.user_pool.accepted, self.fee_pool.accepted), (99, 1))
-        self.assertEqual((self.user_pool.connections, self.fee_pool.connections), (1, 1))
+        self.assertEqual((len(self.user_pool.writers), len(self.fee_pool.writers)), (1, 1))
+        self.assertEqual(self.user_pool.authorize_requests, ['user.worker'])
+        self.assertEqual(self.fee_pool.configure_requests[0][1]['version-rolling.mask'], '00006000')
         self.assertEqual((self.user_pool.rejected, self.fee_pool.rejected), (0, 0))
         self.assertEqual([miner.extra for miner in miners], prefixes)
         self.assertFalse(any(miner.closed.is_set() for miner in miners))

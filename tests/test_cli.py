@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import unittest
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 
@@ -8,6 +9,17 @@ PROXY = str(Path(__file__).resolve().parent.parent / "launch.py")
 
 
 class CLITests(unittest.TestCase):
+    def test_default_bind_accepts_only_loopback_and_private_ipv4(self):
+        import proxy
+
+        with patch.object(sys, 'argv', [PROXY, '--pool-host', 'example.invalid', '--pool-port', '3333']), \
+                patch.object(proxy, 'PilotLogging'), patch.object(proxy, 'run_cli', new_callable=AsyncMock) as run:
+            proxy.main()
+        args = run.await_args.args[0]
+        self.assertEqual(args.listen_host, '0.0.0.0')
+        self.assertEqual([str(cidr) for cidr in args.allow_cidr],
+                         ['127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'])
+
     def test_rejects_invalid_configuration_before_opening_sockets(self):
         for extra in (["--backup-host", "example.invalid"],
                       ["--max-connections", "0"],

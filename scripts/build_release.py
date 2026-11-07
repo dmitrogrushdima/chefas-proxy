@@ -203,7 +203,7 @@ def main():
         shutil.copyfile(native / ".env.example", bundle / ".env.example")
         shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
         shutil.copyfile(ROOT / "docs" / "release.md", bundle / "RELEASE.md")
-        example = {"pool_host": "stratum+tcp://POOL_HOST:3333", "listen_host": "127.0.0.1",
+        example = {"pool_host": "stratum+tcp://POOL_HOST:3333",
                    "listen_port": 3333, "active_router": True, "validate_pow": True,
                    "dashboard_port": 8080}
         (bundle / "chefas-proxy.example.json").write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
