@@ -122,9 +122,19 @@ def validate_native_files(bundle, modules):
             raise RuntimeError("Missing or ambiguous native core artifact: " + name)
         if any(p.name in (name + ".py", name + ".pyc") for p in files):
             raise RuntimeError("Core source/bytecode fallback found: " + name)
-    forbidden = {".env", "control.json", "history.json", "compatibility.json"}
-    if any(p.name in forbidden or p.name.endswith(".key") for p in files):
-        raise RuntimeError("Unexpected state or secrets in release")
+    forbidden = {".env", "chefas-proxy.json", "control.json", "history.json", "compatibility.json", "state", "logs"}
+    bundle_root = bundle.resolve()
+    for path in files:
+        name = path.name.casefold()
+        if (name in forbidden or (name.startswith(".env.") and name != ".env.example")
+                or path.suffix.casefold() in {".key", ".p12", ".pfx", ".log", ".db", ".sqlite", ".sqlite3"}):
+            raise RuntimeError("Unexpected state or secrets in release")
+        if not path.resolve().is_relative_to(bundle_root):
+            raise RuntimeError("Unexpected link outside the release")
+        if path.suffix.casefold() in {".pem", ".crt", ".cer"} and path.is_file():
+            if any(line.startswith(b"-----BEGIN ") and b"PRIVATE KEY-----" in line
+                   for line in path.read_bytes().splitlines()):
+                raise RuntimeError("Unexpected private key in release")
 
 
 def validate_core_archive(bundle, modules):
@@ -189,10 +199,8 @@ def main():
         environment["PYTHONPATH"] = os.pathsep.join(safe_paths)
         subprocess.run(command, cwd=work, env=environment, check=True)
         bundle = work / "dist" / "chefas-proxy"
-        validate_native_files(bundle, native_manifest["modules"])
         validate_core_archive(bundle, native_manifest["modules"])
-        validate_example_environment(ROOT / ".env.example")
-        shutil.copyfile(ROOT / ".env.example", bundle / ".env.example")
+        shutil.copyfile(native / ".env.example", bundle / ".env.example")
         shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
         shutil.copyfile(ROOT / "docs" / "release.md", bundle / "RELEASE.md")
         example = {"pool_host": "stratum+tcp://POOL_HOST:3333", "listen_host": "127.0.0.1",
@@ -208,6 +216,7 @@ def main():
             starter.chmod(0o755)
         if not args.skip_smoke_test:
             smoke_test(bundle)
+        validate_native_files(bundle, native_manifest["modules"])
         manifest = {"format": 1, "target": target, "python": platform.python_version(),
                     "pyinstaller": importlib.metadata.version("pyinstaller"),
                     "declared_dependencies": dependencies,

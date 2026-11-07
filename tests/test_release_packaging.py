@@ -136,6 +136,23 @@ class BuildPolicyTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 builder.validate_native_files(directory, ["proxy"])
 
+    def test_final_bundle_rejects_private_files_and_allows_ca_certificates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "ca.pem").write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+            builder.validate_native_files(directory, [])
+            for name, content in (
+                (".env.production", b"TOKEN=secret"),
+                ("CHEFAS-PROXY.JSON", b"{}"),
+                ("runtime.log", b"runtime details"),
+                ("server.pem", b"-----BEGIN EC PRIVATE KEY-----\n"),
+            ):
+                file = directory / name
+                file.write_bytes(content)
+                with self.subTest(name=name), self.assertRaises(RuntimeError):
+                    builder.validate_native_files(directory, [])
+                file.unlink()
+
     def test_existing_output_is_never_replaced(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)

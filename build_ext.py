@@ -17,6 +17,12 @@ import tempfile
 ROOT = Path(__file__).resolve().parent
 MODULES = ('proxy','router','devfee_scheduler','pow_validator','history_store','stratum_session',
            'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec','hardware_compatibility','network_io','aggregation')
+ENV_TEMPLATE = """# Set unique secrets on the machine running CHEFAS Proxy.
+# CHEFAS_PROXY_ADMIN_TOKEN=
+# CHEFAS_PROXY_SECRETS_KEY=
+CHEFAS_PROXY_USER_PASSWORD=x
+CHEFAS_PROXY_DEVFEE_PASSWORD=x
+"""
 LAUNCHER = '''"""Launch the compiled CHEFAS Proxy runtime; source fallback is rejected."""
 import importlib
 from importlib.machinery import EXTENSION_SUFFIXES
@@ -75,8 +81,8 @@ def main():
     (stage/'dashboard').mkdir()
     for asset in ('index.html','app.css','app.js','i18n.js'):
         shutil.copyfile(ROOT/'dashboard'/asset, stage/'dashboard'/asset)
-    for filename in ('requirements.txt','.env.example'):
-        shutil.copyfile(ROOT/filename,stage/filename)
+    shutil.copyfile(ROOT/'requirements.txt', stage/'requirements.txt')
+    (stage/'.env.example').write_text(ENV_TEMPLATE, encoding='utf-8')
     for filename in ('start.sh','start.bat'):
         shutil.copy2(ROOT/filename,stage/filename)
     if os.name != 'nt':

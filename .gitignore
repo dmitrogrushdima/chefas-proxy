@@ -1,6 +1,13 @@
 .env
 .env.*
 !.env.example
+chefas-proxy.json
+*.key
+*.pem
+*.p12
+*.pfx
+!/tests/fixtures/lab-cert.pem
+!/tests/fixtures/lab-key.pem
 *.log
 *.db
 *.sqlite*
