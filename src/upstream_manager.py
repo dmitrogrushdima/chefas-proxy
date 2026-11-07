@@ -5,15 +5,158 @@ import ssl
 import logging
 import re
 import socket
+import copy
 from pilot_logging import event
 from decimal import Decimal
 from stratum_codec import ProtocolError, PacketReader
 from urllib.parse import urlsplit
 from functools import lru_cache
 from network_io import AsyncResolver, configure_writer, write_bounded, drain_bounded
+from aggregation import AggregationKey, InsufficientNonceSpace, NoncePartitioner
 
 MAX_LINE = 65536
 MAX_PENDING = 1024
+
+
+class SharedUpstreamGroup:
+    """One authenticated upstream and non-overlapping per-miner nonce leases.
+
+    This is transport ownership, not a Stratum router: the caller must broadcast
+    jobs, validate proofs and distinguish local acks from pool confirmations.
+    """
+
+    def __init__(self, key, connection, partitioner):
+        if not isinstance(key, AggregationKey) or not isinstance(partitioner, NoncePartitioner):
+            raise ValueError('invalid shared upstream context')
+        if (connection.closed or not connection.subscribed or not connection.authorized or
+                connection.extranonce1 != partitioner.upstream_extranonce1 or
+                connection.extranonce2_size != partitioner.upstream_extranonce2_size):
+            raise ValueError('upstream is not authenticated or nonce context differs')
+        self.key = key
+        self.connection = connection
+        self.partitioner = partitioner
+        self.subscribers = {}
+        self._upstream_notification = connection.on_notification
+        self._upstream_disconnect = connection.on_disconnect
+        connection.on_notification = self._notification
+        connection.on_disconnect = self._disconnect
+
+    async def _disconnect(self, connection):
+        subscribers = list(self.subscribers.items())
+        for session_id, _ in subscribers:
+            self.unsubscribe(session_id)
+        await asyncio.gather(*(entry[2]() for _, entry in subscribers), return_exceptions=True)
+        await self._upstream_disconnect(connection)
+
+    async def _notification(self, connection, packet):
+        # The original handler owns upstream state. Each subscriber has its
+        # own bounded queue so a slow ASIC cannot stall the pool reader.
+        await self._upstream_notification(connection, packet)
+        for session_id, (queue, task, on_failure) in list(self.subscribers.items()):
+            try:
+                queue.put_nowait(copy.deepcopy(packet))
+            except asyncio.QueueFull:
+                self.unsubscribe(session_id)
+                asyncio.create_task(on_failure())
+
+    def subscribe(self, session_id, on_notification, on_failure, *, queue_size=64):
+        if session_id in self.subscribers or not callable(on_notification) or not callable(on_failure):
+            raise ValueError('invalid or duplicate subscriber')
+        if type(queue_size) is not int or not 1 <= queue_size <= 1024:
+            raise ValueError('invalid notification queue size')
+        queue = asyncio.Queue(maxsize=queue_size)
+        async def consume():
+            try:
+                while True:
+                    await on_notification(await queue.get())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.subscribers.pop(session_id, None)
+                self.partitioner.release(session_id)
+                await on_failure()
+        task = asyncio.create_task(consume())
+        self.subscribers[session_id] = (queue, task, on_failure)
+
+    def unsubscribe(self, session_id):
+        subscriber = self.subscribers.pop(session_id, None)
+        if subscriber:
+            subscriber[1].cancel()
+        return self.partitioner.release(session_id)
+
+    def allocate(self, session_id):
+        if self.connection.closed:
+            raise ConnectionError('shared upstream disconnected')
+        return self.partitioner.allocate(session_id)
+
+    def release(self, session_id):
+        # Prefixes remain consumed for the lifetime of the pool connection.
+        return self.unsubscribe(session_id)
+
+    async def close(self):
+        tasks = [entry[1] for entry in self.subscribers.values()]
+        for session_id in list(self.subscribers):
+            self.unsubscribe(session_id)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.connection.close()
+
+
+class SharedUpstreamManager:
+    """Own a bounded collection of compatible, independently authenticated sockets.
+
+    ``factory(key)`` establishes and authenticates a socket and returns an
+    UpstreamConnection and its nonce partitioner. Creation is serialized so
+    simultaneous miners cannot create duplicate sockets for the same group.
+    The owner releases leases after downstream requests have finished.
+    """
+
+    def __init__(self, factory, *, max_groups=128):
+        if not callable(factory) or type(max_groups) is not int or max_groups < 1:
+            raise ValueError('invalid shared upstream manager configuration')
+        self.factory = factory
+        self.max_groups = max_groups
+        self.groups = []
+        self.lock = asyncio.Lock()
+        self.closed = False
+
+    async def acquire(self, key, session_id):
+        if not isinstance(key, AggregationKey):
+            raise ValueError('invalid aggregation key')
+        async with self.lock:
+            if self.closed:
+                raise RuntimeError('shared upstream manager is closed')
+            self.groups[:] = [group for group in self.groups if not group.connection.closed]
+            for group in self.groups:
+                if group.key == key and not group.connection.closed:
+                    try:
+                        return group, group.allocate(session_id)
+                    except InsufficientNonceSpace:
+                        pass
+            if len(self.groups) >= self.max_groups:
+                raise InsufficientNonceSpace('shared upstream group limit reached')
+            connection, partitioner = await self.factory(key)
+            try:
+                group = SharedUpstreamGroup(key, connection, partitioner)
+                lease = group.allocate(session_id)
+            except BaseException:
+                await connection.close()
+                raise
+            self.groups.append(group)
+            return group, lease
+
+    async def release(self, group, session_id):
+        async with self.lock:
+            group.release(session_id)
+            if group not in self.groups or group.partitioner.active_count:
+                return
+            self.groups.remove(group)
+        await group.close()
+
+    async def close(self):
+        async with self.lock:
+            self.closed = True
+            groups, self.groups = self.groups, []
+        await asyncio.gather(*(group.close() for group in groups), return_exceptions=True)
 
 
 def parse_endpoint(host, port=None):

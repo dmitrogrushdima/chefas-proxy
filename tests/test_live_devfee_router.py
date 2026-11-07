@@ -321,7 +321,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                      miner_timeout=600, handshake_timeout=30, jitter=0, connect_interval=0,
                      job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False,
                      user_extra_size=4, fee_extra_size=4, user_mask='1fffe000', asic_min=0,
-                     fee_min_shares=0,fee_template=None,fee_difficulty_multiplier=1):
+                     fee_min_shares=0,fee_template=None,fee_difficulty_multiplier=1,
+                     aggregate=False):
         self.admin_token = admin_token
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT/'tests'/'fixtures'/'lab-cert.pem', ROOT/'tests'/'fixtures'/'lab-key.pem')
@@ -349,6 +350,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 "--devfee-jitter-seconds", str(jitter), '--devfee-connect-interval', str(connect_interval),
                 '--job-ttl', str(job_ttl), '--job-gc-interval', str(job_gc_interval)]
         args += ['--asic-extranonce2-min',str(asic_min)]
+        if aggregate:
+            args += ['--aggregate']
         if fee_template:
             args += ['--devfee-worker-template',fee_template]
         if fee:
@@ -405,6 +408,63 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         miner = Miner(self.port, hot=hot, configure=configure, password=password)
         self.miners.append(miner)
         return await miner.connect()
+
+    async def test_aggregate_reconnects_and_multiplexes_valid_shares(self):
+        from pow_validator import build_stratum_header
+
+        await self.launch(fee=False, aggregate=True)
+        reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
+        try:
+            writer.write(encode({'id': 1, 'method': 'mining.subscribe',
+                                 'params': ['chefas-proxy-integration/1']}))
+            subscribed = json.loads(await asyncio.wait_for(reader.readline(), 5))
+            self.assertEqual(subscribed['result'][2], 4)
+            self.assertEqual(self.user_pool.connections, 0)
+            writer.write(encode({'id': 2, 'method': 'mining.authorize',
+                                 'params': ['user.worker', 'x']}))
+            reconnect = json.loads(await asyncio.wait_for(reader.readline(), 5))
+            self.assertEqual(reconnect['method'], 'client.reconnect')
+            self.assertEqual(await asyncio.wait_for(reader.readline(), 5), b'')
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+        miners = [await self.miner(hot=False) for _ in range(3)]
+        self.assertEqual(self.user_pool.connections, 2)  # one probe, one shared connection
+        self.assertEqual(len({miner.extra for miner in miners}), 3)
+        self.assertTrue(all(miner.extra_size == 2 for miner in miners))
+
+        def proof(miner, *, pool_valid, start=0):
+            job = miner.job['params']
+            local_target = compact_target(0x1D00FFFF) // Fraction(str(miner.difficulty))
+            ex2 = '00' * miner.extra_size
+            for number in range(start, start + 100000):
+                nonce = f'{number:08x}'
+                header = build_stratum_header(job, miner.extra, ex2, NTIME, nonce)
+                if meets_target(header, local_target) and meets_target(header, SHARE_TARGET) == pool_valid:
+                    return ['user.worker', job[0], ex2, NTIME, nonce]
+            self.fail('could not find suitable share')
+
+        local = await miners[0].submit(proof(miners[0], pool_valid=False))
+        self.assertIs(local['result'], True)
+        self.assertEqual(self.user_pool.accepted, 0)
+        shares = [proof(miner, pool_valid=True) for miner in miners]
+        results = await asyncio.gather(*(miner.submit(share) for miner, share in zip(miners, shares)))
+        self.assertTrue(all(result['result'] is True for result in results))
+        self.assertEqual(self.user_pool.accepted, 3)
+        self.assertEqual(self.user_pool.rejected, 0)
+        await miners[0].close()
+        extra_share = proof(miners[1], pool_valid=True, start=int(shares[1][4], 16) + 1)
+        self.assertIs((await miners[1].submit(extra_share))['result'], True)
+        self.assertEqual(self.user_pool.accepted, 4)
+        self.assertEqual(len(self.user_pool.writers), 1)
+        self.assertEqual(self.user_pool.connections, 2)
+        await miners[1].close()
+        await miners[2].close()
+        deadline = time.monotonic() + 3
+        while self.user_pool.writers and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        self.assertFalse(self.user_pool.writers)
 
     async def test_scanners_dropped_before_upstream_connect(self):
         await self.launch(fee=False)

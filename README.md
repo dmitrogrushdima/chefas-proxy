@@ -90,7 +90,7 @@ The **1% DevFee target is measured in pool-confirmed difficulty**, not raw share
 
 `--require-devfee` enables the watchdog: sustained fee failure stops mining until restart. Configure this availability policy deliberately. Compilation does not make a machine owner's modifications impossible.
 
-**Current boundary:** each ASIC still has independent upstream connections. Aggregation mathematics is tested, but shared TCP consolidation is not enabled. There is no advertised 95% bandwidth saving, automatic ASIC overclock or certified 5,000-device capacity. [Engineering roadmap →](docs/engineering/roadmap.md)
+**Shared upstream pilot:** `--active-router --aggregate` groups compatible ASICs on shared TCP connections to a user pool. The pilot declines version rolling and requires a route without DevFee or backup. [Pilot configuration and limits →](docs/engineering/fleet-scaling.md)
 
 ## Community
 

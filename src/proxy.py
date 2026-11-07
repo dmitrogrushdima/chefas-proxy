@@ -98,6 +98,17 @@ async def run(args, stop_event=None):
         history.load()
     stream = DashboardStream(relay.live_snapshot)
     control = DashboardControl(relay, stream, os.environ.get("CHEFAS_PROXY_ADMIN_TOKEN"), args.control_state)
+    if getattr(args, 'aggregate', False):
+        from aggregation import ExtranonceSizeCache, VirtualPrefixAllocator
+        from router import open_aggregate_channel
+        from upstream_manager import SharedUpstreamManager
+
+        if relay.fee:
+            raise ValueError('aggregation requires a user-only route')
+        relay.aggregate_sizes = ExtranonceSizeCache()
+        local_size = min(relay.asic_extranonce2_max, max(4, relay.asic_extranonce2_min))
+        relay.aggregate_prefixes = VirtualPrefixAllocator(2, local_size)
+        relay.shared_upstreams = SharedUpstreamManager(lambda key: open_aggregate_channel(relay, key))
     if args.active_router:
         relay.metrics._ledger = relay.ledger
         relay.metrics._devfee_enabled = bool(relay.fee)
@@ -189,6 +200,8 @@ def main():
     parser.add_argument('--asic-extranonce2-min', type=int, default=0)
     parser.add_argument('--asic-extranonce2-max', type=int, default=4)
     parser.add_argument("--active-router", "--stateful", action="store_true", help="Enable experimental stateful Stratum router")
+    parser.add_argument("--aggregate", action="store_true",
+                        help="Share user-pool connections (requires active routing without DevFee or backup)")
     parser.add_argument("--tp-mode", action="store_true", help="Raw TCP relay without Stratum observation; applies at session admission")
     parser.add_argument("--validate-pow", action="store_true")
     parser.add_argument("--devfee-host")
@@ -237,6 +250,8 @@ def main():
     if tp_env not in ("true", "false"):
         parser.error("TP_MODE must be true or false")
     args.tp_mode = args.tp_mode or tp_env == "true"
+    if args.aggregate and (not args.active_router or args.tp_mode or args.devfee_host or args.backup_host):
+        parser.error('--aggregate requires --active-router and a user-only pool route')
     if args.tp_mode:
         args.require_devfee = False
     args.devfee_password = os.environ.get("CHEFAS_PROXY_DEVFEE_PASSWORD", "x")

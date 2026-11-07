@@ -187,6 +187,8 @@ class DashboardControl:
                 fee = PoolRoute.parse(data['devfee_pool'], fee) if data['devfee_pool'] is not None else None
             if fee is not None and not fee.worker:
                 raise ValueError('fee worker required')
+            if fee is not None and getattr(self.relay, 'shared_upstreams', None):
+                raise ValueError('aggregation requires a user-only route')
             if fee is not None and getattr(self.relay,'fee_worker_template',None):
                 stable_fee_worker(fee.worker,self.relay.limit,self.relay.fee_worker_template)
             if getattr(self.relay, 'require_devfee', False) and fee is None:

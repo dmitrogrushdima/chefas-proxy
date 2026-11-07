@@ -13,7 +13,9 @@ targets; a network block candidate must always be forwarded.
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, localcontext
 from fractions import Fraction
+from collections import OrderedDict
 import re
+import time
 from typing import Optional
 
 from pow_validator import (MAX_TARGET, build_stratum_header, compact_target,
@@ -116,6 +118,104 @@ class AggregationKey:
 
 class InsufficientNonceSpace(ValueError):
     """Use another upstream or 1:1 routing; never overlap ASIC search spaces."""
+
+
+class ExtranonceSizeCache:
+    """Short-lived hints, never a substitute for validating the live pool reply."""
+
+    def __init__(self, *, capacity=256, ttl=300, clock=time.monotonic):
+        if type(capacity) is not int or capacity < 1 or ttl <= 0 or not callable(clock):
+            raise ValueError('invalid extranonce cache configuration')
+        self.capacity, self.ttl, self.clock = capacity, ttl, clock
+        self._entries = OrderedDict()
+
+    def remember(self, key, upstream_size):
+        _size(upstream_size, 'upstream extranonce2 size')
+        self._entries.pop(key, None)
+        self._entries[key] = (upstream_size, self.clock())
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+
+    def get(self, key):
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if self.clock() - entry[1] >= self.ttl:
+            del self._entries[key]
+            return None
+        self._entries.move_to_end(key)
+        return entry[0]
+
+
+class VirtualPrefixAllocator:
+    """Allocate provisional subscription prefixes without reuse in one epoch.
+
+    Keep the allocator for the lifetime of every upstream that might receive
+    these prefixes, including any retired connection with jobs in flight.
+    A new epoch must not share a live upstream with an old epoch.
+    """
+
+    def __init__(self, prefix_bytes, local_extranonce2_size, *, maximum_workers=100):
+        if type(prefix_bytes) is not int or prefix_bytes not in (1, 2):
+            raise ValueError('prefix_bytes must be 1 or 2')
+        self.prefix_bytes = prefix_bytes
+        self.local_extranonce2_size = _size(local_extranonce2_size, 'local extranonce2 size')
+        self.maximum_workers = _workers(maximum_workers)
+        self._next = 0
+        self._active = {}
+
+    def allocate(self, session_id):
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 256:
+            raise ValueError('invalid session id')
+        if session_id in self._active:
+            return self._active[session_id]
+        if len(self._active) >= self.maximum_workers or self._next >= 1 << (8 * self.prefix_bytes):
+            raise InsufficientNonceSpace('virtual prefix space exhausted')
+        prefix = self._next.to_bytes(self.prefix_bytes, 'big').hex()
+        self._next += 1
+        self._active[session_id] = prefix
+        return prefix
+
+    def release(self, session_id):
+        return self._active.pop(session_id, None) is not None
+
+    def reset_if_idle(self):
+        """Call only when every upstream from this epoch has been retired."""
+        if not self._active:
+            self._next = 0
+
+    def compatible(self, upstream_extranonce2_size):
+        _size(upstream_extranonce2_size, 'upstream extranonce2 size')
+        return self.prefix_bytes + self.local_extranonce2_size <= upstream_extranonce2_size
+
+
+def virtual_subscription_job(params, upstream_extranonce1, upstream_extranonce2_size,
+                             virtual_extranonce1, local_extranonce2_size):
+    """Translate a pool job for a locally assigned subscription.
+
+    The virtual extranonce is a prefix of the pool's extranonce2, so the
+    miner's coinbase must contain the pool extranonce1 in coinbase1. This
+    function does not allocate unique prefixes or negotiate ASIC capabilities.
+    """
+    if not isinstance(params, (list, tuple)) or len(params) != 9:
+        raise ValueError('invalid mining.notify parameters')
+    upstream = _hex(upstream_extranonce1, 'upstream extranonce1')
+    prefix = _hex(virtual_extranonce1, 'virtual extranonce1')
+    _size(upstream_extranonce2_size, 'upstream extranonce2 size')
+    _size(local_extranonce2_size, 'local extranonce2 size')
+    padding = upstream_extranonce2_size - len(prefix) // 2 - local_extranonce2_size
+    if padding < 0:
+        raise InsufficientNonceSpace('virtual subscription does not fit upstream nonce space')
+    coinbase1 = _hex(params[2], 'coinbase prefix', maximum=32768)
+    if len(coinbase1 + upstream) > 65536:
+        raise ValueError('coinbase prefix too large')
+    result = list(params)
+    result[2] = coinbase1 + upstream
+    coinbase2 = _hex(params[3], 'coinbase suffix', maximum=32768)
+    result[3] = '00' * padding + coinbase2
+    if isinstance(result[4], (list, tuple)):
+        result[4] = list(result[4])
+    return result
 
 
 def choose_local_extranonce2_size(upstream_size: int, *, minimum_local_size: int,

@@ -19,8 +19,9 @@ import time
 import logging
 import ssl
 from collections import OrderedDict, deque
+from decimal import Decimal
 
-from upstream_manager import UpstreamConnection, ProtocolError, encode_packet, open_upstream, UpstreamLoopError
+from upstream_manager import UpstreamConnection, ProtocolError, encode_packet, open_upstream, UpstreamLoopError, parse_endpoint
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
 from devfee_scheduler import (FeeHealth, FeeJitter, independent_subscription, FairnessAllocator,
@@ -30,6 +31,71 @@ from pilot_logging import event, stratum_trace, remember_secret
 from stratum_codec import PacketReader
 from hardware_compatibility import (ClientCapabilities, validate_config, negotiated_mask,
                                     upstream_config, mask_value, merge_config)
+from aggregation import (AggregationJob, AggregationKey, NonceLease, NoncePartitioner,
+                         ShareTargets, virtual_subscription_job)
+
+
+class AggregatedJobRouter:
+    """Bounded per-miner job and proof state for a shared pool connection.
+
+    A locally accepted share is not necessarily forwarded or pool-confirmed.
+    The integration must record pool outcomes only after the pool replies.
+    """
+    def __init__(self, lease, mask=None, *, max_jobs=128, max_shares=8192, ttl=900):
+        if type(max_jobs) is not int or max_jobs < 1 or type(max_shares) is not int or max_shares < 1 or ttl <= 0:
+            raise ValueError('invalid aggregation limits')
+        self.lease, self.mask = lease, mask
+        self.max_jobs, self.max_shares, self.ttl = max_jobs, max_shares, ttl
+        self.jobs, self.shares = OrderedDict(), OrderedDict()
+        self.sequence = 0
+
+    def prune(self, now):
+        expired = [key for key, (_, created, _) in self.jobs.items() if now - created >= self.ttl]
+        for key in expired:
+            self.jobs.pop(key, None)
+        for key, created in list(self.shares.items()):
+            if now - created >= self.ttl:
+                self.shares.pop(key, None)
+
+    def issue(self, params, local_difficulty, pool_difficulty, now=None):
+        now = time.monotonic() if now is None else now
+        self.prune(now)
+        targets = ShareTargets.from_difficulties(local_difficulty, pool_difficulty, params[6])
+        job = AggregationJob(params, self.lease, targets, self.mask)
+        self.sequence += 1
+        local_id = format(self.sequence, 'x')
+        self.jobs[local_id] = (job, now, pool_difficulty)
+        while len(self.jobs) > self.max_jobs:
+            self.jobs.popitem(last=False)
+        message = list(params)
+        message[1:] = [list(v) if isinstance(v, tuple) else v for v in job.params[1:]]
+        message[0] = local_id
+        return message
+
+    def submit(self, params, now=None):
+        now = time.monotonic() if now is None else now
+        self.prune(now)
+        if not isinstance(params, list) or len(params) not in (5, 6) or not all(isinstance(v, str) for v in params):
+            raise ValueError('malformed share')
+        entry = self.jobs.get(params[1])
+        if entry is None:
+            raise ValueError('unknown job')
+        job = entry[0]
+        # The pool identifies duplicates by upstream job and proof, not our
+        # local job alias. Ignore worker name when forming the duplicate key.
+        proof = (job.params[0], *[v.lower() for v in params[2:]])
+        if proof in self.shares:
+            raise ValueError('duplicate share')
+        if len(self.shares) >= self.max_shares:
+            raise ValueError('share registry full')
+        decision = job.classify_submit(params[2], params[3], params[4], params[5] if len(params) == 6 else None)
+        if not decision.accept_locally:
+            raise ValueError('low difficulty')
+        self.shares[proof] = now
+        upstream = list(params)
+        upstream[1] = job.params[0]
+        upstream[2] = job.lease.upstream_extranonce2(params[2])
+        return decision, upstream if decision.forward else None
 
 
 class StatefulRouter:
@@ -354,6 +420,9 @@ class StatefulRouter:
             raise
         ch = UpstreamConnection(reader,writer,name,self.notification,self.disconnected,self.relay.timeout,
                                 self.writer,self.reader,self.relay.metrics)
+        # A job belongs to the credentials of the connection that issued it.
+        # Retain those credentials if a later route changes the worker name.
+        ch.submit_worker = self.fee_worker if name == 'fee' else self.user_worker
         self.channels[name] = ch
         return ch
 
@@ -683,10 +752,9 @@ class StatefulRouter:
         outbound = list(params)
         outbound[1] = upstream_id
         outbound[2] = prefix + params[2]
-        if ch.target == "fee":
-            outbound[0] = self.fee_worker
-        elif self.user_worker:
-            outbound[0] = self.user_worker
+        assigned_worker = getattr(ch, 'submit_worker', None)
+        if assigned_worker:
+            outbound[0] = assigned_worker
         fee = self.channels.get("fee")
         fee_available = bool(fee and not fee.closed and fee.authorized and fee.ready.is_set())
         if getattr(self.relay, "trace_stratum", False):
@@ -938,3 +1006,221 @@ class StatefulRouter:
             self.duplicates.clear()
             self.urgent_job = self.normal_job = None
             self.controls.clear()
+class AggregateSession:
+    """Opt-in user-pool route. A shared channel never owns an ASIC transport."""
+
+    def __init__(self, relay, reader, writer, session):
+        self.relay, self.writer, self.session = relay, writer, session
+        self.reader = PacketReader(reader, relay.max_miner_message, role='miner', metrics=relay.metrics)
+        self.identity = str(session['id'])
+        self.endpoint = session['endpoint']
+        self.route_worker = getattr(relay, 'user_worker', '')
+        self.route_password = getattr(relay, 'user_password', 'x')
+        self.agent = None
+        self.worker = None
+        self.group = None
+        self.jobs = None
+        self.prefix = None
+        self.width = None
+        self.write_lock = asyncio.Lock()
+        self.job_generation = None
+
+    async def send(self, *packets):
+        async with self.write_lock:
+            for packet in packets:
+                write_bounded(self.writer, encode_packet(packet), self.relay.metrics)
+            await drain_bounded(self.writer, self.relay.timeout, metrics=self.relay.metrics)
+
+    async def reply(self, ident, result, error=None):
+        await self.send({'id': ident, 'result': result, 'error': error})
+
+    async def notify(self, packet):
+        if packet.get('method') != 'mining.notify':
+            return
+        channel = self.group.connection
+        generation = packet['generation']
+        if generation != channel.generation:
+            return
+        if self.job_generation != generation:
+            self.jobs.jobs.clear()
+            self.job_generation = generation
+        difficulty = packet['difficulty']
+        local = Decimal(str(difficulty)) / 2
+        translated = virtual_subscription_job(packet['params'], channel.extranonce1,
+                                              channel.extranonce2_size, self.prefix, self.width)
+        params = self.jobs.issue(translated, local, difficulty)
+        await self.send({'id': None, 'method': 'mining.set_difficulty', 'params': [local]},
+                        {'id': None, 'method': 'mining.notify', 'params': params})
+
+    async def close_client(self):
+        self.writer.close()
+
+    async def authorize(self, ident, params):
+        if self.agent is None or self.worker is not None or len(params) != 2 or not all(
+                isinstance(value, str) for value in params):
+            raise ProtocolError('invalid aggregated authorization')
+        worker, password = params
+        if not worker or len(worker) > 128 or len(password) > 1024:
+            raise ProtocolError('invalid aggregated credentials')
+        remember_secret(password)
+        host, port, tls = parse_endpoint(*self.endpoint)
+        key = AggregationKey(host, port, tls or self.relay.tls,
+                             self.route_worker or worker,
+                             self.route_password if self.route_worker else password,
+                             user_agent=self.agent)
+        self.group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
+        channel = self.group.connection
+        available = channel.extranonce2_size - len(self.prefix) // 2
+        if available < self.relay.asic_extranonce2_min:
+            await self.reply(ident, False, [20, 'Pool nonce space cannot support aggregation', None])
+            return False
+        if available < self.width:
+            self.relay.aggregate_sizes.remember(self.hint, channel.extranonce2_size)
+            await self.send({'id': None, 'method': 'client.reconnect', 'params': []})
+            return False
+        self.padding = '00' * (available - self.width)
+        # The translated job presents the virtual prefix as extranonce1.
+        lease = NonceLease(self.identity, self.prefix, self.width, '', self.width)
+        self.jobs = AggregatedJobRouter(lease, ttl=self.relay.job_ttl)
+        self.worker = worker
+        self.session.update(state='connected', pool='primary', worker=worker, protocol_started=True)
+        self.session['observer'].protocol.update(subscribed=True, extranonce1=self.prefix,
+                                                 extranonce2_size=self.width, authorized_workers=[worker])
+        self.relay.workers.authorize(self.session['id'], worker, self.session['ip'])
+        # Capture the latest job and register synchronously so no notification
+        # can slip between taking the snapshot and joining the broadcast.
+        await self.reply(ident, True)
+        if channel.closed:
+            return False
+        initial = channel.job
+        self.group.subscribe(self.identity, self.notify, self.close_client)
+        if initial is not None:
+            await self.notify(initial)
+        return True
+
+    async def submit(self, ident, params):
+        metrics = self.session['metrics']
+        metrics.submitted += 1
+        try:
+            if not params or params[0] != self.worker or self.jobs is None:
+                raise ValueError('unauthorized share')
+            channel = self.group.connection
+            if channel.closed or channel.generation != self.job_generation:
+                raise ValueError('stale job')
+            _, outbound = self.jobs.submit(params)
+        except ValueError:
+            metrics.invalid_local += 1
+            await self.reply(ident, False, [23, 'Invalid, stale or duplicate share', None])
+            return
+        if outbound is None:
+            await self.reply(ident, True)
+            return
+        difficulty = self.jobs.jobs[params[1]][2]
+        outbound[0] = self.group.key.worker
+        outbound[2] = self.prefix + outbound[2] + self.padding
+        response = await channel.request('mining.submit', outbound)
+        accepted = response.get('result') is True and response.get('error') is None
+        if accepted:
+            metrics.accepted += 1
+            self.relay.ledger.record('user', difficulty, fee_available=False)
+            self.relay.metrics._audit.record('user', difficulty)
+        else:
+            metrics.rejected += 1
+        self.relay.workers.record(self.session['id'], self.worker,
+                                  'accepted' if accepted else 'rejected', difficulty=difficulty)
+        await self.reply(ident, response.get('result'), response.get('error'))
+
+    async def run(self):
+        handshake_deadline = time.monotonic() + self.relay.handshake_timeout
+        try:
+            while True:
+                timeout = (self.relay.miner_timeout or None) if self.worker else max(
+                    0, handshake_deadline - time.monotonic())
+                packet = await asyncio.wait_for(self.reader.read_packet(), timeout)
+                if packet is None:
+                    return
+                ident, method, params = packet.get('id'), packet.get('method'), packet.get('params', [])
+                if type(ident) not in (str, int) or not isinstance(params, list):
+                    raise ProtocolError('invalid miner request')
+                if method == 'mining.configure':
+                    validate_config(params)
+                    await self.reply(ident, dict.fromkeys(params[0], False))
+                elif method == 'mining.subscribe' and self.agent is None:
+                    self.agent = params[0] if params else ''
+                    if not isinstance(self.agent, str) or len(self.agent) > 128:
+                        raise ProtocolError('invalid user agent')
+                    # Subscribe has no credentials. The hint affects only width,
+                    # while the shared socket is selected by exact credentials.
+                    self.hint = (self.endpoint, self.session['ip'], self.agent, self.route_worker)
+                    hint = self.relay.aggregate_sizes.get(self.hint)
+                    allocator = self.relay.aggregate_prefixes
+                    self.width = allocator.local_extranonce2_size
+                    if hint is not None:
+                        self.width = min(self.width, max(self.relay.asic_extranonce2_min,
+                                                         hint - allocator.prefix_bytes))
+                    self.prefix = allocator.allocate(self.identity)
+                    await self.reply(ident, [[['mining.notify', self.identity]], self.prefix, self.width])
+                elif method == 'mining.authorize':
+                    if not await self.authorize(ident, params):
+                        return
+                elif method in ('mining.extranonce.subscribe', 'mining.ping') and not params:
+                    await self.reply(ident, True)
+                elif method == 'mining.submit':
+                    await self.submit(ident, params)
+                else:
+                    await self.reply(ident, False, [20, 'Unsupported request', None])
+        except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
+            self.relay.metrics.transport_errors += 1
+        finally:
+            if self.group is not None:
+                await self.relay.shared_upstreams.release(self.group, self.identity)
+            self.relay.aggregate_prefixes.release(self.identity)
+            if not self.relay.shared_upstreams.groups:
+                self.relay.aggregate_prefixes.reset_if_idle()
+
+
+async def open_aggregate_channel(relay, key):
+    """Pool-side state and its reader task live independently of any ASIC."""
+    async def notification(channel, packet):
+        method, params = packet.get('method'), packet.get('params')
+        if method == 'mining.set_difficulty':
+            if not isinstance(params, list) or len(params) != 1:
+                raise ProtocolError('invalid pool difficulty')
+            target_from_difficulty(params[0])
+            channel.difficulty = params[0]
+        elif method == 'mining.notify':
+            if not isinstance(params, list) or len(params) != 9 or type(params[8]) is not bool or channel.difficulty is None:
+                raise ProtocolError('invalid aggregate job')
+            if params[8]:
+                channel.generation += 1
+            packet.update(generation=channel.generation, difficulty=channel.difficulty)
+            channel.job = packet
+            channel.ready.set()
+        elif method in ('mining.set_extranonce', 'mining.set_version_mask', 'client.reconnect'):
+            raise ProtocolError('pool changed its shared connection context')
+
+    async def disconnected(channel):
+        pass
+
+    host = key.host
+    if key.use_tls:
+        host = 'stratum+ssl://' + (f'[{host}]' if ':' in host else host)
+    reader, writer = await open_upstream((host, key.port), relay.tls_context, relay.timeout,
+                                         relay.url_tls_context, relay.resolver,
+                                         address_guard=relay.is_self_route)
+    channel = UpstreamConnection(reader, writer, 'user', notification, disconnected,
+                                 relay.timeout, metrics=relay.metrics)
+    channel.generation = 0
+    try:
+        response = await channel.request('mining.subscribe', [key.user_agent])
+        StatefulRouter.subscription_result(channel, response.get('result'))
+        response = await channel.request('mining.authorize', [key.worker, key.password])
+        if response.get('result') is not True or response.get('error') is not None:
+            raise ProtocolError('pool authorization rejected')
+        channel.authorized = True
+        partitioner = NoncePartitioner(channel.extranonce1, channel.extranonce2_size, 0,
+                                       maximum_workers=50)
+        return channel, partitioner
+    except BaseException:
+        await channel.close()
+        raise

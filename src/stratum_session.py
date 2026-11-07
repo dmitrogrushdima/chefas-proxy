@@ -76,6 +76,7 @@ class Relay:
         self.allowed_networks = tuple(ipaddress.ip_network(network, strict=True) for network in allowed_networks)
         self.active_router = False
         self.tp_mode = False
+        self.shared_upstreams = None
         self.fee = None
         self.fee_jitter_seconds = 180
         self.fee_connection_gate = FeeConnectionGate()
@@ -152,8 +153,9 @@ class Relay:
         pumps = []
         try:
             if self.active_router and not session["tp_mode"]:
-                from router import StatefulRouter
-                await StatefulRouter(self, reader, writer, session).run()
+                from router import AggregateSession, StatefulRouter
+                router = AggregateSession if self.shared_upstreams else StatefulRouter
+                await router(self, reader, writer, session).run()
                 return
             remote_reader, upstream, index = await connect_upstream(
                 session["endpoint"], self.backup, self.tls_context, self.timeout,
@@ -367,6 +369,8 @@ class Relay:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self.shared_upstreams is not None:
+            await self.shared_upstreams.close()
         await self.resolver.close()
 
     async def reconcile_idle_fee_sessions(self):
