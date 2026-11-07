@@ -20,7 +20,7 @@ CONFIG_OPTIONS = {
     "devfee_jitter_seconds", "devfee_connect_interval", "job_ttl", "job_gc_interval",
     "hot_switch_mode", "asic_extranonce2_min", "asic_extranonce2_max",
     "env_file", "log_dir", "log_level", "debug_stratum", "control_state",
-    "history_file", "compatibility_state",
+    "history_file", "compatibility_state", "devfee_journal",
 }
 BOOLEAN_OPTIONS = {
     "tp_mode", "active_router", "aggregate", "validate_pow", "tls", "allow_any_miner", "require_devfee", "debug_stratum",

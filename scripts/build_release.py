@@ -122,7 +122,8 @@ def validate_native_files(bundle, modules):
             raise RuntimeError("Missing or ambiguous native core artifact: " + name)
         if any(p.name in (name + ".py", name + ".pyc") for p in files):
             raise RuntimeError("Core source/bytecode fallback found: " + name)
-    forbidden = {".env", "chefas-proxy.json", "control.json", "history.json", "compatibility.json", "state", "logs"}
+    forbidden = {".env", "chefas-proxy.json", "control.json", "history.json", "compatibility.json",
+                 "devfee.sqlite3-wal", "devfee.sqlite3-shm", "state", "logs"}
     bundle_root = bundle.resolve()
     for path in files:
         name = path.name.casefold()
@@ -211,6 +212,10 @@ def main():
         if os.name == "nt":
             (bundle / "start.cmd").write_text('@echo off\ncd /d "%~dp0"\n"%~dp0chefas-proxy.exe" %*\nif errorlevel 1 (\n  echo See RELEASE.md for configuration instructions.\n  pause\n)\n', encoding="ascii", newline="\r\n")
         else:
+            (bundle / "chefas-proxy.service").write_text(service_text(), encoding="utf-8", newline="\n")
+            installer = bundle / "install.sh"
+            shutil.copyfile(ROOT / "install.sh", installer)
+            installer.chmod(0o755)
             starter = bundle / "start.sh"
             starter.write_text('#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\ncd "$base"\nexec "$base/chefas-proxy" "$@"\n', encoding="utf-8", newline="\n")
             starter.chmod(0o755)

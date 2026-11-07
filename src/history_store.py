@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from fractions import Fraction
 
 
 class HistoryStore:
@@ -78,3 +81,95 @@ class HistoryStore:
                 # with the main coroutine during Ctrl+C.
                 pass
         await self.checkpoint()
+
+
+class DevFeeJournal:
+    """Durable daily totals. Persist exact confirmed work before replying to ASICs."""
+
+    def __init__(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.database = sqlite3.connect(path, check_same_thread=False)
+        except sqlite3.Error as exc:
+            raise ValueError('Cannot open DevFee journal') from exc
+        try:
+            self.database.execute('PRAGMA journal_mode=WAL')
+            self.database.execute('PRAGMA synchronous=FULL')
+            self.database.execute('''CREATE TABLE IF NOT EXISTS work_v1 (
+                day TEXT NOT NULL, route TEXT NOT NULL, pool TEXT NOT NULL,
+                accepted INTEGER NOT NULL, rejected INTEGER NOT NULL,
+                unknown INTEGER NOT NULL, difficulty TEXT NOT NULL,
+                PRIMARY KEY (day, route, pool)
+            )''')
+            self.database.commit()
+        except sqlite3.Error as exc:
+            self.database.close()
+            raise ValueError('Cannot initialize DevFee journal') from exc
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='devfee-journal')
+        self.error = None
+        self.closed = False
+
+    def _commit(self, day, route, pool, outcome, difficulty):
+        key = (day, route, pool)
+        with self.database:
+            self.database.execute('BEGIN IMMEDIATE')
+            row = self.database.execute(
+                'SELECT accepted, rejected, unknown, difficulty FROM work_v1 WHERE day=? AND route=? AND pool=?',
+                key).fetchone()
+            accepted, rejected, unknown, work = row or (0, 0, 0, '0')
+            if outcome == 'accepted':
+                work = str(Fraction(work) + Fraction(str(difficulty)))
+            self.database.execute('INSERT OR REPLACE INTO work_v1 VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                  (*key, accepted + (outcome == 'accepted'),
+                                   rejected + (outcome == 'rejected'), unknown + (outcome == 'unknown'), work))
+
+    def _record(self, day, route, pool, outcome, difficulty):
+        try:
+            self._commit(day, route, pool, outcome, difficulty)
+        except (sqlite3.Error, OSError, ValueError):
+            if self.error is None:
+                logging.getLogger('mining_proxy').error('DevFee journal write failed')
+            self.error = 'DevFee journal write failed'
+            return False
+        return True
+
+    async def record(self, route, pool, outcome, difficulty):
+        day = datetime.now(timezone.utc).date().isoformat()
+        return await asyncio.shield(asyncio.get_running_loop().run_in_executor(
+            self.executor, self._record, day, route, pool, outcome, difficulty))
+
+    def _snapshot(self):
+        totals = {}
+        recent = []
+        rows = self.database.execute('SELECT * FROM work_v1 ORDER BY day DESC')
+        for day, route, pool, accepted, rejected, unknown, work in rows:
+            entry = totals.setdefault((route, pool), [0, 0, 0, Fraction(0)])
+            entry[0] += accepted
+            entry[1] += rejected
+            entry[2] += unknown
+            entry[3] += Fraction(work)
+            if len(recent) < 1000:
+                recent.append(dict(day_utc=day, route=route, pool=pool, accepted=accepted,
+                                   rejected=rejected, unknown=unknown, accepted_difficulty=work))
+        return {'scope': 'routed share outcomes recorded locally; accepted work uses exact fractions',
+                'totals': [dict(route=route, pool=pool, accepted=a, rejected=r, unknown=u,
+                                accepted_difficulty=str(work))
+                           for (route, pool), (a, r, u, work) in sorted(totals.items())],
+                'recent_daily_rows': recent}
+
+    async def snapshot(self):
+        if self.closed:
+            return {'error': 'DevFee journal is closing'}
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(self.executor, self._snapshot)
+        except (sqlite3.Error, OSError, ValueError):
+            return {'error': 'DevFee journal read failed'}
+        return dict(result, error=self.error)
+
+    async def close(self):
+        self.closed = True
+        try:
+            await asyncio.get_running_loop().run_in_executor(self.executor, self.database.close)
+        finally:
+            self.executor.shutdown(wait=False)

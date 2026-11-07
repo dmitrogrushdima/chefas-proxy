@@ -20,43 +20,21 @@ def service_text(install_dir="/opt/chefas-proxy", config="/etc/chefas-proxy/chef
     executable = _path(install_dir.rstrip("/") + "/chefas-proxy")
     config_path, environment = _path(config), _path(env_file)
     working = _path(str(PurePosixPath(config).parent))
-    return f'''[Unit]
-Description=CHEFAS Proxy Stratum mining proxy
-Wants=network-online.target
-After=network-online.target
-StartLimitIntervalSec=60
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User={user}
-Group={user}
-WorkingDirectory={working}
-EnvironmentFile={environment}
-ExecStart={executable} --config {config_path} --control-state=/var/lib/chefas-proxy/control.json --history-file=/var/lib/chefas-proxy/history.json --compatibility-state=/var/lib/chefas-proxy/compatibility.json --log-dir=/var/log/chefas-proxy
-Restart=on-failure
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=45
-LimitNOFILE=65536
-UMask=0077
-StateDirectory=chefas-proxy
-LogsDirectory=chefas-proxy
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-CapabilityBoundingSet=
-AmbientCapabilities=
-
-[Install]
-WantedBy=multi-user.target
-'''
+    template = Path(__file__).with_name('chefas-proxy.service').read_text(encoding='utf-8')
+    replacements = {
+        'User': user, 'Group': user, 'WorkingDirectory': working,
+        'EnvironmentFile': environment,
+        'ExecStart': (f'{executable} --config {config_path} --env-file= '
+                      '--control-state=/var/lib/chefas-proxy/control.json '
+                      '--history-file=/var/lib/chefas-proxy/history.json '
+                      '--compatibility-state=/var/lib/chefas-proxy/compatibility.json '
+                      '--devfee-journal=/var/lib/chefas-proxy/devfee.sqlite3 --log-dir=/var/log/chefas-proxy'),
+    }
+    lines = []
+    for line in template.splitlines():
+        key = line.partition('=')[0]
+        lines.append(f'{key}={replacements[key]}' if key in replacements else line)
+    return '\n'.join(lines) + '\n'
 
 
 def main():

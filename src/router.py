@@ -4,7 +4,11 @@
 async def copy_stream(source, destination, direction, observer, metrics, on_activity, timeout=10, source_writer=None):
     while data := await source.read(65536):
         on_activity()
-        write_bounded(destination,data,metrics)
+        if direction == 0:
+            metrics.lan_rx_bytes += len(data)
+        else:
+            metrics.wan_rx_bytes += len(data)
+        write_bounded(destination, data, metrics, traffic='wan_tx_bytes' if direction == 0 else 'lan_tx_bytes')
         try:
             if observer is not None:
                 observer.feed(direction, data)
@@ -22,7 +26,7 @@ from collections import OrderedDict, deque
 from decimal import Decimal
 
 from upstream_manager import (UpstreamConnection, ProtocolError, SharedPoolHealth, encode_packet,
-                              open_upstream, UpstreamLoopError, parse_endpoint)
+                              open_upstream, UpstreamLoopError, parse_endpoint, pool_label)
 from pow_validator import (validate_stratum_share, target_from_difficulty,
                            build_stratum_header, compact_target, meets_target)
 from devfee_scheduler import (FeeHealth, FeeJitter, independent_subscription, FairnessAllocator,
@@ -300,7 +304,7 @@ class StatefulRouter:
 
     def write_client(self, packet):
         try:
-            write_bounded(self.writer,encode_packet(packet),self.relay.metrics)
+            write_bounded(self.writer, encode_packet(packet), self.relay.metrics, traffic='lan_tx_bytes')
         except (ConnectionResetError, BrokenPipeError):
             self.client_disconnected = True
             raise
@@ -424,6 +428,7 @@ class StatefulRouter:
         # A job belongs to the credentials of the connection that issued it.
         # Retain those credentials if a later route changes the worker name.
         ch.submit_worker = self.fee_worker if name == 'fee' else self.user_worker
+        ch.pool_label = pool_label(endpoint)
         self.channels[name] = ch
         return ch
 
@@ -805,6 +810,8 @@ class StatefulRouter:
             if fee_token is not None:
                 self.allocator.finish_submit(fee_token,outcome)
                 fee_token = None
+            await self.relay.metrics.record_pool_reply(ch.target, getattr(ch, 'pool_label', 'unknown'),
+                                                      outcome, difficulty, latency / 1000)
             await self.reply(ident, response)
             self.session['pending'] -= 1
             pending = False
@@ -818,6 +825,8 @@ class StatefulRouter:
                 await ch.close()
             metrics.unmatched += 1
             self.relay.workers.record(self.session["id"], params[0], "unknown")
+            await self.relay.metrics.record_pool_reply(ch.target, getattr(ch, 'pool_label', 'unknown'),
+                                                      'unknown', difficulty)
             await self.reply(ident, {"result": None, "error": [20, "Upstream unavailable", None]})
         except asyncio.CancelledError:
             if not responded:
@@ -1051,7 +1060,7 @@ class AggregateSession:
     async def send(self, *packets):
         async with self.write_lock:
             for packet in packets:
-                write_bounded(self.writer, encode_packet(packet), self.relay.metrics)
+                write_bounded(self.writer, encode_packet(packet), self.relay.metrics, traffic='lan_tx_bytes')
             await drain_bounded(self.writer, self.relay.timeout, metrics=self.relay.metrics)
 
     async def reply(self, ident, result, error=None):
@@ -1348,9 +1357,11 @@ class AggregateSession:
         token = allocator.begin_submit(self.session['id'], difficulty) if route == 'fee' else None
         self.pending_fee = token is not None
         outcome = 'unknown'
+        latency = None
         sent_at = time.monotonic()
         try:
             response = await channel.request('mining.submit', outbound)
+            latency = time.monotonic() - sent_at
             if response.get('result') is True and response.get('error') is None:
                 outcome = 'accepted'
             elif response.get('result') is False or response.get('error') is not None:
@@ -1372,6 +1383,7 @@ class AggregateSession:
         else:
             metrics.unmatched += 1
         self.relay.workers.record(self.session['id'], self.worker, outcome, difficulty=difficulty)
+        await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency)
         await self.reply(ident, response.get('result'), response.get('error'))
         if route == 'fee' and outcome != 'accepted':
             await self.fee_unavailable()
@@ -1493,6 +1505,7 @@ async def open_aggregate_channel(relay, key):
     channel = UpstreamConnection(reader, writer, 'user', notification, disconnected,
                                  relay.timeout, metrics=relay.metrics)
     channel.generation = 0
+    channel.pool_label = pool_label((key.host, key.port))
     channel.health = SharedPoolHealth(*relay.failover_health)
     try:
         if key.version_mask is not None:

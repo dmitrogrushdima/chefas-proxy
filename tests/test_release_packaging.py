@@ -94,6 +94,10 @@ class ServiceGenerationTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=\"/etc/chefas-proxy/chefas-proxy.env\"", unit)
         self.assertIn("NoNewPrivileges=true", unit)
         self.assertIn("User=chefas-proxy", unit)
+        self.assertIn("Restart=always", unit)
+        self.assertIn("LimitNOFILE=65535", unit)
+        self.assertIn("--devfee-journal=/var/lib/chefas-proxy/devfee.sqlite3", unit)
+        self.assertEqual(unit, (ROOT / "scripts" / "chefas-proxy.service").read_text())
 
     def test_unit_injection_rejected_and_specifiers_escaped(self):
         for path in ("relative/path", "/opt/x\nUser=root", '/opt/"x', "/opt/../root", "/opt/\\root", "/opt/$HOME", "/opt/\tx"):

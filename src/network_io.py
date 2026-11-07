@@ -120,7 +120,7 @@ def buffer_size(writer):
     return value if type(value) is int else 0
 
 
-def write_bounded(writer, data, metrics=None):
+def write_bounded(writer, data, metrics=None, *, traffic=None):
     if buffer_size(writer) + len(data) > WRITE_HARD:
         if metrics is not None: metrics.write_buffer_rejected += 1
         writer.close()
@@ -128,6 +128,8 @@ def write_bounded(writer, data, metrics=None):
         if transport is not None: transport.abort()
         raise ConnectionError('write buffer limit exceeded')
     writer.write(data)
+    if metrics is not None and traffic is not None:
+        setattr(metrics, traffic, getattr(metrics, traffic) + len(data))
 
 
 async def drain_bounded(writer, timeout, source_writer=None, source_reader=None, metrics=None):

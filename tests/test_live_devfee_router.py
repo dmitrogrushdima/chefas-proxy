@@ -407,6 +407,9 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             raw = await asyncio.wait_for(reader.read(), 5)
             headers, body = raw.split(b"\r\n\r\n", 1)
             self.assertIn(str(expected).encode() + b" ", headers)
+            if path == "/metrics":
+                self.assertIn(b"text/plain; version=0.0.4", headers)
+                return body.decode()
             return json.loads(body)
         finally:
             writer.close()
@@ -527,6 +530,36 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual((await self.api('/api/audit-export'))['fee_percentage'], 1.0)
         self.assertIs((await miners[0].submit(proof(miners[0], user_job)))['result'], True)
         self.assertEqual(self.user_pool.accepted, 100)
+        self.user_pool.reject_submits = True
+        self.assertIs((await miners[0].submit(proof(miners[0], user_job)))['result'], False)
+        self.assertEqual(self.user_pool.rejected, 1)
+        metrics = await self.api('/metrics')
+        self.assertIn('chefas_proxy_active_workers 2\n', metrics)
+        self.assertIn('chefas_proxy_upstream_sockets{mode="shared"} 2\n', metrics)
+        for network in ('lan', 'wan'):
+            for direction in ('rx', 'tx'):
+                self.assertRegex(metrics, rf'chefas_proxy_{network}_bytes_total\{{direction="{direction}"\}} [1-9][0-9]*\n')
+        for route, pool, accepted in (('user', self.user_pool, 100), ('fee', self.fee_pool, 1)):
+            labels = f'pool="127.0.0.1:{pool.port}",route="{route}"'
+            rejected = int(route == 'user')
+            self.assertIn(f'chefas_proxy_shares_accepted_total{{{labels}}} {accepted}\n', metrics)
+            self.assertIn(f'chefas_proxy_shares_rejected_total{{{labels}}} {rejected}\n', metrics)
+            self.assertIn(f'chefas_proxy_upstream_latency_seconds_count{{{labels}}} {accepted + rejected}\n', metrics)
+        self.assertIn(f'chefas_proxy_shares_devfee_total{{pool="127.0.0.1:{self.fee_pool.port}",route="fee"}} 1\n',
+                      metrics)
+
+        journal = (await self.api('/api/audit-export'))['persistent_work']
+        totals = {entry['route']: entry for entry in journal['totals']}
+        self.assertIsNone(journal['error'])
+        for route, accepted in (('user', 100), ('fee', 1)):
+            self.assertEqual(totals[route]['accepted'], accepted)
+            self.assertEqual(totals[route]['rejected'], int(route == 'user'))
+            self.assertEqual(Fraction(totals[route]['accepted_difficulty']), accepted * Fraction(str(DIFFICULTY)))
+
+        self.process.kill()
+        await asyncio.wait_for(asyncio.to_thread(self.process.wait), 5)
+        await self.launch(fee=False, aggregate=True)
+        self.assertEqual((await self.api('/api/audit-export'))['persistent_work'], journal)
 
     async def test_aggregate_fee_disconnect_restores_user_job_on_same_socket(self):
         from pow_validator import build_stratum_header

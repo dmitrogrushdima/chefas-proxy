@@ -155,6 +155,7 @@ class PacketReader:
     def __init__(self, reader, max_bytes=4096, role=None, metrics=None):
         self.reader = reader
         self.metrics = metrics
+        self.traffic = {'miner': 'lan_rx_bytes', 'pool': 'wan_rx_bytes'}.get(role)
         self.decoder = StratumDecoder(max_bytes, role)
         self.pending = deque()
 
@@ -164,6 +165,8 @@ class PacketReader:
             if not data:
                 self.decoder.eof()
                 return None
+            if self.metrics is not None and self.traffic is not None:
+                setattr(self.metrics, self.traffic, getattr(self.metrics, self.traffic) + len(data))
             packets = self.decoder.feed(data)
             if self.metrics is not None and len(packets) > 1:
                 self.metrics.coalesced_read_batches += 1

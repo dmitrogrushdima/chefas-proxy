@@ -82,40 +82,44 @@ removal or binary patching impossible.
 
 ## Linux service
 
-The release contains `chefas-proxy.service.example`; maintainers can generate a
-custom unit with `python scripts/generate_service.py --output chefas-proxy.service`.
-The generator only writes a new file. It never installs or starts a service.
-
-An administrator must create the `chefas-proxy` service user, install the **complete**
-release directory at `/opt/chefas-proxy`, and place configuration at
-`/etc/chefas-proxy/chefas-proxy.json` and secrets at `/etc/chefas-proxy/chefas-proxy.env` with restricted
-permissions. Install the reviewed unit into `/etc/systemd/system/`, then use
-the usual `systemctl daemon-reload` / `systemctl enable --now chefas-proxy` commands.
-The generated unit uses systemd-managed `/var/lib/chefas-proxy` and `/var/log/chefas-proxy`,
-an unprivileged user, restrictive permissions, and SIGTERM graceful shutdown.
-It assumes a systemd version supporting `StateDirectory` / `LogsDirectory`.
-Service ports must be above 1023. Review host firewall and process FD limits.
-
-For a **fresh installation**, after unpacking into `/opt/chefas-proxy` and editing
-the configuration and environment files locally:
+Verify the release checksum and extract the Linux x64 archive. From the extracted
+release directory:
 
 ```sh
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin chefas-proxy
-sudo install -d -m 0750 -o root -g chefas-proxy /etc/chefas-proxy
-sudo install -m 0640 -o root -g chefas-proxy chefas-proxy.json /etc/chefas-proxy/chefas-proxy.json
-sudo install -m 0600 -o root -g root .env /etc/chefas-proxy/chefas-proxy.env
-sudo install -m 0644 /opt/chefas-proxy/chefas-proxy.service.example /etc/systemd/system/chefas-proxy.service
-sudo systemctl daemon-reload
+sudo bash install.sh
+sudoedit /etc/chefas-proxy/chefas-proxy.json /etc/chefas-proxy/chefas-proxy.env
 sudo systemctl enable --now chefas-proxy
 sudo systemctl status chefas-proxy --no-pager
 ```
 
-The system service manager reads the root-owned environment file. Do not run
-these fresh-install steps over an existing deployment without preserving its
-private configuration and encryption key. Keep installed binaries owned by root
-and readable/executable by the service account. The service creates its own state
-and log directories. Linux qualification is still pending; this template is not
-evidence of a completed Linux pilot.
+The installer is for fresh deployments. It installs the executable and runtime
+under `/opt/chefas-proxy`, preserves existing configuration files and leaves the
+service stopped until the operator configures it. The unit runs as the
+unprivileged `chefas-proxy` account with `Restart=always` and
+`LimitNOFILE=65535`. The root-owned environment file is mode 0600 and is read
+by the systemd manager. State and logs live in `/var/lib/chefas-proxy` and
+`/var/log/chefas-proxy`. The host needs systemd with support for
+`StateDirectory` and `LogsDirectory`. Use service ports above 1023.
+
+### Prometheus and DevFee journal
+
+For the aggregation pilot, set `"aggregate": true` alongside
+`"active_router": true` in `chefas-proxy.json`.
+Scrape `http://127.0.0.1:8080/metrics` on the proxy host, using the configured
+dashboard port if different. LAN and WAN counters measure application bytes
+received and queued for transport, excluding TCP and TLS overhead. Share
+counters and submit-to-reply latency are labeled by pool endpoint and route.
+The active-worker gauge counts authorized sessions. The shared-socket gauge
+includes live shared pool connections held ready for routing.
+
+Prometheus counters reset with the process. In active mode, the SQLite journal
+at `/var/lib/chefas-proxy/devfee.sqlite3` persists the outcomes the proxy
+observed and committed. The dashboard audit export exposes cumulative totals
+and recent UTC-day rows under `persistent_work`. It distinguishes accepted,
+rejected and unknown outcomes and excludes local-only shares. Alert on
+`chefas_proxy_devfee_journal_errors_total` increasing. A share accepted by a
+pool just before connection loss or process termination may have no observed
+and committed result locally.
 
 Standalone startup checks are packaging checks. They do not certify real ASIC
 compatibility, network throughput, Linux deployment, or unattended long-term

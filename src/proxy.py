@@ -16,7 +16,7 @@ from stratum_session import Relay, HALF_CLOSE_GRACE
 from dashboard_server import dashboard_request, ASSET_DIR, ASSETS, DashboardStream
 from devfee_scheduler import AcceptedWorkLedger, FairnessAllocator, stable_fee_worker
 from dashboard_control import DashboardControl
-from history_store import HistoryStore
+from history_store import DevFeeJournal, HistoryStore
 from secret_store import load_environment, SecretConfigurationError
 from pilot_logging import PilotLogging, SafeQueueHandler, event
 from shutdown_signals import ShutdownSignals
@@ -115,19 +115,31 @@ async def run(args, stop_event=None):
         local_size = min(relay.asic_extranonce2_max, max(4, relay.asic_extranonce2_min))
         relay.aggregate_prefixes = VirtualPrefixAllocator(2, local_size)
         relay.shared_upstreams = SharedUpstreamManager(lambda key: open_aggregate_channel(relay, key))
+    journal = None
     if args.active_router:
         relay.metrics._ledger = relay.ledger
         relay.metrics._devfee_enabled = bool(relay.fee)
         relay.metrics._audit = WorkAudit(relay.ledger)
-    server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512,
-                                      limit=relay.max_miner_message if args.active_router else 65536)
-    relay.set_listeners(server)
+        journal_path = getattr(args, 'devfee_journal', None)
+        if journal_path is None:
+            journal_path = Path(args.control_state).with_name('devfee.sqlite3')
+        if journal_path:
+            journal = DevFeeJournal(journal_path)
+            relay.metrics._devfee_journal = journal
+    server = None
     try:
-        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream, control),
+        server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512,
+                                          limit=relay.max_miner_message if args.active_router else 65536)
+        relay.set_listeners(server)
+        dashboard = await asyncio.start_server(lambda r, w: dashboard_request(
+            r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream, control, relay.prometheus_snapshot),
                                                "127.0.0.1", args.dashboard_port)
     except BaseException:
-        server.close()
-        await server.wait_closed()
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+        if journal is not None:
+            await journal.close()
         raise
     LOG.info("Experimental relay; pilot validation required. Listening on %s", server.sockets[0].getsockname())
     LOG.info("Dashboard: http://127.0.0.1:%s", args.dashboard_port)
@@ -167,6 +179,8 @@ async def run(args, stop_event=None):
         await stream.close()
         await control.observer_stream.close()
         await relay.shutdown()
+        if journal is not None:
+            await journal.close()
         if history:
             await history.close()
         event(logging.INFO, "proxy_stopped", accepted=relay.metrics.accepted, rejected=relay.metrics.rejected)
@@ -196,6 +210,8 @@ def main():
     parser.add_argument("--max-miner-message", type=int, default=4096, help="Maximum active-mode ASIC JSON object size, 512..65536")
     parser.add_argument("--control-state", default="state/control.json")
     parser.add_argument("--history-file", default="state/history.json", help="Worker history checkpoint path; empty disables persistence")
+    parser.add_argument("--devfee-journal",
+                        help="SQLite work journal path (default devfee.sqlite3 next to control state; empty disables)")
     parser.add_argument("--pool-port", type=int, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--listen-host", help="Stratum bind address (default 0.0.0.0 with private IPv4 access)")
     parser.add_argument("--listen-port", type=int, default=3333, choices=range(1, 65536), metavar="PORT")

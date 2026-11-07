@@ -10,6 +10,72 @@ from collections import OrderedDict, deque
 from fractions import Fraction
 
 
+POOL_LATENCY_BUCKETS = (.005, .01, .025, .05, .1, .25, .5, 1, 2, 5, 10)
+
+
+class PoolTelemetry:
+    """Bound the number of public series independently of worker identities."""
+
+    def __init__(self):
+        self.series = {}
+
+    def observe(self, route, pool, outcome, seconds):
+        key = (route, pool)
+        if key not in self.series and len(self.series) >= 128:
+            key = (route, 'other')
+        if key not in self.series:
+            self.series[key] = ({'accepted': 0, 'rejected': 0, 'unknown': 0},
+                                [0] * len(POOL_LATENCY_BUCKETS), [0, 0.0])
+        counts, histogram, timing = self.series[key]
+        counts[outcome] += 1
+        if seconds is not None:
+            timing[0] += 1
+            timing[1] += seconds
+            for index, bound in enumerate(POOL_LATENCY_BUCKETS):
+                if seconds <= bound:
+                    histogram[index] += 1
+
+    def render(self, metrics, active_workers, shared_sockets):
+        lines = [
+            '# HELP chefas_proxy_lan_bytes_total Stratum application bytes on ASIC sockets.',
+            '# TYPE chefas_proxy_lan_bytes_total counter',
+            f'chefas_proxy_lan_bytes_total{{direction="rx"}} {metrics.lan_rx_bytes}',
+            f'chefas_proxy_lan_bytes_total{{direction="tx"}} {metrics.lan_tx_bytes}',
+            '# HELP chefas_proxy_wan_bytes_total Stratum application bytes on upstream sockets.',
+            '# TYPE chefas_proxy_wan_bytes_total counter',
+            f'chefas_proxy_wan_bytes_total{{direction="rx"}} {metrics.wan_rx_bytes}',
+            f'chefas_proxy_wan_bytes_total{{direction="tx"}} {metrics.wan_tx_bytes}',
+            '# TYPE chefas_proxy_active_workers gauge',
+            f'chefas_proxy_active_workers {active_workers}',
+            '# TYPE chefas_proxy_upstream_sockets gauge',
+            f'chefas_proxy_upstream_sockets{{mode="shared"}} {shared_sockets}',
+            '# TYPE chefas_proxy_devfee_journal_errors_total counter',
+            f'chefas_proxy_devfee_journal_errors_total {metrics.devfee_journal_errors}',
+        ]
+        samples = []
+        for (route, pool), (counts, histogram, timing) in sorted(self.series.items()):
+            pool = pool.replace('\\', '\\\\').replace('\n', '\\n').replace('"', '\\"')
+            samples.append((route, f'pool="{pool}",route="{route}"', counts, histogram, timing))
+        for outcome in ('accepted', 'rejected', 'unknown', 'devfee'):
+            name = f'chefas_proxy_shares_{outcome}_total'
+            lines.append(f'# TYPE {name} counter')
+            for route, labels, counts, _, _ in samples:
+                if outcome == 'devfee' and route != 'fee':
+                    continue
+                value = counts['accepted' if outcome == 'devfee' else outcome]
+                lines.append(f'{name}{{{labels}}} {value}')
+        lines.append('# TYPE chefas_proxy_upstream_latency_seconds histogram')
+        for _, labels, _, histogram, timing in samples:
+            for bound, value in zip(POOL_LATENCY_BUCKETS, histogram):
+                lines.append(f'chefas_proxy_upstream_latency_seconds_bucket{{{labels},le="{bound}"}} {value}')
+            lines.extend((
+                f'chefas_proxy_upstream_latency_seconds_bucket{{{labels},le="+Inf"}} {timing[0]}',
+                f'chefas_proxy_upstream_latency_seconds_count{{{labels}}} {timing[0]}',
+                f'chefas_proxy_upstream_latency_seconds_sum{{{labels}}} {timing[1]}',
+            ))
+        return ('\n'.join(lines) + '\n').encode()
+
+
 class WorkAudit:
     """Pool-confirmed accepted work, bucketed by monotonic second."""
 
@@ -328,6 +394,20 @@ class Metrics:
         self.clean_jobs_coalesced = 0
         self.coalesced_read_batches = 0
         self.coalesced_extra_messages = 0
+        self.lan_rx_bytes = 0
+        self.lan_tx_bytes = 0
+        self.wan_rx_bytes = 0
+        self.wan_tx_bytes = 0
+        self.devfee_journal_errors = 0
+        if parent is None:
+            self._pool_telemetry = PoolTelemetry()
+        self._devfee_journal = None
+
+    async def record_pool_reply(self, route, pool, outcome, difficulty, seconds=None):
+        self._pool_telemetry.observe(route, pool, outcome, seconds)
+        if self._devfee_journal is not None:
+            if not await self._devfee_journal.record(route, pool, outcome, difficulty):
+                self.devfee_journal_errors += 1
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}

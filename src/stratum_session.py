@@ -12,7 +12,7 @@ from observer import Metrics, Observer, WorkerRegistry
 from collections import deque
 from datetime import datetime, timezone
 from router import copy_stream
-from upstream_manager import connect_upstream, parse_endpoint
+from upstream_manager import connect_upstream, parse_endpoint, pool_label
 from devfee_scheduler import AcceptedWorkLedger, FeeConnectionGate, FairnessAllocator, StableFeeSlots
 from pilot_logging import event
 # Public framing types are re-exported here for session-level integrations.
@@ -142,6 +142,10 @@ class Relay:
         def share_observed(name, outcome, latency, stale):
             if name is not None:
                 self.workers.record(session_id, name, outcome, rtt_ms=latency, stale=stale)
+            if 'upstream_label' in session:
+                route = 'backup' if session['pool'] == 'backup' else 'user'
+                self.metrics._pool_telemetry.observe(
+                    route, session['upstream_label'], outcome, None if latency is None else latency / 1000)
 
         observer = Observer(session_metrics, on_authorized=authorized, on_share=share_observed)
         session["observer"] = observer
@@ -157,14 +161,16 @@ class Relay:
                 router = AggregateSession if self.shared_upstreams else StatefulRouter
                 await router(self, reader, writer, session).run()
                 return
+            backup = self.backup
             remote_reader, upstream, index = await connect_upstream(
-                session["endpoint"], self.backup, self.tls_context, self.timeout,
+                session["endpoint"], backup, self.tls_context, self.timeout,
                 self.is_self_route, self.metrics, self.url_tls_context, self.resolver
             )
             if upstream is None:
                 return
             session["state"] = "connected"
             session["pool"] = "primary" if index == 0 else "backup"
+            session['upstream_label'] = pool_label(session['endpoint'] if index == 0 else backup)
 
             last_activity = time.monotonic()
             last_miner_activity = last_activity
@@ -363,6 +369,12 @@ class Relay:
                            "tls": self.tls or parse_endpoint(*self.backup)[2]} if self.backup else None,
                 "tls": self.tls, "limit": self.limit,
                 "listeners": [str(item[1][1]) for item in self.listeners]}
+
+    def prometheus_snapshot(self):
+        workers = sum(session['worker'] is not None for session in self.sessions.values())
+        sockets = (sum(not group.connection.closed for group in self.shared_upstreams.groups)
+                   if self.shared_upstreams is not None else 0)
+        return self.metrics._pool_telemetry.render(self.metrics, workers, sockets)
 
     async def shutdown(self):
         tasks = list(self.tasks)

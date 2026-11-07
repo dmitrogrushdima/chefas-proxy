@@ -250,6 +250,12 @@ def parse_endpoint(host, port=None):
     return name, port, secure
 
 
+def pool_label(endpoint):
+    host, port, _ = parse_endpoint(*endpoint)
+    host = host.lower()
+    return f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+
+
 @lru_cache(maxsize=1)
 def default_tls_context():
     return ssl.create_default_context()
@@ -364,7 +370,8 @@ class UpstreamConnection:
         self.pending[ident] = future
         try:
             async with self.write_lock:
-                write_bounded(self.writer,encode_packet({"id":ident,"method":method,"params":params}),self.metrics)
+                write_bounded(self.writer, encode_packet({"id":ident,"method":method,"params":params}),
+                              self.metrics, traffic='wan_tx_bytes')
                 await drain_bounded(self.writer,self.timeout,self.miner_writer,self.miner_reader,self.metrics)
             return await asyncio.wait_for(future, self.timeout)
         finally:

@@ -82,7 +82,8 @@ class DashboardStream:
             self.producer = None
 
 
-async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {}, stream=None, control=None):
+async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status_snapshot=lambda: {},
+                            stream=None, control=None, prometheus=None):
     try:
         disposition = b""
         request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
@@ -101,6 +102,9 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
             return
         elif first[0] != b"GET":
             status, body, content_type = b"403 Forbidden", b"Forbidden", b"text/plain"
+        elif first[1] == b"/metrics" and prometheus is not None:
+            status, body = b"200 OK", prometheus()
+            content_type = b"text/plain; version=0.0.4; charset=utf-8"
         elif first[1] == b"/api/stream" and stream is not None:
             await stream.serve(reader, writer)
             return
@@ -130,6 +134,9 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
                                "accepted_difficulty": audit["user_accepted_difficulty"],
                                "fee_difficulty": audit["fee_accepted_difficulty"],
                                "fee_percentage": audit["fee_percentage"], "audit": audit})
+            journal = getattr(metrics, "_devfee_journal", None)
+            if journal is not None:
+                report["persistent_work"] = await journal.snapshot()
             status, body, content_type = b"200 OK", json.dumps(report).encode(), b"application/json"
             disposition = b"\r\nContent-Disposition: attachment; filename=chefas-proxy-diagnostics.json"
         elif first[1] in ASSETS:
