@@ -55,21 +55,23 @@ No separate Python installation is needed for a standalone package. Building fro
 
 ## Pools & hardware
 
-BTC Stratum V1 pool connections. Select your provider and configure its Bitcoin endpoint.
+Configure a Bitcoin Stratum V1 endpoint for your pool. These are examples, not endorsements or verified partnerships.
 
 <table>
 <tr>
-<td align="center" width="25%"><a href="https://www.f2pool.com"><strong>f2pool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
-<td align="center" width="25%"><a href="https://www.viabtc.com"><strong>ViaBTC</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
-<td align="center" width="25%"><a href="https://www.antpool.com"><strong>AntPool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
-<td align="center" width="25%"><a href="https://www.poolin.com"><strong>Poolin</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.f2pool.com"><img src="https://cdn.jsdelivr.net/gh/mempool/mining-pool-logos@059212bff7194617153c4307bc7acfccea057b6c/f2pool.svg" width="36" height="36" alt=""><br><strong>f2pool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.viabtc.com"><img src="https://cdn.jsdelivr.net/gh/mempool/mining-pool-logos@059212bff7194617153c4307bc7acfccea057b6c/viabtc.svg" width="36" height="36" alt=""><br><strong>ViaBTC</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.antpool.com"><img src="https://cdn.jsdelivr.net/gh/mempool/mining-pool-logos@059212bff7194617153c4307bc7acfccea057b6c/antpool.svg" width="36" height="36" alt=""><br><strong>AntPool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://www.poolin.com"><img src="https://cdn.jsdelivr.net/gh/mempool/mining-pool-logos@059212bff7194617153c4307bc7acfccea057b6c/poolin.svg" width="36" height="36" alt=""><br><strong>Poolin</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
 </tr>
 <tr>
-<td align="center" width="25%"><a href="https://pool.braiins.com"><strong>Braiins Pool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
-<td align="center" width="25%"><a href="https://foundrydigital.com"><strong>Foundry USA</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://pool.braiins.com"><img src="https://cdn.jsdelivr.net/gh/mempool/mining-pool-logos@059212bff7194617153c4307bc7acfccea057b6c/braiinspool.svg" width="36" height="36" alt=""><br><strong>Braiins Pool</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
+<td align="center" width="25%"><a href="https://foundrydigital.com"><img src="https://cdn.jsdelivr.net/gh/mempool/mining-pool-logos@059212bff7194617153c4307bc7acfccea057b6c/foundryusa.svg" width="36" height="36" alt=""><br><strong>Foundry USA</strong></a><br><sub>Bitcoin · Stratum V1</sub></td>
 <td align="center" colspan="2"><strong>Your BTC pool</strong><br><sub>Custom host · TCP / TLS</sub></td>
 </tr>
 </table>
+
+<sub>Pool icons: <a href="https://github.com/mempool/mining-pool-logos">mempool mining pool logos</a>. Trademarks belong to their respective owners.</sub>
 
 ### ASIC hardware
 
