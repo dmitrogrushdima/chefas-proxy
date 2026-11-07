@@ -752,7 +752,8 @@ class StatefulRouter:
         outbound = list(params)
         outbound[1] = upstream_id
         outbound[2] = prefix + params[2]
-        assigned_worker = getattr(ch, 'submit_worker', None)
+        assigned_worker = getattr(ch, 'submit_worker',
+                                  self.fee_worker if ch.target == 'fee' else self.user_worker)
         if assigned_worker:
             outbound[0] = assigned_worker
         fee = self.channels.get("fee")
