@@ -695,6 +695,22 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(budget["fee_percentage"], 1.0)
         self.assertFalse(a.closed.is_set() or b.closed.is_set())
 
+        # Kill rather than stop gracefully: each confirmed share should
+        # already be committed before the ASIC receives its acknowledgement.
+        self.process.kill()
+        await asyncio.wait_for(asyncio.to_thread(self.process.wait), 5)
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8,
+                          fee_difficulty_multiplier=2, connect_timeout=5,
+                          extra_args=("--tenant-profiles", str(path)))
+        restored = (await self.api("/api/status"))["tenant_fee"]["tenant-b"]
+        for field in ("user_accepted_shares", "fee_accepted_shares",
+                      "user_accepted_difficulty", "fee_accepted_difficulty",
+                      "eligible_user_difficulty", "outstanding_fee_difficulty"):
+            self.assertEqual(restored[field], budget[field], field)
+        report = await self.api("/api/audit-export")
+        self.assertEqual(report["audit"]["user_accepted_shares"], 203)
+        self.assertEqual(report["audit"]["fee_accepted_shares"], 1)
+
     async def test_aggregate_reconnects_and_multiplexes_valid_shares(self):
         from pow_validator import build_stratum_header
 
