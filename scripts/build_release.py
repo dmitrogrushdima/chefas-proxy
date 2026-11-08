@@ -205,12 +205,26 @@ def main():
         shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
         shutil.copyfile(ROOT / "docs" / "release.md", bundle / "RELEASE.md")
         example = {"pool_host": "stratum+tcp://POOL_HOST:3333",
-                   "listen_port": 3333, "active_router": True, "validate_pow": True,
+                   "listen_port": 3333, "active_router": True, "aggregate": True, "validate_pow": True,
                    "dashboard_port": 8080}
         (bundle / "chefas-proxy.example.json").write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
         (bundle / "chefas-proxy.service.example").write_text(service_text(), encoding="utf-8", newline="\n")
         if os.name == "nt":
-            (bundle / "start.cmd").write_text('@echo off\ncd /d "%~dp0"\n"%~dp0chefas-proxy.exe" %*\nif errorlevel 1 (\n  echo See RELEASE.md for configuration instructions.\n  pause\n)\n', encoding="ascii", newline="\r\n")
+            (bundle / "start.cmd").write_text(
+                '@echo off\ncd /d "%~dp0" || exit /b 1\n'
+                'if not exist chefas-proxy.json (\n'
+                '  copy /y chefas-proxy.example.json chefas-proxy.json >nul || exit /b 1\n'
+                '  echo Set your BTC pool in chefas-proxy.json, save it and run start.cmd again.\n'
+                '  start "" notepad.exe chefas-proxy.json\n'
+                '  pause\n  exit /b 0\n)\n'
+                'findstr /L /C:"POOL_HOST" chefas-proxy.json >nul\n'
+                'if not errorlevel 1 (\n'
+                '  echo Replace POOL_HOST in chefas-proxy.json before starting.\n'
+                '  start "" notepad.exe chefas-proxy.json\n'
+                '  pause\n  exit /b 1\n)\n'
+                '"%~dp0chefas-proxy.exe" %*\n'
+                'if errorlevel 1 (\n  echo See RELEASE.md for configuration instructions.\n  pause\n  exit /b 1\n)\n',
+                encoding="ascii", newline="\r\n")
         else:
             (bundle / "chefas-proxy.service").write_text(service_text(), encoding="utf-8", newline="\n")
             installer = bundle / "install.sh"

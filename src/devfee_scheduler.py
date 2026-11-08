@@ -443,7 +443,8 @@ class FeeWindows:
                 return False
             del group[worker]
             group[worker] = None
-            self.leases[worker] = self.clock() + self.ttl
+            duration = min(self.ttl, 15) if len(group) <= 5 else self.ttl
+            self.leases[worker] = self.clock() + duration
             return True
         return False
 

@@ -83,3 +83,24 @@ def test_large_group_admits_light_worker_and_skips_overweight_worker():
     assert not windows.acquire(0, 1)
     assert windows.acquire(1, 1)
     assert not windows.acquire(2, 1)
+
+
+def test_small_groups_have_short_windows_and_wait_for_full_quota():
+    for count in (1, 2, 3, 5):
+        clock = [0]
+        ledger = AcceptedWorkLedger()
+        windows = FeeWindows(FairnessAllocator(ledger), ttl=60, cooldown=5, overdraft=.02,
+                             clock=lambda: clock[0])
+        for worker in range(count):
+            windows.join(worker, 'group')
+        ledger.record('user', 97)
+        assert not windows.acquire(0, 1)
+        ledger.record('user', 1)
+        assert windows.acquire(0, 1)
+        clock[0] = 14.99
+        assert not windows.expired(0)
+        clock[0] = 15
+        assert windows.expired(0)
+        assert not windows.acquire(0, 1)
+        windows.end(0)
+        assert not windows.acquire(0, 1)

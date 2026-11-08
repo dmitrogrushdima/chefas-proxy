@@ -6,9 +6,11 @@ Keep the executable and its `_internal` directory together.
 
 ## Operator: three steps
 
-1. Unpack the **matching Windows x64 or Linux x64** release. Copy
-   `chefas-proxy.example.json` to `chefas-proxy.json`, replace `POOL_HOST`, and set the
-   pool address/port. The default Stratum listener binds to `0.0.0.0` and
+1. Unpack the **matching Windows x64 or Linux x64** release. On Windows,
+   `start.cmd` creates `chefas-proxy.json` on first launch and opens it for editing.
+   On Linux, copy `chefas-proxy.example.json` to `chefas-proxy.json` manually.
+   Replace `POOL_HOST` and set the pool address/port. Aggregation is enabled by
+   the release template. Set both `backup_host` and `backup_port` for Smart Failover. The default Stratum listener binds to `0.0.0.0` and
    accepts loopback and private IPv4 addresses. Use an explicit `allow_cidr`
    list to restrict access to the farm subnet (for example
    `["192.168.10.0/24"]`). ASIC wallet/worker credentials normally come from
@@ -129,7 +131,10 @@ operation; these remain pilot qualification tasks.
 
 `max_fee_window_seconds` defaults to 60, `fee_cooldown_seconds` to 5, and
 `fee_overdraft` to 0.02 of the expected next fee share. At most one ASIC per
-active user group works on the fee route. Above 50 group members, admission also
+active user group works on the fee route. Groups of up to five ASICs use
+a ceiling of 15 seconds or the configured ceiling if shorter. The quota still
+requires nearly one full fee share, so a small group with difficult fee work
+may wait longer or have fee windows with no accepted share. Above 50 group members, admission also
 requires that the candidate account for at most 3% of the group's measured user
 work in the last five minutes. A single ASIC in a small group can represent a
 larger instantaneous share. A bounded window limits time diverted, while
