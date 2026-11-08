@@ -7,20 +7,103 @@
 [![Version](https://img.shields.io/badge/version-0.1.0rc1-cb8b5f?style=flat-square)](docs/release.md)
 [![Stage](https://img.shields.io/badge/stage-pilot_candidate-64748b?style=flat-square)](docs/compatibility.md)
 [![Windows](https://img.shields.io/badge/Windows-x64-334155?style=flat-square)](docs/release.md)
-[![Linux](https://img.shields.io/badge/Linux-x64_build_target-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
+[![Linux](https://img.shields.io/badge/Ubuntu-24.04_x64_pilot-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](#license)
 
 [![Releases](https://img.shields.io/badge/GitHub-Releases-181717?style=flat-square&logo=github)](https://github.com/dmitrogrushdima/chefas-proxy/releases)
 [![Telegram](https://img.shields.io/badge/Telegram-News-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxy)
 [![Community](https://img.shields.io/badge/Telegram-Community-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxychat)
 
-[Quick start](#running-in-three-steps) · [Compatibility](#pools--hardware) · [Documentation](docs/README.md) · [Support development](#support-development)
+[Quick start](#install-on-your-farm) · [Установка на русском](#установка-на-ферме) · [Compatibility](#pools--hardware) · [Documentation](docs/README.md) · [Support development](#support-development)
 
 </div>
 
 **CHEFAS Proxy** sits between your Bitcoin ASICs and mining pools. Route connections, follow worker activity and inspect the DevFee ledger from a local dashboard. Built exclusively for **BTC · SHA-256d · Stratum V1**.
 
-> **Pilot candidate:** Windows standalone packaging has been tested. Linux deployment and physical ASIC/pool combinations still need qualification. Public downloads appear on Releases when published; this README does not announce a signed production release.
+> **Pilot candidate:** Windows x64 and Ubuntu 24.04 x64 packages have been
+> tested on the bench. Physical ASIC and pool combinations still need a farm pilot.
+
+## Install on your farm
+
+Open [GitHub Releases](https://github.com/dmitrogrushdima/chefas-proxy/releases) and
+look under **Assets** for your operating system.
+
+| Farm computer | Download |
+|---|---|
+| Windows x64 | `chefas-proxy-windows-x64.zip` |
+| Ubuntu 24.04 x64 | `chefas-proxy-linux-x64.tar.gz` |
+
+During the private pilot, get the same release archive from the maintainer if
+its asset is unavailable to you. GitHub's **Code → Download ZIP** and
+**Source code** assets contain the developer checkout. The standalone archives
+already include the runtime and dashboard. Keep the executable and `_internal`
+together after extraction.
+
+### Windows
+
+1. Extract the archive and run `start.cmd`.
+2. Enter your BTC pool host and port in the generated `chefas-proxy.json`.
+3. Run `start.cmd` again. Copy the `ASIC URL` for your farm network from the console.
+
+### Ubuntu
+
+1. Extract the archive and open a terminal in the extracted directory.
+2. Run `sudo bash install.sh`, then set your BTC pool in
+   `/etc/chefas-proxy/chefas-proxy.json`.
+3. Run `sudo systemctl enable --now chefas-proxy`. Find the `ASIC URL` with
+   `sudo journalctl -u chefas-proxy -n 30 --no-pager`.
+
+### Connect one ASIC first
+
+In the ASIC's pool settings, set `Pool 1` to the local proxy address, for example
+`stratum+tcp://192.168.1.50:3333`. Keep your existing pool worker and password.
+Keep the direct pool address in `Pool 2` as a fallback. Verify that your pool
+accepts work through CHEFAS before adding more ASICs.
+
+CHEFAS runs on the farm computer. The ASICs connect over the farm LAN and
+CHEFAS connects to the mining pool. There is no account with CHEFAS to create
+and no public IP to send to the maintainer. The dashboard is local at
+`http://127.0.0.1:8080` on the proxy computer.
+
+[Installation and checksum details](docs/release.md) · [Operator configuration](docs/quickstart.md)
+
+## Установка на ферме
+
+**1. Скачайте архив.** Откройте [Releases → Assets](https://github.com/dmitrogrushdima/chefas-proxy/releases).
+Для Windows x64 нужен `chefas-proxy-windows-x64.zip`, для Ubuntu 24.04 x64 —
+`chefas-proxy-linux-x64.tar.gz`. Если нужный файл ещё не выложен, возьмите
+готовый пилотный архив у сопровождающего проекта. Кнопка **Code → Download ZIP**
+скачивает исходники. В готовой сборке держите исполняемый файл рядом с `_internal`.
+
+**2. Запустите на компьютере в сети ASIC.** На Windows откройте `start.cmd`,
+укажите адрес и порт своего пула в созданном `chefas-proxy.json` и запустите
+`start.cmd` снова. На Ubuntu после распаковки выполните:
+
+```bash
+cd chefas-proxy-linux-x64
+sudo bash install.sh
+sudoedit /etc/chefas-proxy/chefas-proxy.json
+sudo systemctl enable --now chefas-proxy
+sudo journalctl -u chefas-proxy -n 30 --no-pager
+```
+
+Пример полей для основного пула ViaBTC:
+
+```json
+{
+  "pool_host": "btc.viabtc.io",
+  "pool_port": 3333
+}
+```
+
+**3. Подключите один ASIC.** Скопируйте из консоли или журнала строку
+`ASIC URL` для вашей сети, например `stratum+tcp://192.168.1.50:3333`.
+Впишите её в `Pool 1`, оставьте своё имя воркера и пароль, а прямой адрес
+пула сохраните в `Pool 2` как резерв. Когда пул примет первую шару, можно
+подключать остальные ASIC.
+
+Внешний IP, центральный сервер и установка Python оператору не нужны.
+Панель на компьютере с прокси доступна по `http://127.0.0.1:8080`.
 
 ## Built around your farm
 
@@ -34,24 +117,6 @@
 | **Private administration** | Admin authentication, read-only Observer Links, Kick and IP/CIDR blocking. |
 
 Dashboard languages: **English · Русский · 简体中文**. No cloud account is needed for the local dashboard.
-
-## Running in three steps
-
-### Windows x64
-
-1. **Unpack** a matching CHEFAS Proxy release ZIP. Keep `chefas-proxy.exe` beside its `_internal` folder.
-2. **Configure** `chefas-proxy.example.json` → `chefas-proxy.json` with your pool and permitted farm network; `.env.example` → `.env` with your own admin token and secrets. [Configuration guide →](docs/quickstart.md)
-3. **Run** `chefas-proxy.exe` (or `start.cmd` to keep startup errors visible). Open **http://127.0.0.1:8080**.
-
-### Linux x64 · pilot build target
-
-1. **Unpack** a matching Linux build into `/opt/chefas-proxy`.
-2. **Configure and install** the supplied service template, service account and private environment file. [Exact systemd setup →](docs/release.md#linux-service)
-3. **Start** with `sudo systemctl enable --now chefas-proxy`. Access the dashboard locally or through an SSH tunnel.
-
-**Point your ASIC here:** `stratum+tcp://PROXY_LAN_IP:3333`. Keep its normal user-pool worker name and password. Start with one pilot miner, compare accepted work at the pool, then expand.
-
-No separate Python installation is needed for a standalone package. Building from source is covered in the [release guide](docs/release.md).
 
 ## Pools & hardware
 
