@@ -1054,6 +1054,7 @@ class AggregateSession:
         self.fee_jobs = None
         self.fee_generation = None
         self.fee_task = None
+        self.fee_notify_task = None
         self.fee_disabled = False
         self.route = 'user'
         self.route_lock = asyncio.Lock()
@@ -1188,6 +1189,7 @@ class AggregateSession:
                 self.base_route = route
                 await self.switch_route(route, kind='failback' if route == 'user' else 'failover')
                 self.fee_windows.join(self.identity, id(self.binding(route)[0]))
+                self.offer_fee()
 
     async def watch_routes(self):
         while True:
@@ -1246,16 +1248,28 @@ class AggregateSession:
                 await self.switch_route(self.base_route)
                 if self.route == 'fee':
                     self.writer.close()
-            self.fee_windows.end(self.identity)
-            self.fee_windows.ready.pop(self.identity, None)
+            self.fee_windows.unavailable(self.identity)
 
     async def run_fee(self):
         while not self.writer.is_closing():
-            await self.run_fee_connection()
+            if await self.run_fee_connection():
+                return
             if not getattr(self.relay, 'fee_locked', False):
                 return
             await asyncio.sleep(30)
             self.fee_disabled = False
+
+    async def fee_disconnected(self):
+        group, self.fee_group = self.fee_group, None
+        await self.fee_unavailable()
+        if group is not None and not group.connection.closed:
+            await self.relay.shared_upstreams.release(group, self.identity)
+        if group is not None and getattr(self.relay, 'fee_locked', False) and not self.writer.is_closing():
+            async def retry():
+                await asyncio.sleep(30)
+                self.fee_disabled = False
+                await self.run_fee()
+            self.fee_task = asyncio.create_task(retry())
 
     async def run_fee_connection(self):
         group = None
@@ -1295,43 +1309,57 @@ class AggregateSession:
                 return
             self.fee_group = group
             self.fee_jobs = AggregatedJobRouter(self.lease, self.version_mask, ttl=self.relay.job_ttl)
-            group.subscribe(self.identity, self.notify_fee, self.fee_unavailable)
-            while not self.fee_disabled and not channel.closed and self.identity in group.subscribers:
-                await self.reconcile_fee()
-                await asyncio.sleep(.25)
+            group.watch(self.identity, self.notify_fee, self.fee_disconnected)
+            self.offer_fee()
+            return True
         except (OSError, ValueError, ProtocolError, asyncio.TimeoutError):
             self.relay.metrics.upstream_failures += 1
         finally:
-            try:
-                if not self.writer.is_closing():
-                    await self.fee_unavailable()
-            finally:
-                if group is not None:
-                    await self.relay.shared_upstreams.release(group, self.identity)
+            if group is not None and self.identity not in group.watchers:
+                await self.relay.shared_upstreams.release(group, self.identity)
+        return False
 
-    async def notify_fee(self, packet):
-        await self.notify(packet, 'fee')
+    def notify_fee(self, packet):
+        self.offer_fee()
+        if self.route == 'fee' and (self.fee_notify_task is None or self.fee_notify_task.done()):
+            async def publish_latest():
+                seen = None
+                try:
+                    while self.route == 'fee' and self.fee_ready():
+                        job = self.fee_group.connection.job
+                        if job is seen:
+                            return
+                        seen = job
+                        await self.notify(job, 'fee')
+                except (OSError, ValueError, asyncio.TimeoutError):
+                    self.writer.close()
+            self.fee_notify_task = asyncio.create_task(publish_latest())
 
     def fee_ready(self):
         return (self.base_route == 'user' and not self.fee_disabled and self.fee_group is not None
                 and not self.fee_group.connection.closed
-                and self.identity in self.fee_group.subscribers
+                and self.identity in self.fee_group.watchers
                 and self.fee_group.connection.job is not None)
 
-    async def reconcile_fee(self):
+    def offer_fee(self):
+        difficulty = self.fee_group.connection.job['difficulty'] if self.fee_ready() else None
+        self.fee_windows.offer(self.identity, difficulty, self.set_fee_window, id(self.fee_group))
+
+    async def set_fee_window(self, enabled):
         async with self.route_lock:
             windows = self.fee_windows
-            if self.pending_fee and not windows.expired(self.identity):
-                return
-            difficulty = self.fee_group.connection.job['difficulty'] if self.fee_ready() else None
-            want = windows.acquire(self.identity, difficulty)
-            route = 'fee' if want else self.base_route
-            if route != self.route:
-                await self.switch_route(route)
-            if not want:
+            try:
+                if enabled and self.identity in windows.leases and self.fee_ready():
+                    await self.switch_route('fee')
+                    if self.route == 'fee':
+                        return
                 if self.route == 'fee':
-                    self.writer.close()
-                windows.end(self.identity)
+                    await self.switch_route(self.base_route)
+                    if self.route == 'fee':
+                        self.writer.close()
+            except (OSError, ValueError, asyncio.TimeoutError):
+                self.writer.close()
+            windows.end(self.identity)
 
     async def authorize(self, ident, params):
         if self.agent is None or self.worker is not None or len(params) != 2 or not all(
@@ -1457,11 +1485,13 @@ class AggregateSession:
                                   stale=isinstance(response.get('error'), list) and response['error'][:1] == [21])
         await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency, fee_eligible=fee_eligible, tenant=self.tenant)
         await self.reply(ident, response.get('result'), response.get('error'))
-        if route == 'fee' and outcome != 'accepted':
-            await self.fee_unavailable()
+        if route == 'fee' and outcome != 'accepted' and self.fee_group is group:
+            await self.fee_disconnected()
         if self.backup_endpoint:
             await self.reconcile_base()
-        await self.reconcile_fee()
+        if route == 'fee' and outcome == 'accepted':
+            await self.set_fee_window(False)
+        self.fee_windows.wake()
 
     async def run(self):
         handshake_deadline = time.monotonic() + self.relay.handshake_timeout
@@ -1510,7 +1540,12 @@ class AggregateSession:
             if self.fee_task is not None:
                 self.fee_task.cancel()
                 await asyncio.gather(self.fee_task, return_exceptions=True)
+            if self.fee_notify_task is not None:
+                self.fee_notify_task.cancel()
+                await asyncio.gather(self.fee_notify_task, return_exceptions=True)
             self.fee_windows.leave(self.identity)
+            if self.fee_group is not None:
+                await self.relay.shared_upstreams.release(self.fee_group, self.identity)
             if self.group is not None:
                 await self.relay.shared_upstreams.release(self.group, self.identity)
             if self.backup_group is not None:

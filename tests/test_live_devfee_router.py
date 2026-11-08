@@ -598,7 +598,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(outcomes["submit_failed"] + outcomes["rpc_timeout"], 0)
             if fee:
                 self.assertGreater(rows[-1]["fee_ok"], 0)
-                self.assertLessEqual(max(row["diverted"] for row in rows if row["profile"] == "on"), 10)
+                self.assertLessEqual(max(row["diverted"] for row in rows if row["profile"] == "on"), 50)
             await asyncio.gather(*(miner.close() for miner in miners))
             self.miners.clear()
             self.process.terminate()

@@ -396,6 +396,8 @@ class Relay:
         One fleet timer avoids another permanent timer per ASIC. Each writer is
         independently scheduled, so a stalled ASIC cannot hold up its peers.
         """
+        if self.shared_upstreams is not None:
+            return
         cursor = 0
         while True:
             await asyncio.sleep(.5)

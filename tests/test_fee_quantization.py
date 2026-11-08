@@ -142,3 +142,42 @@ def test_sqlite_restores_each_tenant_quota_independently(tmp_path):
             await journal.close()
 
     asyncio.run(scenario())
+
+
+def test_event_fee_scheduler_caps_fleet_and_rotates_shards():
+    import asyncio
+    from collections import Counter
+    from devfee_scheduler import EventFeeWindows, FeeCapacity
+
+    async def scenario():
+        ledger = AcceptedWorkLedger()
+        ledger.record("user", 9900)
+        capacity = FeeCapacity()
+        windows = EventFeeWindows(FairnessAllocator(ledger), .025, .05, 0, capacity)
+        activated = []
+        ended = []
+
+        def callback(worker):
+            async def transition(enabled):
+                if enabled:
+                    activated.append(worker)
+                else:
+                    ended.append(worker)
+                    windows.end(worker)
+            return transition
+
+        for worker in range(2500):
+            windows.join(worker, worker // 250)
+            windows.offer(worker, 1, callback(worker), worker // 250)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(activated) == capacity.active == 50
+        assert Counter(worker // 250 for worker in activated) == {shard: 5 for shard in range(10)}
+        await asyncio.sleep(.035)
+        assert len(ended) >= 50
+        assert len(set(activated)) == len(activated)
+        for worker in range(2500):
+            windows.leave(worker)
+        assert capacity.active == capacity.workers == 0
+
+    asyncio.run(scenario())

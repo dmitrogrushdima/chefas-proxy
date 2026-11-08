@@ -26,7 +26,7 @@ from secret_store import load_environment, SecretConfigurationError
 from pilot_logging import PilotLogging, SafeQueueHandler, event
 from shutdown_signals import ShutdownSignals
 from upstream_manager import open_upstream, parse_endpoint
-from devfee_scheduler import FeeConnectionGate, FeeWindows
+from devfee_scheduler import FeeConnectionGate, EventFeeWindows, FeeCapacity
 from hardware_compatibility import CompatibilityRegistry
 
 LOG = logging.getLogger("mining_proxy")
@@ -145,8 +145,8 @@ def load_tenant_profiles(path, primary_port, relay, args):
         ledger = AcceptedWorkLedger(args.fee_min_work)
         allocator = FairnessAllocator(ledger, max_active=relay.limit, max_pending=relay.limit)
         profiles[name] = dict(port=port, endpoint=(host, pool_port), backup=backup, worker=worker, allowed=allowed,
-                              windows=FeeWindows(allocator, args.max_fee_window_seconds,
-                                                 args.fee_cooldown_seconds, args.fee_overdraft))
+                              windows=EventFeeWindows(allocator, args.max_fee_window_seconds,
+                                                      args.fee_cooldown_seconds, args.fee_overdraft, relay.fee_capacity))
         ports.add(port)
     return profiles
 
@@ -205,8 +205,10 @@ async def run(args, stop_event=None):
     relay.fee_blocked = False
     relay.ledger = AcceptedWorkLedger(args.fee_min_work)
     relay.fee_allocator = FairnessAllocator(relay.ledger, max_active=relay.limit, max_pending=relay.limit)
-    relay.fee_windows = FeeWindows(relay.fee_allocator, getattr(args, "max_fee_window_seconds", 60),
-                                   getattr(args, "fee_cooldown_seconds", 5), getattr(args, "fee_overdraft", .02))
+    relay.fee_capacity = FeeCapacity()
+    relay.fee_windows = EventFeeWindows(relay.fee_allocator, getattr(args, "max_fee_window_seconds", 60),
+                                        getattr(args, "fee_cooldown_seconds", 5), getattr(args, "fee_overdraft", .02),
+                                        relay.fee_capacity)
     history = HistoryStore(relay.workers, args.history_file) if args.history_file else None
     if history:
         history.load()
@@ -228,8 +230,8 @@ async def run(args, stop_event=None):
     if relay.route_configs:
         main_ledger = AcceptedWorkLedger(args.fee_min_work)
         main_allocator = FairnessAllocator(main_ledger, max_active=relay.limit, max_pending=relay.limit)
-        relay.main_fee_windows = FeeWindows(main_allocator, args.max_fee_window_seconds,
-                                           args.fee_cooldown_seconds, args.fee_overdraft)
+        relay.main_fee_windows = EventFeeWindows(main_allocator, args.max_fee_window_seconds,
+                                                args.fee_cooldown_seconds, args.fee_overdraft, relay.fee_capacity)
     journal = None
     if args.active_router:
         relay.metrics._ledger = relay.ledger
@@ -342,6 +344,39 @@ async def run(args, stop_event=None):
         if history:
             await history.close()
         event(logging.INFO, "proxy_stopped", accepted=relay.metrics.accepted, rejected=relay.metrics.rejected)
+
+
+def run_event_loop(args):
+    if sys.platform != "win32" or not args.aggregate:
+        asyncio.run(run_cli(args), debug=False)
+        return
+
+    from asyncio.proactor_events import _ProactorSocketTransport
+
+    class CompactTransport(_ProactorSocketTransport):
+        def __init__(self, *parameters):
+            super().__init__(*parameters)
+            # CPython schedules the first overlapped read with call_soon.
+            # Shrink only the known receive buffer before that callback runs.
+            if isinstance(getattr(self, "_data", None), bytearray):
+                self._data = bytearray(8192)
+
+    class CompactLoop(asyncio.ProactorEventLoop):
+        def _make_socket_transport(self, sock, protocol, waiter=None, extra=None, server=None):
+            if server is None:
+                return super()._make_socket_transport(sock, protocol, waiter, extra, server)
+            return CompactTransport(self, sock, protocol, waiter, extra, server)
+
+    class CompactPolicy(asyncio.WindowsProactorEventLoopPolicy):
+        def new_event_loop(self):
+            return CompactLoop()
+
+    original = asyncio.get_event_loop_policy()
+    try:
+        asyncio.set_event_loop_policy(CompactPolicy())
+        asyncio.run(run_cli(args), debug=False)
+    finally:
+        asyncio.set_event_loop_policy(original)
 
 
 async def run_cli(args):
@@ -513,7 +548,7 @@ def main():
     pilot = None
     try:
         pilot = PilotLogging(args.log_dir, args.log_level)
-        asyncio.run(run_cli(args))
+        run_event_loop(args)
     except KeyboardInterrupt:
         pass
     except (SecretConfigurationError, ValueError, OSError):

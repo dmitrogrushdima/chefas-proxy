@@ -89,6 +89,7 @@ class SharedUpstreamGroup:
         self.connection = connection
         self.partitioner = partitioner
         self.subscribers = {}
+        self.watchers = {}
         self._upstream_notification = connection.on_notification
         self._upstream_disconnect = connection.on_disconnect
         connection.on_notification = self._notification
@@ -96,9 +97,11 @@ class SharedUpstreamGroup:
 
     async def _disconnect(self, connection):
         subscribers = list(self.subscribers.items())
-        for session_id, _ in subscribers:
+        watchers = list(self.watchers.items())
+        for session_id, _ in subscribers + watchers:
             self.unsubscribe(session_id)
         await asyncio.gather(*(entry[2]() for _, entry in subscribers), return_exceptions=True)
+        await asyncio.gather(*(entry[1]() for _, entry in watchers), return_exceptions=True)
         await self._upstream_disconnect(connection)
 
     async def _notification(self, connection, packet):
@@ -113,6 +116,9 @@ class SharedUpstreamGroup:
             metrics.wan_shared_broadcast_bytes += size
             metrics.wan_direct_broadcast_bytes += size * len(self.subscribers)
         await self._upstream_notification(connection, packet)
+        if packet.get("method") == "mining.notify":
+            for notify, _ in self.watchers.values():
+                notify(packet)
         for session_id, (queue, task, on_failure) in list(self.subscribers.items()):
             try:
                 queue.put_nowait(copy.deepcopy(packet))
@@ -139,7 +145,11 @@ class SharedUpstreamGroup:
         task = asyncio.create_task(consume())
         self.subscribers[session_id] = (queue, task, on_failure)
 
+    def watch(self, session_id, on_notification, on_failure):
+        self.watchers[session_id] = (on_notification, on_failure)
+
     def unsubscribe(self, session_id):
+        self.watchers.pop(session_id, None)
         subscriber = self.subscribers.pop(session_id, None)
         if subscriber:
             subscriber[1].cancel()
@@ -156,7 +166,7 @@ class SharedUpstreamGroup:
 
     async def close(self):
         tasks = [entry[1] for entry in self.subscribers.values()]
-        for session_id in list(self.subscribers):
+        for session_id in (*self.subscribers, *self.watchers):
             self.unsubscribe(session_id)
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.connection.close()

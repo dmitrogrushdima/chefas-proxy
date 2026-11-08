@@ -14,7 +14,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
-from collections import deque
+from collections import OrderedDict, deque
 import string
 import heapq
 
@@ -452,6 +452,142 @@ class FeeWindows:
         if self.leases.pop(worker, None) is not None:
             self.cooling[worker] = self.clock() + self.cooldown
         self.allocator.release(worker)
+
+
+class FeeCapacity:
+    """Shared fleet limit across tenant schedulers."""
+
+    def __init__(self):
+        self.workers = 0
+        self.active = 0
+        self.schedulers = set()
+
+    def wake(self):
+        for scheduler in self.schedulers:
+            scheduler.wake()
+
+
+class EventFeeWindows:
+    """FIFO readiness, one timer per lease/cooldown, and bounded dispatch."""
+
+    def __init__(self, allocator, ttl, cooldown, overdraft, capacity):
+        self.allocator = allocator
+        self.ttl, self.cooldown = ttl, cooldown
+        self.overdraft = _difficulty(overdraft, allow_zero=True)
+        self.capacity = capacity
+        self.members, self.leases, self.cooling = {}, {}, {}
+        self.ready = OrderedDict()  # fee shard -> FIFO workers
+        self.candidates = {}
+        self.accepted_user_diff = {}
+        self.scheduled = False
+        capacity.schedulers.add(self)
+
+    def join(self, worker, group):
+        if worker not in self.members:
+            self.capacity.workers += 1
+        self.members[worker] = group
+        self.capacity.wake()
+
+    def leave(self, worker):
+        if self.members.pop(worker, None) is not None:
+            self.capacity.workers -= 1
+        self.unavailable(worker)
+        timer = self.cooling.pop(worker, None)
+        if timer is not None:
+            timer.cancel()
+        self.accepted_user_diff.pop(worker, None)
+        self.capacity.wake()
+
+    def observe(self, worker, difficulty):
+        if worker in self.members:
+            self.accepted_user_diff[worker] = self.accepted_user_diff.get(worker, 0) + _difficulty(difficulty)
+        self.wake()
+
+    def unqueue(self, worker):
+        candidate = self.candidates.get(worker)
+        if candidate is not None:
+            shard = candidate[2]
+            queue = self.ready.get(shard)
+            if queue is not None:
+                queue.pop(worker, None)
+                if not queue:
+                    self.ready.pop(shard)
+
+    def enqueue(self, worker):
+        shard = self.candidates[worker][2]
+        self.ready.setdefault(shard, OrderedDict()).setdefault(worker, None)
+        self.wake()
+
+    def offer(self, worker, difficulty, callback, shard):
+        if worker not in self.members:
+            return
+        if difficulty is None:
+            self.unqueue(worker)
+            self.candidates.pop(worker, None)
+            if worker in self.leases:
+                self.expire(worker)
+            return
+        previous = self.candidates.get(worker)
+        if previous is not None and previous[2] != shard:
+            self.unqueue(worker)
+        self.candidates[worker] = (_difficulty(difficulty), callback, shard)
+        if worker not in self.cooling and worker not in self.leases:
+            self.enqueue(worker)
+
+    def unavailable(self, worker):
+        self.unqueue(worker)
+        self.candidates.pop(worker, None)
+        self.end(worker)
+
+    def wake(self):
+        if self.ready and not self.scheduled:
+            self.scheduled = True
+            asyncio.get_running_loop().call_soon(self.dispatch)
+
+    def dispatch(self):
+        self.scheduled = False
+        limit = (self.capacity.workers + 49) // 50
+        while self.ready and self.capacity.active < limit and self.allocator.ledger.should_fee():
+            shard = next(iter(self.ready))
+            queue = self.ready[shard]
+            worker = next(iter(queue))
+            work, callback, _ = self.candidates[worker]
+            budget = self.allocator.outstanding - self.allocator.reserved
+            if budget <= 0 or budget < work * (1 - self.overdraft):
+                return
+            if not self.allocator.acquire(worker, work):
+                return
+            self.unqueue(worker)
+            if shard in self.ready:
+                self.ready.move_to_end(shard)
+            self.capacity.active += 1
+            duration = min(self.ttl, 15) if len(self.members) <= 5 else self.ttl
+            timer = asyncio.get_running_loop().call_later(duration, self.expire, worker)
+            self.leases[worker] = (timer, callback)
+            asyncio.create_task(callback(True))
+
+    def expire(self, worker):
+        lease = self.leases.get(worker)
+        if lease is not None and not lease[0].cancelled():
+            lease[0].cancel()
+            asyncio.create_task(lease[1](False))
+
+    def end(self, worker):
+        lease = self.leases.pop(worker, None)
+        self.allocator.release(worker)
+        if lease is None:
+            return
+        lease[0].cancel()
+        self.capacity.active -= 1
+        if worker in self.candidates:
+            self.cooling[worker] = asyncio.get_running_loop().call_later(
+                self.cooldown, self.cooldown_done, worker)
+        self.capacity.wake()
+
+    def cooldown_done(self, worker):
+        self.cooling.pop(worker, None)
+        if worker in self.candidates and worker in self.members:
+            self.enqueue(worker)
 
 
 class StableFeeSlots:
