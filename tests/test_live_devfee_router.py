@@ -644,6 +644,57 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budgets['tenant-b']['user_accepted_shares'], 1)
         self.assertEqual(budgets['tenant-b']['fee_accepted_shares'], 0)
 
+    async def test_tenant_fee_quota_isolated_on_shared_fee_socket_with_vardiff(self):
+        from pow_validator import build_stratum_header
+
+        tenant_pool = await self.pool("33333333", "user.worker")
+        tenant_pool.extra_size = 8
+        tenant_port, = unused_ports(1)
+        path = Path(self.history.name) / "tenants.json"
+        path.write_text(json.dumps({"tenant-b": {"listen_port": tenant_port,
+                            "pool_host": "127.0.0.1", "pool_port": tenant_pool.port}}))
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8,
+                          fee_difficulty_multiplier=2, connect_timeout=5,
+                          extra_args=("--tenant-profiles", str(path)))
+        a, b = [Miner(port, hot=False) for port in (self.port, tenant_port)]
+        self.miners.extend((a, b))
+        await asyncio.gather(a.connect(), b.connect())
+        deadline = time.monotonic() + 5
+        while not self.fee_pool.authorize_requests and time.monotonic() < deadline:
+            await asyncio.sleep(.02)
+        self.assertEqual(self.fee_pool.authorize_requests, ["fee.worker"])
+        await asyncio.sleep(.25)
+        nonces = {a: 0, b: 0}
+
+        async def accepted(miner, job, target):
+            params = job["params"]
+            ex2 = "00" * job["size"]
+            start = nonces[miner]
+            value = next(i for i in range(start, start + 100000) if meets_target(
+                build_stratum_header(params, miner.extra, ex2, NTIME, f"{i:08x}"), target))
+            nonces[miner] = value + 1
+            result = await miner.submit([miner.worker, params[0], ex2, NTIME, f"{value:08x}"])
+            self.assertIs(result["result"], True, result)
+
+        original_a, original_b = a.job, b.job
+        for _ in range(4):
+            await accepted(a, original_a, SHARE_TARGET)
+        for _ in range(198):
+            await accepted(b, original_b, SHARE_TARGET)
+        deadline = time.monotonic() + 5
+        while not b.job["params"][0].startswith("f") and time.monotonic() < deadline:
+            await asyncio.sleep(.02)
+        self.assertTrue(b.job["params"][0].startswith("f"))
+        self.assertTrue(a.job["params"][0].startswith("u"))
+        await accepted(a, original_a, SHARE_TARGET)
+        await accepted(b, b.job, SHARE_TARGET // 2)
+        self.assertEqual((self.user_pool.accepted, tenant_pool.accepted, self.fee_pool.accepted), (5, 198, 1))
+        self.assertEqual(self.user_pool.rejected + tenant_pool.rejected + self.fee_pool.rejected, 0)
+        budget = (await self.api("/api/status"))["tenant_fee"]["tenant-b"]
+        self.assertEqual(budget["fee_accepted_shares"], 1)
+        self.assertAlmostEqual(budget["fee_percentage"], 1.0)
+        self.assertFalse(a.closed.is_set() or b.closed.is_set())
+
     async def test_aggregate_reconnects_and_multiplexes_valid_shares(self):
         from pow_validator import build_stratum_header
 
