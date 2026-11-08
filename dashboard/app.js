@@ -326,6 +326,9 @@ async function runStream(controller) {
 async function loadConfig() {
   routeConfig = await api("/api/config");
   $("tp-mode").checked = !!routeConfig.tp_mode;
+  $("tp-form").style.display = routeConfig.fee_locked ? "none" : "";
+  $("fee-enabled").closest("label").style.display = routeConfig.fee_locked ? "none" : "";
+  $("fee-fields").style.display = routeConfig.fee_locked ? "none" : "";
   for (const [prefix, route] of [["user", routeConfig.user_pool], ["fee", routeConfig.devfee_pool]]) {
     $(prefix + "-host").value = route?.host || "";
     $(prefix + "-port").value = route?.port || "";
@@ -383,7 +386,7 @@ $("route-form").addEventListener("submit", async (event) => {
   };
   try {
     await api("/api/config", {generation: routeConfig.generation, user_pool: route("user"),
-      devfee_pool: $("fee-enabled").checked ? route("fee") : null, reconnect: $("route-reconnect").checked});
+      ...(!routeConfig?.fee_locked && {devfee_pool: $("fee-enabled").checked ? route("fee") : null}), reconnect: $("route-reconnect").checked});
     await loadConfig(); managementMessage(t("Routes saved"));
   } catch (error) { managementMessage(error.message); }
 });

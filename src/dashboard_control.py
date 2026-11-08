@@ -44,12 +44,14 @@ class DashboardControl:
             mode = data.get("tp_mode", self.relay.tp_mode)
             if type(mode) is not bool:
                 raise ValueError("invalid TP mode")
-            self.relay.tp_mode = self.relay.tp_mode or mode
+            self.relay.tp_mode = not getattr(relay, "fee_locked", False) and (self.relay.tp_mode or mode)
             stored_routes = data.get('routes')
             self.route_data = self.secrets.open_routes(stored_routes)
             if self.route_data is not None:
                 user = PoolRoute.parse(self.route_data['user_pool'])
-                fee = PoolRoute.parse(self.route_data['devfee_pool']) if self.route_data['devfee_pool'] is not None else None
+                _, fee = current_pool_routes(relay)
+                if not getattr(relay, 'fee_locked', False):
+                    fee = PoolRoute.parse(self.route_data['devfee_pool']) if self.route_data['devfee_pool'] is not None else None
                 if getattr(relay, 'require_devfee', False) and fee is None:
                     raise ValueError('required fee route cannot be disabled')
                 apply_pool_routes(relay, user, fee)
@@ -118,13 +120,16 @@ class DashboardControl:
     def public_config(self):
         user, fee = current_pool_routes(self.relay)
         return {'tp_mode': self.relay.tp_mode, 'generation': getattr(self.relay, 'route_generation', 0), 'user_pool': user.export(),
-                'devfee_pool': fee.export() if fee else None, 'require_devfee': getattr(self.relay, 'require_devfee', False)}
+                'devfee_pool': fee.export() if fee and not getattr(self.relay, 'fee_locked', False) else None,
+                'fee_locked': getattr(self.relay, 'fee_locked', False), 'require_devfee': getattr(self.relay, 'require_devfee', False)}
 
     async def mutate(self, path, data):
         if path == '/api/mode':
             if set(data) != {'tp_mode'} or type(data['tp_mode']) is not bool:
                 raise ValueError('boolean tp_mode required')
             mode = data['tp_mode']
+            if getattr(self.relay, "fee_locked", False) and mode:
+                raise ValueError("Transparent mode is locked")
             await asyncio.to_thread(self.save, self.relay.blacklist, self.tokens, tp_mode=mode)
             self.relay.tp_mode = mode
             event(logging.INFO, 'tp_mode_changed', enabled=mode, scope='new_sessions')
@@ -183,6 +188,8 @@ class DashboardControl:
             user, fee = current_pool_routes(self.relay)
             if 'user_pool' in data:
                 user = PoolRoute.parse(data['user_pool'], user)
+            if 'devfee_pool' in data and getattr(self.relay, 'fee_locked', False):
+                raise ValueError('Fee route is locked')
             if 'devfee_pool' in data:
                 fee = PoolRoute.parse(data['devfee_pool'], fee) if data['devfee_pool'] is not None else None
             if fee is not None and not fee.worker:
@@ -192,10 +199,10 @@ class DashboardControl:
             if getattr(self.relay, 'require_devfee', False) and fee is None:
                 raise ValueError('required fee cannot be disabled')
             await asyncio.wait_for(self._probe(user), 4)
-            if fee:
+            if fee and not getattr(self.relay, "fee_locked", False):
                 await asyncio.wait_for(self._probe(fee), 4)
             generation = getattr(self.relay, 'route_generation', 0) + 1
-            stored = {'user_pool': user.export(True), 'devfee_pool': fee.export(True) if fee else None}
+            stored = {'user_pool': user.export(True), 'devfee_pool': fee.export(True) if fee and not getattr(self.relay, 'fee_locked', False) else None}
             await asyncio.to_thread(self.save, self.relay.blacklist, self.tokens, stored, generation)
             self.route_data = stored
             apply_pool_routes(self.relay, user, fee)

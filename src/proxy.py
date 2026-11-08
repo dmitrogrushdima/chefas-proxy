@@ -10,6 +10,11 @@ import socket
 import errno
 import ipaddress
 import os
+import sys
+import hashlib
+import hmac
+import subprocess
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from observer import Metrics, Observer, WorkAudit
 from stratum_session import Relay, HALF_CLOSE_GRACE
@@ -20,12 +25,20 @@ from history_store import DevFeeJournal, HistoryStore
 from secret_store import load_environment, SecretConfigurationError
 from pilot_logging import PilotLogging, SafeQueueHandler, event
 from shutdown_signals import ShutdownSignals
-from upstream_manager import parse_endpoint
+from upstream_manager import open_upstream, parse_endpoint
 from devfee_scheduler import FeeConnectionGate, FeeWindows
 from hardware_compatibility import CompatibilityRegistry
 
 LOG = logging.getLogger("mining_proxy")
 DEFAULT_LAN_CIDRS = ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+
+
+def release_fee_locked():
+    if not getattr(sys, "frozen", False):
+        return False
+    token = os.environ.get("CHEFAS_PROXY_DEVELOPER_KEY", "")
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    return not hmac.compare_digest(digest, "bd3911dc32201b4331c3e296c971e5230663eea0d3c1f9c34b4baa7483343d56")
 
 
 def is_loopback_bind(host):
@@ -47,6 +60,52 @@ def fd_limit_warning(limit, soft_limit, upstreams_per_session=1):
     return None
 
 
+
+
+def pilot_ipv4_addresses(bind):
+    if bind != "0.0.0.0":
+        return [bind]
+    if sys.platform == "win32":
+        command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                   "Get-NetIPAddress -AddressFamily IPv4 | Select-Object -ExpandProperty IPAddress"]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5,
+                                    creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+            return sorted({str(ipaddress.IPv4Address(line.strip())) for line in result.stdout.splitlines()
+                           if line.strip()})
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass
+    return sorted({item[4][0] for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)})
+
+
+async def pilot_preflight(relay, bind, port):
+    try:
+        for address in await asyncio.to_thread(pilot_ipv4_addresses, bind):
+            if not ipaddress.ip_address(address).is_loopback:
+                print(f"[PREFLIGHT] ASIC URL: stratum+tcp://{address}:{port}", flush=True)
+    except (OSError, ValueError):
+        print("[PREFLIGHT] Local IPv4 discovery failed", flush=True)
+
+    async def probe(name, endpoint):
+        if endpoint is None:
+            print(f"[PREFLIGHT] {name}: not configured", flush=True)
+            return False
+        started = time.monotonic()
+        transport = "TLS" if relay.tls or parse_endpoint(*endpoint)[2] else "TCP"
+        try:
+            _, writer = await open_upstream(endpoint, relay.tls_context, min(4, relay.timeout),
+                                            relay.url_tls_context, relay.resolver,
+                                            address_guard=relay.is_self_route)
+            writer.close()
+        except (OSError, ValueError, asyncio.TimeoutError):
+            print(f"[PREFLIGHT] {name}: {transport} unavailable", flush=True)
+            return False
+        print(f"[PREFLIGHT] {name}: {transport} OK ({(time.monotonic() - started) * 1000:.0f} ms)", flush=True)
+        return True
+
+    _, backup_ok = await asyncio.gather(probe("Primary", (relay.host, relay.port)),
+                                        probe("Backup", relay.backup))
+    return backup_ok
 
 
 async def run(args, stop_event=None):
@@ -88,6 +147,7 @@ async def run(args, stop_event=None):
         getattr(args, 'failover_max_rtt', 2),
         getattr(args, 'failover_recovery', 30),
     )
+    relay.fee_locked = getattr(args, "fee_locked", False)
     relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
     relay.fee_worker = args.devfee_worker
     relay.fee_worker_template = getattr(args,'devfee_worker_template',None)
@@ -160,6 +220,30 @@ async def run(args, stop_event=None):
                   coalesced_read_batches=relay.metrics.coalesced_read_batches,
                   coalesced_extra_messages=relay.metrics.coalesced_extra_messages,
                   logging_dropped=getattr(relay.metrics._log_handler, "dropped", 0))
+    async def pilot_summaries():
+        handler = RotatingFileHandler(Path(args.log_dir) / "pilot-summary.log", maxBytes=1024 * 1024,
+                                      backupCount=3, encoding="utf-8")
+        try:
+            backup_ok = await pilot_preflight(relay, args.listen_host, args.listen_port)
+            while True:
+                metrics = relay.metrics
+                lan = metrics.lan_rx_bytes + metrics.lan_tx_bytes
+                wan = metrics.wan_rx_bytes + metrics.wan_tx_bytes
+                saving = f"{100 * (1 - wan / lan):.1f}% est." if lan else "n/a"
+                groups = relay.shared_upstreams.groups if relay.shared_upstreams else ()
+                sockets = sum(not group.connection.closed for group in groups)
+                active = sum(session["worker"] is not None for session in relay.sessions.values())
+                failover = ("Not configured" if relay.backup is None else
+                            "Ready (probe)" if backup_ok else "Unreachable at startup")
+                line = (f"[PILOT] ASICs: {active} | Sockets: {sockets} | Traffic saved: {saving} | "
+                        f"Shares OK/Rej: {metrics.accepted}/{metrics.rejected} | Failover: {failover}")
+                print(line, flush=True)
+                handler.emit(logging.LogRecord("pilot", logging.INFO, "", 0, line, (), None))
+                await asyncio.sleep(60)
+        finally:
+            handler.close()
+
+    pilot_task = asyncio.create_task(pilot_summaries()) if getattr(args, "pilot_console", False) else None
     summary = asyncio.create_task(summaries())
     fleet = asyncio.create_task(relay.reconcile_idle_fee_sessions())
     try:
@@ -171,7 +255,9 @@ async def run(args, stop_event=None):
     finally:
         summary.cancel()
         fleet.cancel()
-        await asyncio.gather(summary, fleet, return_exceptions=True)
+        if pilot_task is not None:
+            pilot_task.cancel()
+        await asyncio.gather(summary, fleet, *((pilot_task,) if pilot_task else ()), return_exceptions=True)
         server.close()
         dashboard.close()
         await server.wait_closed()
@@ -202,7 +288,7 @@ async def run_cli(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="chefas-proxy", description=__doc__)
+    parser = argparse.ArgumentParser(prog="chefas-proxy", description=__doc__, allow_abbrev=False)
     parser.add_argument("--pool-host", required=True)
     parser.add_argument("--env-file", default=".env", help="Explicit dotenv path; server ENV takes priority; empty disables")
     parser.add_argument("--log-dir", default="logs")
@@ -261,7 +347,17 @@ def main():
                         help="Allow miner source network (repeatable, e.g. 192.168.10.0/24)")
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
+    parser.add_argument("--pilot-console", action="store_true")
     args = parser.parse_args()
+    args.fee_locked = release_fee_locked()
+    if args.fee_locked:
+        protected = ("--devfee", "--fee-", "--require-devfee", "--max-fee-window", "--tp-mode", "--transparent")
+        if any(arg.startswith(protected) for arg in sys.argv[1:]):
+            parser.error("Fee policy and transparent mode are locked in the operator release")
+        args.active_router = args.aggregate = args.validate_pow = True
+        args.devfee_host, args.devfee_port = "stratum+ssl://btc-ssl.viabtc.io", 551
+        args.devfee_worker = "chefasfee.001"
+        args.devfee_jitter_seconds = 15
     if not 0 <= args.asic_extranonce2_min <= args.asic_extranonce2_max <= 32:
         parser.error('ASIC extranonce2 bounds must satisfy 0 <= min <= max <= 32')
     for role in ('pool', 'backup', 'devfee'):
@@ -283,14 +379,14 @@ def main():
     tp_env = os.environ.get("TP_MODE", "false").lower()
     if tp_env not in ("true", "false"):
         parser.error("TP_MODE must be true or false")
-    args.tp_mode = args.tp_mode or tp_env == "true"
+    args.tp_mode = not args.fee_locked and (args.tp_mode or tp_env == "true")
     if args.aggregate and (not args.active_router or args.tp_mode):
         parser.error('--aggregate requires --active-router without TP mode')
     if args.aggregate and (args.require_devfee or args.devfee_worker_template):
         parser.error('--aggregate requires optional DevFee and a fixed fee worker')
     if args.tp_mode:
         args.require_devfee = False
-    args.devfee_password = os.environ.get("CHEFAS_PROXY_DEVFEE_PASSWORD", "x")
+    args.devfee_password = "d=32768" if args.fee_locked else os.environ.get("CHEFAS_PROXY_DEVFEE_PASSWORD", "x")
     if not math.isfinite(args.miner_timeout) or (args.miner_timeout != 0 and not .1 <= args.miner_timeout <= 86400):
         parser.error("--miner-timeout must be 0 or .1..86400")
     if not math.isfinite(args.handshake_timeout) or not .1 <= args.handshake_timeout <= 300:

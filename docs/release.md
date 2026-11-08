@@ -18,9 +18,10 @@ Keep the executable and its `_internal` directory together.
 2. Copy `.env.example` to `.env`, generate your own admin token and encryption
    key, and set `CHEFAS_PROXY_ADMIN_TOKEN` / `CHEFAS_PROXY_SECRETS_KEY`. Restrict the file to
    the service owner. Never place tokens or passwords in `chefas-proxy.json`. DevFee
-   requires `devfee_host`, `devfee_port`, and `devfee_worker`; its password is
-   `CHEFAS_PROXY_DEVFEE_PASSWORD` in ENV. Pool credentials saved by the routing API
-   use the existing encrypted secret store.
+   targets 1% of accepted difficulty and is built into the operator release.
+   The operator JSON configures the customer routes and listener. The release
+   attempts verified TLS to ViaBTC and can fall back to TCP. Pool credentials
+   saved by the routing API use the encrypted secret store.
 3. Run `start.cmd` / `chefas-proxy.exe` (Windows) or `./chefas-proxy` (Linux). `start.cmd`
    keeps the console open after startup errors. With `chefas-proxy.json` present
    it starts without CLI arguments. Open `http://127.0.0.1:8080`. The dashboard
@@ -126,6 +127,14 @@ and committed result locally.
 Standalone startup checks are packaging checks. They do not certify real ASIC
 compatibility, network throughput, Linux deployment, or unattended long-term
 operation; these remain pilot qualification tasks.
+
+### Pilot console
+
+The Windows launcher prints local ASIC URLs and primary/backup TCP or TLS
+connection timings. It then reports worker, shared-socket and share counts every
+minute in the console and in the rotating `logs/pilot-summary.log`. The traffic
+percentage compares observed LAN and WAN application bytes in this process.
+It is an estimate; use a matched 1:1 baseline to quantify savings.
 
 ### DevFee windows in aggregate mode
 

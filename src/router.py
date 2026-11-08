@@ -1234,16 +1234,46 @@ class AggregateSession:
             self.relay.fee_windows.ready.pop(self.identity, None)
 
     async def run_fee(self):
+        while not self.writer.is_closing():
+            await self.run_fee_connection()
+            if not getattr(self.relay, 'fee_locked', False):
+                return
+            await asyncio.sleep(30)
+            self.fee_disabled = False
+
+    async def run_fee_connection(self):
         group = None
         try:
             jitter = FeeJitter(self.relay.fee_jitter_seconds)
             await self.relay.fee_connection_gate.wait(jitter.remaining())
-            host, port, tls = parse_endpoint(*self.fee_endpoint)
-            key = AggregationKey(host, port, tls or self.relay.tls, self.fee_worker,
-                                 self.fee_password, version_mask=self.version_mask, user_agent=self.agent)
-            if key in self.base_keys.values():
-                return
-            group, _ = await self.relay.shared_upstreams.acquire(key, self.identity)
+            locked = getattr(self.relay, 'fee_locked', False)
+            endpoints = [self.fee_endpoint]
+            if locked:
+                endpoints.append(('btc.viabtc.com', 3333))
+            manager = self.relay.shared_upstreams
+            for index, endpoint in enumerate(endpoints):
+                host, port, tls = parse_endpoint(*endpoint)
+                key = AggregationKey(host, port, tls if locked else tls or self.relay.tls, self.fee_worker,
+                                     self.fee_password, version_mask=self.version_mask, user_agent=self.agent,
+                                     tls_policy='release-fee' if locked else 'default')
+                if key in self.base_keys.values():
+                    return
+                try:
+                    try:
+                        group, _ = await manager.acquire(key, self.identity)
+                    except SharedAuthorizationRejected:
+                        if not locked:
+                            raise
+                        from dataclasses import replace
+                        group, _ = await manager.acquire(replace(key, password='x'), self.identity)
+                    break
+                except ssl.SSLCertVerificationError:
+                    event(logging.WARNING, 'fee_tls_certificate_rejected', session_id=self.session['id'])
+                    if index == len(endpoints) - 1:
+                        raise
+                except (OSError, asyncio.TimeoutError):
+                    if index == len(endpoints) - 1:
+                        raise
             channel = group.connection
             if channel.extranonce2_size < len(self.prefix) // 2 + self.width:
                 return
@@ -1486,6 +1516,10 @@ async def probe_aggregate_mask(relay, endpoint, requested, minimum_bits):
             await channel.close()
 
 
+class SharedAuthorizationRejected(ProtocolError):
+    pass
+
+
 async def open_aggregate_channel(relay, key):
     """Pool-side state and its reader task live independently of any ASIC."""
     async def notification(channel, packet):
@@ -1517,8 +1551,9 @@ async def open_aggregate_channel(relay, key):
     host = key.host
     if key.use_tls:
         host = 'stratum+ssl://' + (f'[{host}]' if ':' in host else host)
-    reader, writer = await open_upstream((host, key.port), relay.tls_context, relay.timeout,
-                                         relay.url_tls_context, relay.resolver,
+    locked_fee = key.tls_policy == 'release-fee'
+    reader, writer = await open_upstream((host, key.port), None if locked_fee else relay.tls_context,
+                                         relay.timeout, None if locked_fee else relay.url_tls_context, relay.resolver,
                                          address_guard=relay.is_self_route)
     channel = UpstreamConnection(reader, writer, 'user', notification, disconnected,
                                  relay.timeout, metrics=relay.metrics)
@@ -1533,7 +1568,7 @@ async def open_aggregate_channel(relay, key):
         StatefulRouter.subscription_result(channel, response.get('result'))
         response = await channel.request('mining.authorize', [key.worker, key.password])
         if response.get('result') is not True or response.get('error') is not None:
-            raise ProtocolError('pool authorization rejected')
+            raise SharedAuthorizationRejected('pool authorization rejected')
         channel.authorized = True
         partitioner = NoncePartitioner(channel.extranonce1, channel.extranonce2_size, 0,
                                        maximum_workers=50)

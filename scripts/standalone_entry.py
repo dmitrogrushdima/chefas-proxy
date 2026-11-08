@@ -27,7 +27,7 @@ BOOLEAN_OPTIONS = {
 }
 
 
-def configuration_arguments(path):
+def configuration_arguments(path, *, fee_locked=False):
     """Only public CLI settings belong here; secrets stay in ENV / .env."""
     path = Path(path)
     if path.stat().st_size > 65536:
@@ -39,6 +39,9 @@ def configuration_arguments(path):
         config["tp_mode"] = config.pop("TP_MODE")
     if not isinstance(config, dict) or not set(config).issubset(CONFIG_OPTIONS):
         raise ValueError("Unknown configuration key; passwords and tokens belong in ENV")
+    if fee_locked and any(key.startswith(("devfee", "fee_", "max_fee_window")) or
+                          key in ("tp_mode", "require_devfee") for key in config):
+        raise ValueError("Fee policy and transparent mode are locked")
     result = []
     for key, value in config.items():
         option = "--" + key.replace("_", "-")
@@ -90,7 +93,7 @@ def main():
         if "--help" in remainder or "-h" in remainder:
             options = []
         elif known.config or path.exists():
-            options = configuration_arguments(path)
+            options = configuration_arguments(path, fee_locked=importlib.import_module("proxy").release_fee_locked())
             # State and dotenv paths are relative to the selected configuration.
             os.chdir(path.parent)
         elif not remainder:

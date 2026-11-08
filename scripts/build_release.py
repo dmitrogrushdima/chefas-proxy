@@ -222,7 +222,7 @@ def main():
                 '  echo Replace POOL_HOST in chefas-proxy.json before starting.\n'
                 '  start "" notepad.exe chefas-proxy.json\n'
                 '  pause\n  exit /b 1\n)\n'
-                '"%~dp0chefas-proxy.exe" %*\n'
+                '"%~dp0chefas-proxy.exe" --pilot-console %*\n'
                 'if errorlevel 1 (\n  echo See RELEASE.md for configuration instructions.\n  pause\n  exit /b 1\n)\n',
                 encoding="ascii", newline="\r\n")
         else:

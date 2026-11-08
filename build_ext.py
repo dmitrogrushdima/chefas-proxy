@@ -21,7 +21,6 @@ ENV_TEMPLATE = """# Set unique secrets on the machine running CHEFAS Proxy.
 # CHEFAS_PROXY_ADMIN_TOKEN=
 # CHEFAS_PROXY_SECRETS_KEY=
 CHEFAS_PROXY_USER_PASSWORD=x
-CHEFAS_PROXY_DEVFEE_PASSWORD=x
 """
 LAUNCHER = '''"""Launch the compiled CHEFAS Proxy runtime; source fallback is rejected."""
 import importlib

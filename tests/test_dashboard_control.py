@@ -42,6 +42,29 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'400', headers)
         self.assertTrue(self.relay.tp_mode)
 
+    async def test_operator_release_cannot_override_fee_through_dashboard_or_state(self):
+        self.relay.fee_locked = self.relay.active_router = True
+        self.relay.fee = ('stratum+ssl://fee.example', 551)
+        self.relay.fee_worker = 'release.worker'
+        self.control._probe = AsyncMock()
+        for path, payload in (('/api/mode', {'tp_mode': True}),
+                              ('/api/config', {'devfee_pool': None})):
+            headers, _ = await self.request(path, 'A'*32, payload)
+            self.assertIn(b'400', headers)
+        self.assertIsNone(self.control.public_config()['devfee_pool'])
+        headers, _ = await self.request('/api/config', 'A'*32,
+                                        {'user_pool': {'host': 'pool.example', 'port': 3333},
+                                         'reconnect': False})
+        self.assertIn(b'200', headers)
+        self.assertNotIn('release.worker', self.path.read_text())
+        self.assertEqual(self.relay.fee_worker, 'release.worker')
+        restored = Relay('127.0.0.1', 4444)
+        restored.fee_locked = True
+        restored.fee = self.relay.fee
+        restored.fee_worker = self.relay.fee_worker
+        DashboardControl(restored, self.stream, state_path=self.path, secret_store=self.secret_store)
+        self.assertEqual(restored.fee_worker, 'release.worker')
+
     async def request(self, path, token='', data=None, method=None):
         reader,writer=await asyncio.open_connection('127.0.0.1',self.port)
         try:

@@ -52,6 +52,12 @@ class ReleaseConfigurationTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 entry.configuration_arguments(self.config(value))
 
+    def test_operator_config_rejects_fee_and_transparent_overrides(self):
+        for value in ({"devfee_worker": "other.worker"}, {"fee_min_work": 999},
+                      {"require_devfee": False}, {"TP_MODE": True}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                entry.configuration_arguments(self.config(value), fee_locked=True)
+
     def test_oversized_config_and_source_fallback_are_rejected(self):
         path = self.config({"pool_host": "x" * 65536})
         with self.assertRaises(ValueError):
@@ -62,7 +68,8 @@ class ReleaseConfigurationTests(unittest.TestCase):
     def test_config_cli_override_and_state_directory(self):
         path = self.config({"pool_host": "example.invalid", "pool_port": 3333})
         captured = []
-        proxy = SimpleNamespace(main=lambda: captured.append((list(sys.argv), Path.cwd())))
+        proxy = SimpleNamespace(main=lambda: captured.append((list(sys.argv), Path.cwd())),
+                                release_fee_locked=lambda: False)
         original_directory = Path.cwd()
         try:
             with patch.object(sys, "argv", ["chefas-proxy", "--config", str(path), "--pool-port", "4444"]), \
