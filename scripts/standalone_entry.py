@@ -11,7 +11,7 @@ CORE_MODULES = ()  # Replaced in the staged entry point; never import src/ here.
 CONFIG_OPTIONS = {
     "tp_mode", "pool_host", "pool_port", "listen_host", "listen_port", "active_router", "aggregate",
     "validate_pow", "devfee_host", "devfee_port", "devfee_worker",
-    "devfee_worker_template",
+    "devfee_worker_template", "max_fee_window_seconds", "fee_cooldown_seconds", "fee_overdraft",
     "backup_host", "backup_port", "dashboard_port", "tls", "tls_ca_file",
     "failover_job_timeout", "failover_max_rtt", "failover_recovery",
     "max_connections", "connect_timeout", "miner_timeout", "handshake_timeout",

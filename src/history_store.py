@@ -102,6 +102,7 @@ class DevFeeJournal:
                 unknown INTEGER NOT NULL, difficulty TEXT NOT NULL,
                 PRIMARY KEY (day, route, pool)
             )''')
+            self.database.execute('CREATE TABLE IF NOT EXISTS fee_eligible_v1 (id INTEGER PRIMARY KEY, difficulty TEXT NOT NULL)')
             self.database.commit()
         except sqlite3.Error as exc:
             self.database.close()
@@ -110,7 +111,7 @@ class DevFeeJournal:
         self.error = None
         self.closed = False
 
-    def _commit(self, day, route, pool, outcome, difficulty):
+    def _commit(self, day, route, pool, outcome, difficulty, fee_eligible=False):
         key = (day, route, pool)
         with self.database:
             self.database.execute('BEGIN IMMEDIATE')
@@ -120,13 +121,17 @@ class DevFeeJournal:
             accepted, rejected, unknown, work = row or (0, 0, 0, '0')
             if outcome == 'accepted':
                 work = str(Fraction(work) + Fraction(str(difficulty)))
+            if outcome == 'accepted' and fee_eligible:
+                row = self.database.execute('SELECT difficulty FROM fee_eligible_v1 WHERE id=1').fetchone()
+                eligible = Fraction(row[0] if row else 0) + Fraction(str(difficulty))
+                self.database.execute('INSERT OR REPLACE INTO fee_eligible_v1 VALUES (1, ?)', (str(eligible),))
             self.database.execute('INSERT OR REPLACE INTO work_v1 VALUES (?, ?, ?, ?, ?, ?, ?)',
                                   (*key, accepted + (outcome == 'accepted'),
                                    rejected + (outcome == 'rejected'), unknown + (outcome == 'unknown'), work))
 
-    def _record(self, day, route, pool, outcome, difficulty):
+    def _record(self, day, route, pool, outcome, difficulty, fee_eligible=False):
         try:
-            self._commit(day, route, pool, outcome, difficulty)
+            self._commit(day, route, pool, outcome, difficulty, fee_eligible)
         except (sqlite3.Error, OSError, ValueError):
             if self.error is None:
                 logging.getLogger('mining_proxy').error('DevFee journal write failed')
@@ -134,10 +139,23 @@ class DevFeeJournal:
             return False
         return True
 
-    async def record(self, route, pool, outcome, difficulty):
+    async def record(self, route, pool, outcome, difficulty, fee_eligible=False):
         day = datetime.now(timezone.utc).date().isoformat()
         return await asyncio.shield(asyncio.get_running_loop().run_in_executor(
-            self.executor, self._record, day, route, pool, outcome, difficulty))
+            self.executor, self._record, day, route, pool, outcome, difficulty, fee_eligible))
+
+    def restore_budget(self, ledger):
+        rows = self.database.execute('SELECT route, accepted, difficulty FROM work_v1')
+        for route, accepted, difficulty in rows:
+            if route == "fee":
+                ledger.fee_work += Fraction(difficulty)
+                ledger.fee_shares += accepted
+            else:
+                ledger.user_work += Fraction(difficulty)
+                ledger.user_shares += accepted
+        row = self.database.execute('SELECT difficulty FROM fee_eligible_v1 WHERE id=1').fetchone()
+        ledger.eligible_user_work = Fraction(row[0]) if row else Fraction(0)
+        ledger._user_since_window = max(Fraction(0), ledger.eligible_user_work - 99 * ledger.fee_work)
 
     def _snapshot(self):
         totals = {}

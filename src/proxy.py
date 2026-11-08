@@ -21,7 +21,7 @@ from secret_store import load_environment, SecretConfigurationError
 from pilot_logging import PilotLogging, SafeQueueHandler, event
 from shutdown_signals import ShutdownSignals
 from upstream_manager import parse_endpoint
-from devfee_scheduler import FeeConnectionGate
+from devfee_scheduler import FeeConnectionGate, FeeWindows
 from hardware_compatibility import CompatibilityRegistry
 
 LOG = logging.getLogger("mining_proxy")
@@ -99,6 +99,8 @@ async def run(args, stop_event=None):
     relay.fee_blocked = False
     relay.ledger = AcceptedWorkLedger(args.fee_min_work)
     relay.fee_allocator = FairnessAllocator(relay.ledger, max_active=relay.limit, max_pending=relay.limit)
+    relay.fee_windows = FeeWindows(relay.fee_allocator, getattr(args, "max_fee_window_seconds", 60),
+                                   getattr(args, "fee_cooldown_seconds", 5), getattr(args, "fee_overdraft", .02))
     history = HistoryStore(relay.workers, args.history_file) if args.history_file else None
     if history:
         history.load()
@@ -125,6 +127,7 @@ async def run(args, stop_event=None):
             journal_path = Path(args.control_state).with_name('devfee.sqlite3')
         if journal_path:
             journal = DevFeeJournal(journal_path)
+            journal.restore_budget(relay.ledger)
             relay.metrics._devfee_journal = journal
     server = None
     try:
@@ -235,6 +238,9 @@ def main():
     parser.add_argument("--devfee-worker")
     parser.add_argument('--devfee-worker-template',help='Explicit fee session suffix, e.g. {worker}_{slot}; default preserves the account exactly')
     parser.add_argument("--fee-min-work", type=float, default=0)
+    parser.add_argument("--max-fee-window-seconds", type=float, default=60)
+    parser.add_argument("--fee-cooldown-seconds", type=float, default=5)
+    parser.add_argument("--fee-overdraft", type=float, default=.02, help="Fraction of one fee share allowed beyond quota")
     parser.add_argument("--require-devfee", action="store_true", help="Stop all active sessions after sustained DevFee failure; restart required")
     parser.add_argument("--fee-grace-seconds", type=float, default=180, help="DevFee outage/rejection grace in required mode")
     parser.add_argument("--reconnect-min-seconds", type=float, default=5940)
@@ -301,6 +307,8 @@ def main():
         parser.error("DevFee and PoW validation require --active-router")
     if args.active_router and args.idle_timeout:
         parser.error("--idle-timeout is not yet supported with --active-router")
+    if not 0.25 <= args.max_fee_window_seconds <= 3600 or not 0 <= args.fee_cooldown_seconds <= 3600 or not 0 <= args.fee_overdraft <= .1:
+        parser.error("invalid fee window, cooldown or overdraft")
     if not math.isfinite(args.fee_min_work) or args.fee_min_work < 0 or not math.isfinite(args.reconnect_min_seconds) or args.reconnect_min_seconds < 0:
         parser.error("fee work and reconnect interval must be finite and non-negative")
     if bool(args.backup_host) != bool(args.backup_port):

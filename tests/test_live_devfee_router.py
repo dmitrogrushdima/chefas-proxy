@@ -559,12 +559,14 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.process.kill()
         await asyncio.wait_for(asyncio.to_thread(self.process.wait), 5)
         await self.launch(fee=False, aggregate=True)
-        self.assertEqual((await self.api('/api/audit-export'))['persistent_work'], journal)
+        restored = await self.api('/api/audit-export')
+        self.assertEqual(restored['persistent_work'], journal)
+        self.assertAlmostEqual(restored['fee_percentage'], 100 / 101)
 
     async def test_aggregate_fee_disconnect_restores_user_job_on_same_socket(self):
         from pow_validator import build_stratum_header
 
-        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8)
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8, connect_timeout=5)
         miner = await self.miner(hot=False)
         prefix = miner.extra
         deadline = time.monotonic() + 5
@@ -574,9 +576,16 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.3)
         job = miner.job['params']
         extra2 = '00' * miner.extra_size
-        nonce = next(f'{i:08x}' for i in range(1000000) if meets_target(
-            build_stratum_header(job, prefix, extra2, NTIME, f'{i:08x}'), SHARE_TARGET))
-        self.assertIs((await miner.submit(['user.worker', job[0], extra2, NTIME, nonce]))['result'], True)
+        accepted = 0
+        for i in range(1000000):
+            nonce = f'{i:08x}'
+            if not meets_target(build_stratum_header(job, prefix, extra2, NTIME, nonce), SHARE_TARGET):
+                continue
+            self.assertIs((await miner.submit(['user.worker', job[0], extra2, NTIME, nonce]))['result'], True)
+            accepted += 1
+            if accepted == 98:
+                break
+        self.assertEqual(accepted, 98)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not miner.job['params'][0].startswith('f'):
             await asyncio.sleep(.02)

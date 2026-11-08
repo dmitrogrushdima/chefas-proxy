@@ -811,7 +811,8 @@ class StatefulRouter:
                 self.allocator.finish_submit(fee_token,outcome)
                 fee_token = None
             await self.relay.metrics.record_pool_reply(ch.target, getattr(ch, 'pool_label', 'unknown'),
-                                                      outcome, difficulty, latency / 1000)
+                                                      outcome, difficulty, latency / 1000,
+                                                      fee_eligible=ch.target != 'fee' and fee_available)
             await self.reply(ident, response)
             self.session['pending'] -= 1
             pending = False
@@ -1129,8 +1130,12 @@ class AggregateSession:
         params[0] = route[0] + params[0]
         if clean:
             params[8] = True
-        await self.send({'id': None, 'method': 'mining.set_difficulty', 'params': [local]},
-                        {'id': None, 'method': 'mining.notify', 'params': params})
+        notify = {'id': None, 'method': 'mining.notify', 'params': params}
+        if local == getattr(self, "last_local_difficulty", None):
+            await self.send(notify)
+        else:
+            await self.send({'id': None, 'method': 'mining.set_difficulty', 'params': [local]}, notify)
+            self.last_local_difficulty = local
 
     async def close_client(self):
         self.writer.close()
@@ -1165,8 +1170,8 @@ class AggregateSession:
                      'backup' if backup_ready else None)
             if route is not None and route != self.base_route:
                 self.base_route = route
-                self.relay.fee_allocator.release(self.session['id'])
                 await self.switch_route(route, kind='failback' if route == 'user' else 'failover')
+                self.relay.fee_windows.join(self.identity, id(self.binding(route)[0]))
 
     async def watch_routes(self):
         while True:
@@ -1187,6 +1192,8 @@ class AggregateSession:
             self.group, self.jobs, self.job_generation = group, jobs, None
         else:
             self.backup_group, self.backup_jobs, self.backup_generation = group, jobs, None
+        if route == self.base_route:
+            self.relay.fee_windows.join(self.identity, id(group))
         if channel.job is not None:
             await self.notify(channel.job, route)
 
@@ -1219,9 +1226,12 @@ class AggregateSession:
     async def fee_unavailable(self):
         async with self.route_lock:
             self.fee_disabled = True
-            self.relay.fee_allocator.release(self.session['id'])
             if self.route == 'fee':
                 await self.switch_route(self.base_route)
+                if self.route == 'fee':
+                    self.writer.close()
+            self.relay.fee_windows.end(self.identity)
+            self.relay.fee_windows.ready.pop(self.identity, None)
 
     async def run_fee(self):
         group = None
@@ -1264,13 +1274,18 @@ class AggregateSession:
 
     async def reconcile_fee(self):
         async with self.route_lock:
-            if self.pending_fee or not self.fee_ready():
+            windows = self.relay.fee_windows
+            if self.pending_fee and not windows.expired(self.identity):
                 return
-            fee_job = self.fee_group.connection.job
-            want = self.relay.fee_allocator.acquire(self.session['id'], fee_job['difficulty'])
+            difficulty = self.fee_group.connection.job['difficulty'] if self.fee_ready() else None
+            want = windows.acquire(self.identity, difficulty)
             route = 'fee' if want else self.base_route
             if route != self.route:
                 await self.switch_route(route)
+            if not want:
+                if self.route == 'fee':
+                    self.writer.close()
+                windows.end(self.identity)
 
     async def authorize(self, ident, params):
         if self.agent is None or self.worker is not None or len(params) != 2 or not all(
@@ -1354,7 +1369,7 @@ class AggregateSession:
         padding = channel.extranonce2_size - len(self.prefix) // 2 - self.width
         outbound[2] = self.prefix + outbound[2] + '00' * padding
         allocator = self.relay.fee_allocator
-        token = allocator.begin_submit(self.session['id'], difficulty) if route == 'fee' else None
+        token = allocator.begin_submit(self.identity, difficulty) if route == 'fee' else None
         self.pending_fee = token is not None
         outcome = 'unknown'
         latency = None
@@ -1374,16 +1389,19 @@ class AggregateSession:
             self.pending_fee = False
         channel.health.submitted(outcome, time.monotonic() - sent_at, response.get('error'))
         account = 'fee' if route == 'fee' else 'user'
+        fee_eligible = route == 'user' and self.fee_ready()
         if outcome == 'accepted':
             metrics.accepted += 1
-            self.relay.ledger.record(account, difficulty, fee_available=route == 'user' and self.fee_ready())
+            self.relay.ledger.record(account, difficulty, fee_available=fee_eligible)
+            if route == 'user':
+                self.relay.fee_windows.observe(self.identity, difficulty)
             self.relay.metrics._audit.record(account, difficulty)
         elif outcome == 'rejected':
             metrics.rejected += 1
         else:
             metrics.unmatched += 1
         self.relay.workers.record(self.session['id'], self.worker, outcome, difficulty=difficulty)
-        await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency)
+        await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency, fee_eligible=fee_eligible)
         await self.reply(ident, response.get('result'), response.get('error'))
         if route == 'fee' and outcome != 'accepted':
             await self.fee_unavailable()
@@ -1438,7 +1456,7 @@ class AggregateSession:
             if self.fee_task is not None:
                 self.fee_task.cancel()
                 await asyncio.gather(self.fee_task, return_exceptions=True)
-            self.relay.fee_allocator.release(self.session['id'])
+            self.relay.fee_windows.leave(self.identity)
             if self.group is not None:
                 await self.relay.shared_upstreams.release(self.group, self.identity)
             if self.backup_group is not None:

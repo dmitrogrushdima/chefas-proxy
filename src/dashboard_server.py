@@ -129,7 +129,9 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
             if ledger is not None:
                 tracker = getattr(metrics, "_audit", None)
                 audit = tracker.snapshot() if tracker is not None else ledger.snapshot()
-                report.update({"scope": "pool-confirmed work since process start; resets on restart; not a financial audit",
+                report.update({"scope": ("pool-confirmed work restored from SQLite plus current observations"
+                                         if getattr(metrics, "_devfee_journal", None) is not None
+                                         else "pool-confirmed work since process start"),
                                "devfee_enabled": bool(getattr(metrics, "_devfee_enabled", False)),
                                "accepted_difficulty": audit["user_accepted_difficulty"],
                                "fee_difficulty": audit["fee_accepted_difficulty"],

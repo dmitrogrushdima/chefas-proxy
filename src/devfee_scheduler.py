@@ -14,6 +14,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
+from collections import deque
 import string
 import heapq
 
@@ -344,6 +345,112 @@ class FairnessAllocator:
             'max_active': self.max_active,
             'max_pending': self.max_pending,
         }
+
+
+class FeeWindows:
+    """Route leases are independent of outstanding submit RPC reservations."""
+
+    def __init__(self, allocator, ttl, cooldown, overdraft, clock=time.monotonic):
+        self.allocator = allocator
+        self.ttl, self.cooldown = ttl, cooldown
+        self.overdraft = _difficulty(overdraft, allow_zero=True)
+        self.clock = clock
+        self.groups = {}
+        self.members = {}
+        self.leases = {}
+        self.ready = {}
+        self.cooling = {}
+        self.samples = {}
+
+    def join(self, worker, group):
+        if self.members.get(worker) == group:
+            return
+        self.leave(worker)
+        self.members[worker] = group
+        self.groups.setdefault(group, {})[worker] = None
+
+    def leave(self, worker):
+        self.end(worker)
+        group = self.members.pop(worker, None)
+        if group is not None:
+            members = self.groups[group]
+            del members[worker]
+            if not members:
+                del self.groups[group]
+        self.ready.pop(worker, None)
+        self.cooling.pop(worker, None)
+        self.samples.pop(worker, None)
+
+    def observe(self, worker, difficulty):
+        if worker not in self.members:
+            return
+        bucket = int(self.clock())
+        samples = self.samples.setdefault(worker, deque())
+        self.weight(worker)
+        work = _difficulty(difficulty)
+        if samples and samples[-1][0] == bucket:
+            samples[-1] = (bucket, samples[-1][1] + work)
+        else:
+            samples.append((bucket, work))
+
+    def weight(self, worker):
+        samples = self.samples.get(worker)
+        if not samples:
+            return Fraction(0)
+        cutoff = int(self.clock()) - 300
+        while samples and samples[0][0] <= cutoff:
+            samples.popleft()
+        return sum((work for _, work in samples), Fraction(0))
+
+    def expired(self, worker):
+        expiry = self.leases.get(worker)
+        return expiry is not None and self.clock() >= expiry
+
+    def eligible(self, worker, work, budget):
+        return (self.clock() >= self.cooling.get(worker, 0)
+                and budget >= work * (1 - self.overdraft)
+                and budget > 0)
+
+    def acquire(self, worker, difficulty):
+        if difficulty is None:
+            self.ready.pop(worker, None)
+            return False
+        work = _difficulty(difficulty)
+        self.ready[worker] = work
+        group = self.groups[self.members[worker]]
+        if not self.allocator.ledger.should_fee():
+            return False
+        budget = self.allocator.outstanding - self.allocator.reserved
+        active = worker in self.leases
+        if not active and any(member in self.leases for member in group):
+            return False
+        # A single worker is the admission limit. On large groups also enforce
+        # the weighted limit, rejecting a candidate whose weight is unknown.
+        weights = {member: self.weight(member) for member in group} if len(group) > 50 else {}
+        cap = sum(weights.values()) * Fraction(3, 100) if weights else None
+        if active:
+            budget += self.allocator._grants.get(worker, 0)
+            return (not self.expired(worker) and self.eligible(worker, work, budget)
+                    and (cap is None or 0 < weights[worker] <= cap)
+                    and self.allocator.acquire(worker, work))
+        for member in group:
+            candidate = self.ready.get(member)
+            if candidate is None or not self.eligible(member, candidate, budget):
+                continue
+            if weights and not 0 < weights[member] <= cap:
+                continue
+            if member != worker or not self.allocator.acquire(worker, work):
+                return False
+            del group[worker]
+            group[worker] = None
+            self.leases[worker] = self.clock() + self.ttl
+            return True
+        return False
+
+    def end(self, worker):
+        if self.leases.pop(worker, None) is not None:
+            self.cooling[worker] = self.clock() + self.cooldown
+        self.allocator.release(worker)
 
 
 class StableFeeSlots:

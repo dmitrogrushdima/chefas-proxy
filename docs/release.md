@@ -124,3 +124,19 @@ and committed result locally.
 Standalone startup checks are packaging checks. They do not certify real ASIC
 compatibility, network throughput, Linux deployment, or unattended long-term
 operation; these remain pilot qualification tasks.
+
+### DevFee windows in aggregate mode
+
+`max_fee_window_seconds` defaults to 60, `fee_cooldown_seconds` to 5, and
+`fee_overdraft` to 0.02 of the expected next fee share. At most one ASIC per
+active user group works on the fee route. Above 50 group members, admission also
+requires that the candidate account for at most 3% of the group's measured user
+work in the last five minutes. A single ASIC in a small group can represent a
+larger instantaneous share. A bounded window limits time diverted, while
+confirmed pool difficulty determines accounting. Ordinary non-aggregated
+routing retains its existing scheduling policy.
+
+The default SQLite journal restores confirmed user and fee work, plus eligible
+user work recorded by this version. Older journal rows lack eligibility
+metadata, so they are not retroactively made eligible for commission. Use a
+separate journal per independent deployment.
