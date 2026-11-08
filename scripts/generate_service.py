@@ -19,11 +19,11 @@ def service_text(install_dir="/opt/chefas-proxy", config="/etc/chefas-proxy/chef
         raise ValueError("Invalid service user")
     executable = _path(install_dir.rstrip("/") + "/chefas-proxy")
     config_path, environment = _path(config), _path(env_file)
-    working = _path(str(PurePosixPath(config).parent))
+    working = _path(str(PurePosixPath(config).parent))[1:-1]
     template = Path(__file__).with_name('chefas-proxy.service').read_text(encoding='utf-8')
     replacements = {
         'User': user, 'Group': user, 'WorkingDirectory': working,
-        'EnvironmentFile': environment,
+        'EnvironmentFile': environment[1:-1],
         'ExecStart': (f'{executable} --config {config_path} --env-file= '
                       '--control-state=/var/lib/chefas-proxy/control.json '
                       '--history-file=/var/lib/chefas-proxy/history.json '
