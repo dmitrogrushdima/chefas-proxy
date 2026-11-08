@@ -176,7 +176,7 @@ class CheckedPool:
 
 
 class Miner:
-    def __init__(self, port, *, hot=True, configure=False, password="x"):
+    def __init__(self, port, *, hot=True, configure=False, password="x", worker="user.worker"):
         self.port = port
         self.hot = hot
         self.next_id = 0
@@ -193,6 +193,7 @@ class Miner:
         self.configure = configure
         self.version_bits = None
         self.password = password
+        self.worker = worker
         self.subscribe_params = ["chefas-proxy-integration/1"]
 
     async def connect(self):
@@ -214,7 +215,7 @@ class Miner:
             extension = await self.request("mining.extranonce.subscribe", [])
             if extension.get("result") is not True:
                 raise AssertionError(extension)
-        authorized = await self.request("mining.authorize", ["user.worker", self.password])
+        authorized = await self.request("mining.authorize", [self.worker, self.password])
         if authorized.get("result") is not True:
             raise AssertionError(authorized)
         await asyncio.wait_for(self.job_event.wait(), 5)
@@ -328,7 +329,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                      job_ttl=900, job_gc_interval=60, ssl_user=False, ssl_fee=False,
                      user_extra_size=4, fee_extra_size=4, user_mask='1fffe000', asic_min=0,
                      fee_min_shares=0,fee_template=None,fee_difficulty_multiplier=1,
-                     aggregate=False, connect_timeout=None, failover_recovery=30):
+                     aggregate=False, connect_timeout=None, failover_recovery=30, extra_args=()):
         self.admin_token = admin_token
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(ROOT/'tests'/'fixtures'/'lab-cert.pem', ROOT/'tests'/'fixtures'/'lab-key.pem')
@@ -375,6 +376,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             args += ["--log-level", "DEBUG", "--debug-stratum"]
         if ssl_user or ssl_fee:
             args += ['--tls-ca-file', str(ROOT/'tests'/'fixtures'/'lab-cert.pem')]
+        args.extend(extra_args)
         environment = dict(os.environ)
         if environment.get('CHEFAS_PROXY_TEST_EXECUTABLE'):
             args = [environment['CHEFAS_PROXY_TEST_EXECUTABLE'],*args[2:]]
@@ -419,6 +421,99 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         miner = Miner(self.port, hot=hot, configure=configure, password=password)
         self.miners.append(miner)
         return await miner.connect()
+
+    async def test_enterprise_unique_workers_shard_and_keep_identity(self):
+        from pow_validator import build_stratum_header
+
+        count = int(os.environ.get("CHEFAS_STRESS_CLIENTS", "12"))
+        shard_size = 256 if count > 256 else 4
+        await self.launch(fee=False, aggregate=True, user_extra_size=8, connect_timeout=10,
+                          extra_args=("--aggregate-worker-mode", "account", "--aggregate-vardiff",
+                                      "--aggregate-shard-size", str(shard_size),
+                                      "--max-connections", str(max(count, 32))))
+        self.user_pool.allowed_workers = {"user.chefas_mux"}
+        if count > 256:
+            import psutil
+            process = psutil.Process(self.process.pid)
+            initial_cpu = sum(process.cpu_times()[:2])
+        started = time.perf_counter()
+        for offset in range(0, count, 48):
+            batch = [Miner(self.port, hot=False, worker=f"user.worker_{i}")
+                     for i in range(offset, min(offset + 48, count))]
+            self.miners.extend(batch)
+            await asyncio.gather(*(miner.connect() for miner in batch))
+        admission_seconds = time.perf_counter() - started
+        shards = (count + shard_size - 1) // shard_size
+        self.assertEqual(len(self.user_pool.writers), shards)
+        self.assertEqual(self.user_pool.authorize_requests, ["user.chefas_mux"] * shards)
+        self.assertEqual(len({miner.extra for miner in self.miners}), count)
+
+        for miner in self.miners[::shard_size]:
+            params = miner.job["params"]
+            ex2 = "00" * miner.extra_size
+            nonce = next(f"{i:08x}" for i in range(100000) if meets_target(
+                build_stratum_header(params, miner.extra, ex2, NTIME, f"{i:08x}"), SHARE_TARGET))
+            response = await miner.submit([miner.worker, params[0], ex2, NTIME, nonce])
+            self.assertIs(response["result"], True)
+        self.assertEqual((self.user_pool.accepted, self.user_pool.rejected), (shards, 0))
+        stats = await self.api("/api/snapshot")
+        workers = stats["registry"]["workers"]
+        self.assertEqual({row["worker"] for row in workers}, {miner.worker for miner in self.miners})
+        self.assertEqual(sum(row["accepted"] for row in workers), shards)
+        self.assertEqual(sum(row["local_shares"] for row in workers), shards)
+        self.assertTrue(any(row["pool_response_ms"] is not None for row in workers))
+        packet = encode({"id": None, "method": "mining.set_difficulty", "params": [DIFFICULTY]})
+        for writer in self.user_pool.writers:
+            writer.write(packet)
+            await writer.drain()
+        deadline = time.monotonic() + 5
+        while True:
+            metrics = await self.api("/api/metrics")
+            if metrics["wan_direct_broadcast_bytes"] >= len(packet) * count:
+                break
+            self.assertLess(time.monotonic(), deadline)
+            await asyncio.sleep(.02)
+        comparison = metrics["wan_comparison"]
+        self.assertEqual(comparison["direct_1to1_estimated_bytes"],
+                         comparison["actual_application_bytes"] + comparison["broadcast_delta_bytes"])
+        self.assertGreaterEqual(comparison["broadcast_delta_bytes"], len(packet) * (count - shards))
+        if count > 256:
+            cpu = sum(process.cpu_times()[:2]) - initial_cpu
+            memory = process.memory_info()
+            print(f"clients={count} shards={shards} admission_s={admission_seconds:.3f} "
+                  f"cpu_s={cpu:.3f} rss_mib={memory.rss / 2**20:.2f} "
+                  f"peak_rss_mib={memory.peak_wset / 2**20:.2f} "
+                  f"wan={comparison}")
+
+    async def test_enterprise_tenant_ports_isolate_shared_workers_and_work(self):
+        from pow_validator import build_stratum_header
+
+        tenant_pool = await self.pool('33333333', 'user.chefas_mux')
+        tenant_pool.extra_size = 8
+        tenant_port, = unused_ports(1)
+        path = Path(self.history.name) / 'tenants.json'
+        path.write_text(json.dumps({'tenant-b': {'listen_port': tenant_port,
+                        'pool_host': '127.0.0.1', 'pool_port': tenant_pool.port,
+                        'allow_cidr': ['127.0.0.1/32']}}))
+        await self.launch(fee=False, aggregate=True, user_extra_size=8, connect_timeout=5,
+                          extra_args=('--tenant-profiles', str(path), '--aggregate-worker-mode', 'account'))
+        self.user_pool.allowed_workers = {'user.chefas_mux'}
+        for port in (self.port, tenant_port):
+            miner = Miner(port, hot=False, worker='user.rack_1')
+            self.miners.append(miner)
+            await miner.connect()
+        miner = self.miners[1]
+        params = miner.job['params']
+        ex2 = '00' * miner.extra_size
+        nonce = next(f'{i:08x}' for i in range(100000) if meets_target(
+            build_stratum_header(params, miner.extra, ex2, NTIME, f'{i:08x}'), SHARE_TARGET))
+        self.assertTrue((await miner.submit([miner.worker, params[0], ex2, NTIME, nonce]))['result'])
+        self.assertEqual((self.user_pool.accepted, tenant_pool.accepted), (0, 1))
+        workers = (await self.api('/api/snapshot'))['registry']['workers']
+        self.assertEqual({row['tenant']: row['accepted'] for row in workers}, {'main': 0, 'tenant-b': 1})
+        budgets = (await self.api('/api/status'))['tenant_fee']
+        self.assertEqual(budgets['tenant-b']['user_accepted_shares'], 1)
+        self.assertEqual(budgets['tenant-b']['fee_accepted_shares'], 0)
 
     async def test_aggregate_reconnects_and_multiplexes_valid_shares(self):
         from pow_validator import build_stratum_header

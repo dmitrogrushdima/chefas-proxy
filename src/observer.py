@@ -45,6 +45,9 @@ class PoolTelemetry:
             '# TYPE chefas_proxy_wan_bytes_total counter',
             f'chefas_proxy_wan_bytes_total{{direction="rx"}} {metrics.wan_rx_bytes}',
             f'chefas_proxy_wan_bytes_total{{direction="tx"}} {metrics.wan_tx_bytes}',
+            '# TYPE chefas_proxy_wan_broadcast_bytes_total counter',
+            f'chefas_proxy_wan_broadcast_bytes_total{{mode="shared"}} {metrics.wan_shared_broadcast_bytes}',
+            f'chefas_proxy_wan_broadcast_bytes_total{{mode="direct_estimate"}} {metrics.wan_direct_broadcast_bytes}',
             '# TYPE chefas_proxy_active_workers gauge',
             f'chefas_proxy_active_workers {active_workers}',
             '# TYPE chefas_proxy_upstream_sockets gauge',
@@ -183,9 +186,9 @@ class WorkerRegistry:
             if not row["sessions"] and now - row["touched"] >= self.retention:
                 self.entries.pop(key)
 
-    def authorize(self, session_id, name, ip):
+    def authorize(self, session_id, name, ip, tenant="main"):
         self._prune()
-        key = (name, self.normalize_ip(ip))
+        key = (name, self.normalize_ip(ip), tenant)
         if key not in self.entries:
             if len(self.entries) >= self.max_workers:
                 evict = next((k for k, row in self.entries.items() if not row["sessions"]), None)
@@ -194,12 +197,13 @@ class WorkerRegistry:
                     return
                 self.entries.pop(evict)
             self.entries[key] = {
-                "id": hashlib.sha256((name + "\0" + key[1]).encode()).hexdigest()[:24],
+                "id": hashlib.sha256((name + "\0" + key[1] + ("\0" + tenant if tenant != "main" else "")).encode()).hexdigest()[:24],
                 "worker": "".join(c if c.isprintable() else "?" for c in name),
-                "ip": key[1], "sessions": set(), "accepted": 0, "rejected": 0,
+                "ip": key[1], "tenant": tenant, "sessions": set(), "accepted": 0, "rejected": 0,
                 "stale": 0, "invalid_local": 0, "unknown": 0,
                 "rtt_total_ms": 0.0, "rtt_samples": 0, "work": DeviceWork(self.clock),
                 "first_share_ema_ms": None, "first_share_samples": 0,
+                "local_work": DeviceWork(self.clock), "local_shares": 0,
                 "difficulty_known": False, "touched": self.clock(), "last_seen_utc": None}
         self.entries[key]["sessions"].add(session_id)
         self.sessions.setdefault(session_id, set()).add(key)
@@ -229,6 +233,14 @@ class WorkerRegistry:
             row["rtt_total_ms"] += rtt_ms
         self._touch(key)
 
+    def record_local(self, session_id, name, difficulty):
+        for key in self.sessions.get(session_id, ()):
+            if key[0] == name and key in self.entries:
+                row = self.entries[key]
+                row["local_work"].record(difficulty)
+                row["local_shares"] += 1
+                return
+
     def disconnect(self, session_id):
         for key in self.sessions.pop(session_id, ()):
             if key in self.entries:
@@ -250,11 +262,13 @@ class WorkerRegistry:
         self._prune()
         rows = []
         for row in reversed(self.entries.values()):
-            result = {key: row[key] for key in ("id", "worker", "ip", "accepted", "rejected", "stale",
+            result = {key: row[key] for key in ("id", "worker", "ip", "tenant", "accepted", "rejected", "stale",
                                                 "invalid_local", "unknown", "last_seen_utc")}
             result.update(status="online" if row["sessions"] else "offline",
                           connection_count=len(row["sessions"]),
                           hashrate_windows=row["work"].snapshot() if row["difficulty_known"] else None,
+                          local_hashrate_windows=row["local_work"].snapshot() if row["local_shares"] else None,
+                          local_shares=row["local_shares"],
                           pool_response_ms=row["rtt_total_ms"] / row["rtt_samples"] if row["rtt_samples"] else None,
                           asic_ping_ms=None, stale_basis="pool error code 21; subset of rejected",
                           notify_to_first_share_ema_ms=row["first_share_ema_ms"],
@@ -272,11 +286,11 @@ class WorkerRegistry:
         wall_now = time.time() if wall_now is None else wall_now
         mono = self.clock()
         rows = []
-        for (name, ip), row in self.entries.items():
+        for (name, ip, tenant), row in self.entries.items():
             values = {key: row[key] for key in ("accepted", "rejected", "stale", "invalid_local", "unknown",
                 "rtt_total_ms", "rtt_samples", "difficulty_known", "last_seen_utc",
                 "first_share_ema_ms", "first_share_samples")}
-            values.update(name=name, ip=ip, touched_utc=wall_now - (mono - row["touched"]),
+            values.update(name=name, ip=ip, tenant=tenant, touched_utc=wall_now - (mono - row["touched"]),
                           started_utc=wall_now - (mono - row["work"].started),
                           buckets=[[wall_now - (mono - minute * 60), str(work)]
                                    for minute, work in row["work"].buckets])
@@ -301,10 +315,14 @@ class WorkerRegistry:
                 raise ValueError("invalid history timestamp")
             if wall_now - touched >= self.retention:
                 continue
-            if (name, restored.normalize_ip(ip)) in restored.entries:
+            tenant = saved.get("tenant", "main")
+            if not isinstance(tenant, str) or len(tenant) > 64:
+                raise ValueError("invalid history tenant")
+            key = (name, restored.normalize_ip(ip), tenant)
+            if key in restored.entries:
                 raise ValueError("duplicate history identity")
-            restored.authorize(0, name, ip)
-            row = restored.entries[(name, restored.normalize_ip(ip))]
+            restored.authorize(0, name, ip, tenant)
+            row = restored.entries[key]
             for key in ("accepted", "rejected", "stale", "invalid_local", "unknown", "rtt_samples", "first_share_samples"):
                 value = saved[key]
                 if type(value) is not int or not 0 <= value <= 2**63 - 1:
@@ -398,19 +416,32 @@ class Metrics:
         self.lan_tx_bytes = 0
         self.wan_rx_bytes = 0
         self.wan_tx_bytes = 0
+        self.wan_shared_broadcast_bytes = 0
+        self.wan_direct_broadcast_bytes = 0
         self.devfee_journal_errors = 0
         if parent is None:
             self._pool_telemetry = PoolTelemetry()
         self._devfee_journal = None
 
-    async def record_pool_reply(self, route, pool, outcome, difficulty, seconds=None, *, fee_eligible=False):
+    async def record_pool_reply(self, route, pool, outcome, difficulty, seconds=None, *, fee_eligible=False, tenant="main"):
         self._pool_telemetry.observe(route, pool, outcome, seconds)
         if self._devfee_journal is not None:
-            if not await self._devfee_journal.record(route, pool, outcome, difficulty, fee_eligible):
+            if not await self._devfee_journal.record(route, pool, outcome, difficulty, fee_eligible, tenant):
                 self.devfee_journal_errors += 1
+
+    def wan_comparison(self):
+        actual = self.wan_rx_bytes + self.wan_tx_bytes
+        broadcast_delta = self.wan_direct_broadcast_bytes - self.wan_shared_broadcast_bytes
+        baseline = actual + broadcast_delta
+        return {"actual_application_bytes": actual,
+                "direct_1to1_estimated_bytes": baseline if baseline > 0 else None,
+                "broadcast_delta_bytes": broadcast_delta,
+                "estimated_saving_percent": 100 * broadcast_delta / baseline if baseline > 0 else None,
+                "model": "replicate upstream broadcasts per live subscriber; all other bytes held constant"}
 
     def snapshot(self):
         result = {key: value for key, value in vars(self).items() if not key.startswith("_")}
+        result["wan_comparison"] = self.wan_comparison()
         if getattr(self, "_log_handler", None) is not None:
             result["logging_dropped"] = self._log_handler.dropped
         if getattr(self, "_audit", None) is not None:

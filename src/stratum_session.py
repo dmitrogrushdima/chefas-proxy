@@ -93,7 +93,7 @@ class Relay:
         self.fee_slots = StableFeeSlots(limit)
         self.fee_worker_template = None
         self.events = deque(maxlen=500)
-        self.workers = WorkerRegistry()
+        self.workers = WorkerRegistry(max_workers=max(512, limit))
         self.blacklist = ()
         self.route_configs = {}
         if tls_context is not None and not tls:
@@ -104,7 +104,10 @@ class Relay:
             raise ValueError("TLS requires hostname and certificate verification")
 
     async def handle(self, reader, writer, route_id="main"):
-        if not self.peer_allowed(writer.get_extra_info("peername")):
+        peer = writer.get_extra_info("peername")
+        allowed = self.route_configs.get(route_id, {}).get("allowed", ())
+        if not self.peer_allowed(peer) or (allowed and not any(
+                ipaddress.ip_address(WorkerRegistry.normalize_ip(peer[0])) in network for network in allowed)):
             self.metrics.refused_network += 1
             writer.close()
             try:
@@ -264,8 +267,8 @@ class Relay:
                           accepted=session_metrics.accepted, rejected=session_metrics.rejected,
                           unknown=session_metrics.unmatched)
 
-    def set_listeners(self, server):
-        self.listeners = [(item.family, item.getsockname()) for item in server.sockets]
+    def set_listeners(self, *servers):
+        self.listeners = [(item.family, item.getsockname()) for server in servers for item in server.sockets]
 
     def peer_allowed(self, peer):
         if not self.allowed_networks and not self.blacklist:
@@ -368,7 +371,9 @@ class Relay:
                 "backup": {"host": self.backup[0], "port": self.backup[1],
                            "tls": self.tls or parse_endpoint(*self.backup)[2]} if self.backup else None,
                 "tls": self.tls, "limit": self.limit,
-                "listeners": [str(item[1][1]) for item in self.listeners]}
+                "listeners": [str(item[1][1]) for item in self.listeners],
+                "tenant_fee": {name: profile["windows"].allocator.ledger.snapshot()
+                               for name, profile in self.route_configs.items() if "windows" in profile}}
 
     def prometheus_snapshot(self):
         workers = sum(session['worker'] is not None for session in self.sessions.values())

@@ -37,7 +37,7 @@ from stratum_codec import PacketReader
 from hardware_compatibility import (ClientCapabilities, validate_config, negotiated_mask,
                                     upstream_config, mask_value, merge_config)
 from aggregation import (AggregationJob, AggregationKey, NonceLease, NoncePartitioner,
-                         ShareTargets, virtual_subscription_job)
+                         ShareTargets, virtual_subscription_job, LocalVardiff)
 
 
 class AggregatedJobRouter:
@@ -55,7 +55,7 @@ class AggregatedJobRouter:
         self.sequence = 0
 
     def prune(self, now):
-        expired = [key for key, (_, created, _) in self.jobs.items() if now - created >= self.ttl]
+        expired = [key for key, (_, created, _, _) in self.jobs.items() if now - created >= self.ttl]
         for key in expired:
             self.jobs.pop(key, None)
         for key, created in list(self.shares.items()):
@@ -69,7 +69,7 @@ class AggregatedJobRouter:
         job = AggregationJob(params, self.lease, targets, self.mask)
         self.sequence += 1
         local_id = format(self.sequence, 'x')
-        self.jobs[local_id] = (job, now, pool_difficulty)
+        self.jobs[local_id] = (job, now, pool_difficulty, local_difficulty)
         while len(self.jobs) > self.max_jobs:
             self.jobs.popitem(last=False)
         message = list(params)
@@ -1026,8 +1026,14 @@ class AggregateSession:
         self.reader = PacketReader(reader, relay.max_miner_message, role='miner', metrics=relay.metrics)
         self.identity = str(session['id'])
         self.endpoint = session['endpoint']
-        self.route_worker = getattr(relay, 'user_worker', '')
+        profile = relay.route_configs.get(session['route_id'], {})
+        self.route_worker = profile.get('worker', getattr(relay, 'user_worker', ''))
         self.route_password = getattr(relay, 'user_password', 'x')
+        self.tenant = session['route_id']
+        self.fee_windows = profile.get('windows', getattr(relay, 'main_fee_windows', relay.fee_windows))
+        self.allocator = self.fee_windows.allocator
+        self.ledger = self.allocator.ledger
+        self.vardiff = None
         self.agent = None
         self.worker = None
         self.group = None
@@ -1040,7 +1046,7 @@ class AggregateSession:
         self.backup_group = None
         self.backup_jobs = None
         self.backup_generation = None
-        self.backup_endpoint = relay.backup
+        self.backup_endpoint = profile.get("backup", relay.backup)
         self.failover_tasks = []
         self.base_route = 'user'
         self.primary_return_after = 0
@@ -1121,6 +1127,12 @@ class AggregateSession:
             setattr(self, generation_attr, generation)
         difficulty = packet['difficulty']
         local = Decimal(str(difficulty)) / 2
+        if self.relay.aggregate_vardiff:
+            if self.vardiff is None:
+                self.vardiff = LocalVardiff(local, difficulty, minimum_difficulty=min(local, Decimal("0.000001")),
+                                            target_interval=12)
+            threshold = self.vardiff.new_job(difficulty)
+            local = Decimal(threshold.numerator) / Decimal(threshold.denominator)
         translated = virtual_subscription_job(packet['params'], channel.extranonce1,
                                               channel.extranonce2_size, self.prefix, self.width)
         # Keep aliases unique when a pool reconnect resets its nonce space.
@@ -1142,10 +1154,14 @@ class AggregateSession:
 
     def user_key(self, endpoint, worker, password):
         host, port, tls = parse_endpoint(*endpoint)
-        return AggregationKey(host, port, tls or self.relay.tls,
-                              self.route_worker or worker,
-                              self.route_password if self.route_worker else password,
-                              version_mask=self.version_mask, user_agent=self.agent)
+        upstream_worker = self.route_worker or worker
+        if not self.route_worker and self.relay.aggregate_worker_mode == 'account':
+            account, dot, suffix = worker.partition('.')
+            if account and dot and suffix:
+                upstream_worker = account + '.chefas_mux'
+        return AggregationKey(host, port, tls or self.relay.tls, upstream_worker,
+                              self.route_password if self.route_worker and self.tenant == 'main' else password,
+                              version_mask=self.version_mask, user_agent=self.agent, tenant=self.tenant)
 
     def pool_healthy(self, route):
         group, _, _ = self.binding(route)
@@ -1171,7 +1187,7 @@ class AggregateSession:
             if route is not None and route != self.base_route:
                 self.base_route = route
                 await self.switch_route(route, kind='failback' if route == 'user' else 'failover')
-                self.relay.fee_windows.join(self.identity, id(self.binding(route)[0]))
+                self.fee_windows.join(self.identity, id(self.binding(route)[0]))
 
     async def watch_routes(self):
         while True:
@@ -1193,7 +1209,7 @@ class AggregateSession:
         else:
             self.backup_group, self.backup_jobs, self.backup_generation = group, jobs, None
         if route == self.base_route:
-            self.relay.fee_windows.join(self.identity, id(group))
+            self.fee_windows.join(self.identity, id(group))
         if channel.job is not None:
             await self.notify(channel.job, route)
 
@@ -1230,8 +1246,8 @@ class AggregateSession:
                 await self.switch_route(self.base_route)
                 if self.route == 'fee':
                     self.writer.close()
-            self.relay.fee_windows.end(self.identity)
-            self.relay.fee_windows.ready.pop(self.identity, None)
+            self.fee_windows.end(self.identity)
+            self.fee_windows.ready.pop(self.identity, None)
 
     async def run_fee(self):
         while not self.writer.is_closing():
@@ -1304,7 +1320,7 @@ class AggregateSession:
 
     async def reconcile_fee(self):
         async with self.route_lock:
-            windows = self.relay.fee_windows
+            windows = self.fee_windows
             if self.pending_fee and not windows.expired(self.identity):
                 return
             difficulty = self.fee_group.connection.job['difficulty'] if self.fee_ready() else None
@@ -1358,7 +1374,7 @@ class AggregateSession:
                             worker=worker, protocol_started=True)
         self.session['observer'].protocol.update(subscribed=True, extranonce1=self.prefix,
                                                  extranonce2_size=self.width, authorized_workers=[worker])
-        self.relay.workers.authorize(self.session['id'], worker, self.session['ip'])
+        self.relay.workers.authorize(self.session['id'], worker, self.session['ip'], self.tenant)
         await self.reply(ident, True)
         await self.attach_base(self.base_route, group)
         if self.backup_endpoint:
@@ -1387,6 +1403,10 @@ class AggregateSession:
             params = list(params)
             params[1] = params[1][1:]
             _, outbound = jobs.submit(params)
+            local_work = jobs.jobs[params[1]][3]
+            self.relay.workers.record_local(self.session['id'], self.worker, local_work)
+            if self.vardiff is not None:
+                self.vardiff.record_valid_share(time.monotonic(), local_work)
         except ValueError:
             metrics.invalid_local += 1
             await self.reply(ident, False, [23, 'Invalid, stale or duplicate share', None])
@@ -1398,7 +1418,7 @@ class AggregateSession:
         outbound[0] = group.key.worker
         padding = channel.extranonce2_size - len(self.prefix) // 2 - self.width
         outbound[2] = self.prefix + outbound[2] + '00' * padding
-        allocator = self.relay.fee_allocator
+        allocator = self.allocator
         token = allocator.begin_submit(self.identity, difficulty) if route == 'fee' else None
         self.pending_fee = token is not None
         outcome = 'unknown'
@@ -1422,16 +1442,20 @@ class AggregateSession:
         fee_eligible = route == 'user' and self.fee_ready()
         if outcome == 'accepted':
             metrics.accepted += 1
-            self.relay.ledger.record(account, difficulty, fee_available=fee_eligible)
+            self.ledger.record(account, difficulty, fee_available=fee_eligible)
+            if self.ledger is not self.relay.ledger:
+                self.relay.ledger.record(account, difficulty, fee_available=fee_eligible)
             if route == 'user':
-                self.relay.fee_windows.observe(self.identity, difficulty)
+                self.fee_windows.observe(self.identity, difficulty)
             self.relay.metrics._audit.record(account, difficulty)
         elif outcome == 'rejected':
             metrics.rejected += 1
         else:
             metrics.unmatched += 1
-        self.relay.workers.record(self.session['id'], self.worker, outcome, difficulty=difficulty)
-        await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency, fee_eligible=fee_eligible)
+        self.relay.workers.record(self.session['id'], self.worker, outcome, difficulty=difficulty,
+                                  rtt_ms=None if latency is None else latency * 1000,
+                                  stale=isinstance(response.get('error'), list) and response['error'][:1] == [21])
+        await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency, fee_eligible=fee_eligible, tenant=self.tenant)
         await self.reply(ident, response.get('result'), response.get('error'))
         if route == 'fee' and outcome != 'accepted':
             await self.fee_unavailable()
@@ -1486,7 +1510,7 @@ class AggregateSession:
             if self.fee_task is not None:
                 self.fee_task.cancel()
                 await asyncio.gather(self.fee_task, return_exceptions=True)
-            self.relay.fee_windows.leave(self.identity)
+            self.fee_windows.leave(self.identity)
             if self.group is not None:
                 await self.relay.shared_upstreams.release(self.group, self.identity)
             if self.backup_group is not None:
@@ -1570,8 +1594,12 @@ async def open_aggregate_channel(relay, key):
         if response.get('result') is not True or response.get('error') is not None:
             raise SharedAuthorizationRejected('pool authorization rejected')
         channel.authorized = True
+        available_prefix_bytes = channel.extranonce2_size - relay.asic_extranonce2_min
+        prefix_bytes = relay.aggregate_prefixes.prefix_bytes
+        if available_prefix_bytes < prefix_bytes:
+            raise ProtocolError('pool nonce space cannot support this listener capacity and ASIC minimum')
         partitioner = NoncePartitioner(channel.extranonce1, channel.extranonce2_size, 0,
-                                       maximum_workers=50)
+                                       maximum_workers=min(relay.aggregate_shard_size, 1 << (prefix_bytes * 8)))
         return channel, partitioner
     except BaseException:
         await channel.close()

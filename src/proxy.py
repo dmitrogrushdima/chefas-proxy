@@ -108,6 +108,49 @@ async def pilot_preflight(relay, bind, port):
     return backup_ok
 
 
+def load_tenant_profiles(path, primary_port, relay, args):
+    if not path:
+        return {}
+    if not args.aggregate:
+        raise ValueError("tenant profiles require aggregation")
+    path = Path(path)
+    if path.stat().st_size > 65536:
+        raise ValueError("tenant profile file too large")
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or len(data) > 64 or "main" in data:
+        raise ValueError("invalid tenant profiles")
+    profiles, ports = {}, {primary_port}
+    for name, row in data.items():
+        if (not name or len(name) > 64 or not isinstance(row, dict)
+                or set(row) - {"listen_port", "pool_host", "pool_port", "backup_host", "backup_port", "worker", "allow_cidr"}):
+            raise ValueError("invalid tenant profile")
+        port, host = row.get("listen_port"), row.get("pool_host")
+        if type(port) is not int or not 1 <= port <= 65535 or port in ports or not isinstance(host, str):
+            raise ValueError("invalid tenant listener")
+        _, pool_port, _ = parse_endpoint(host, row.get("pool_port"))
+        backup_host = row.get("backup_host")
+        backup = None
+        if backup_host:
+            _, backup_port, _ = parse_endpoint(backup_host, row.get("backup_port"))
+            backup = backup_host, backup_port
+        elif "backup_port" in row:
+            raise ValueError("tenant backup port requires a host")
+        worker = row.get("worker", "")
+        if not isinstance(worker, str) or len(worker) > 128 or any(ord(c) < 32 for c in worker):
+            raise ValueError("invalid tenant worker")
+        networks = row.get("allow_cidr", [])
+        if not isinstance(networks, list) or len(networks) > 128 or any(not isinstance(cidr, str) for cidr in networks):
+            raise ValueError("invalid tenant network allowlist")
+        allowed = tuple(ipaddress.ip_network(cidr, strict=True) for cidr in networks)
+        ledger = AcceptedWorkLedger(args.fee_min_work)
+        allocator = FairnessAllocator(ledger, max_active=relay.limit, max_pending=relay.limit)
+        profiles[name] = dict(port=port, endpoint=(host, pool_port), backup=backup, worker=worker, allowed=allowed,
+                              windows=FeeWindows(allocator, args.max_fee_window_seconds,
+                                                 args.fee_cooldown_seconds, args.fee_overdraft))
+        ports.add(port)
+    return profiles
+
+
 async def run(args, stop_event=None):
     try:
         import resource
@@ -129,6 +172,9 @@ async def run(args, stop_event=None):
                   tls_context=url_tls_context if args.tls else None)
     relay.url_tls_context = url_tls_context
     relay.active_router = args.active_router
+    relay.aggregate_worker_mode = getattr(args, "aggregate_worker_mode", "exact")
+    relay.aggregate_shard_size = getattr(args, "aggregate_shard_size", 256)
+    relay.aggregate_vardiff = getattr(args, "aggregate_vardiff", False)
     relay.tp_mode = getattr(args, "tp_mode", False)
     relay.compatibility = CompatibilityRegistry(getattr(args, 'compatibility_state', 'state/compatibility.json'))
     relay.compatibility.load()
@@ -175,8 +221,15 @@ async def run(args, stop_event=None):
             raise ValueError('aggregation requires optional DevFee and a fixed fee worker')
         relay.aggregate_sizes = ExtranonceSizeCache()
         local_size = min(relay.asic_extranonce2_max, max(4, relay.asic_extranonce2_min))
-        relay.aggregate_prefixes = VirtualPrefixAllocator(2, local_size)
-        relay.shared_upstreams = SharedUpstreamManager(lambda key: open_aggregate_channel(relay, key))
+        relay.aggregate_prefixes = VirtualPrefixAllocator(1 if relay.limit <= 256 else 2, local_size, maximum_workers=relay.limit)
+        relay.shared_upstreams = SharedUpstreamManager(lambda key: open_aggregate_channel(relay, key),
+                                                       max_groups=max(128, relay.limit * 3))
+    relay.route_configs = load_tenant_profiles(getattr(args, "tenant_profiles", None), args.listen_port, relay, args)
+    if relay.route_configs:
+        main_ledger = AcceptedWorkLedger(args.fee_min_work)
+        main_allocator = FairnessAllocator(main_ledger, max_active=relay.limit, max_pending=relay.limit)
+        relay.main_fee_windows = FeeWindows(main_allocator, args.max_fee_window_seconds,
+                                           args.fee_cooldown_seconds, args.fee_overdraft)
     journal = None
     if args.active_router:
         relay.metrics._ledger = relay.ledger
@@ -188,16 +241,30 @@ async def run(args, stop_event=None):
         if journal_path:
             journal = DevFeeJournal(journal_path)
             journal.restore_budget(relay.ledger)
+            if relay.route_configs:
+                journal.restore_budget(relay.main_fee_windows.allocator.ledger, "main")
+                for tenant, profile in relay.route_configs.items():
+                    journal.restore_budget(profile["windows"].allocator.ledger, tenant)
             relay.metrics._devfee_journal = journal
     server = None
+    tenant_servers = []
     try:
         server = await asyncio.start_server(relay.handle, args.listen_host, args.listen_port, backlog=512,
                                           limit=relay.max_miner_message if args.active_router else 65536)
-        relay.set_listeners(server)
+        for name, profile in relay.route_configs.items():
+            async def handle_tenant(reader, writer, tenant=name):
+                await relay.handle(reader, writer, tenant)
+            listener = await asyncio.start_server(handle_tenant, args.listen_host, profile["port"],
+                                                  backlog=512, limit=relay.max_miner_message)
+            tenant_servers.append(listener)
+        relay.set_listeners(server, *tenant_servers)
         dashboard = await asyncio.start_server(lambda r, w: dashboard_request(
             r, w, relay.metrics, relay.session_snapshot, relay.status_snapshot, stream, control, relay.prometheus_snapshot),
                                                "127.0.0.1", args.dashboard_port)
     except BaseException:
+        for listener in tenant_servers:
+            listener.close()
+            await listener.wait_closed()
         if server is not None:
             server.close()
             await server.wait_closed()
@@ -227,9 +294,8 @@ async def run(args, stop_event=None):
             backup_ok = await pilot_preflight(relay, args.listen_host, args.listen_port)
             while True:
                 metrics = relay.metrics
-                lan = metrics.lan_rx_bytes + metrics.lan_tx_bytes
-                wan = metrics.wan_rx_bytes + metrics.wan_tx_bytes
-                saving = f"{100 * (1 - wan / lan):.1f}% est." if lan else "n/a"
+                saving_value = metrics.wan_comparison()["estimated_saving_percent"]
+                saving = f"{saving_value:.1f}% est." if saving_value is not None else "n/a"
                 groups = relay.shared_upstreams.groups if relay.shared_upstreams else ()
                 sockets = sum(not group.connection.closed for group in groups)
                 active = sum(session["worker"] is not None for session in relay.sessions.values())
@@ -258,6 +324,9 @@ async def run(args, stop_event=None):
         if pilot_task is not None:
             pilot_task.cancel()
         await asyncio.gather(summary, fleet, *((pilot_task,) if pilot_task else ()), return_exceptions=True)
+        for listener in tenant_servers:
+            listener.close()
+            await listener.wait_closed()
         server.close()
         dashboard.close()
         await server.wait_closed()
@@ -340,6 +409,10 @@ def main():
                         help="Fresh-job stability period before returning to a degraded pool")
     parser.add_argument("--dashboard-port", type=int, default=8080, choices=range(1, 65536), metavar="PORT")
     parser.add_argument("--max-connections", type=int, default=512, metavar="N")
+    parser.add_argument("--aggregate-worker-mode", choices=("exact", "account"), default="exact")
+    parser.add_argument("--aggregate-shard-size", type=int, choices=range(1, 1025), default=256, metavar="N")
+    parser.add_argument("--aggregate-vardiff", action="store_true")
+    parser.add_argument("--tenant-profiles", help="Path to JSON port profiles")
     parser.add_argument("--connect-timeout", type=float, default=10, metavar="SECONDS")
     parser.add_argument("--idle-timeout", type=float, default=0, metavar="SECONDS",
                         help="Close sessions with no traffic in either direction (0 disables)")

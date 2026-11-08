@@ -10,6 +10,7 @@ import sys
 CORE_MODULES = ()  # Replaced in the staged entry point; never import src/ here.
 CONFIG_OPTIONS = {
     "tp_mode", "pool_host", "pool_port", "listen_host", "listen_port", "active_router", "aggregate",
+    "aggregate_worker_mode", "aggregate_shard_size", "aggregate_vardiff", "tenant_profiles",
     "validate_pow", "devfee_host", "devfee_port", "devfee_worker",
     "devfee_worker_template", "max_fee_window_seconds", "fee_cooldown_seconds", "fee_overdraft",
     "backup_host", "backup_port", "dashboard_port", "tls", "tls_ca_file",
@@ -23,7 +24,7 @@ CONFIG_OPTIONS = {
     "history_file", "compatibility_state", "devfee_journal",
 }
 BOOLEAN_OPTIONS = {
-    "tp_mode", "active_router", "aggregate", "validate_pow", "tls", "allow_any_miner", "require_devfee", "debug_stratum",
+    "tp_mode", "active_router", "aggregate", "aggregate_vardiff", "validate_pow", "tls", "allow_any_miner", "require_devfee", "debug_stratum",
 }
 
 

@@ -188,11 +188,11 @@ function renderWorkers() {
   for (const worker of shown) {
     const row = document.createElement("tr");
     cell(row, worker.worker);
-    row.firstChild.title = worker.worker;
+    row.firstChild.title = worker.tenant && worker.tenant !== "main" ? worker.worker + " · " + worker.tenant : worker.worker;
     cell(row, worker.ip);
     cell(row, t(worker.status === "online" ? "Online" : "Offline"), worker.status === "online" ? "worker-status online" : "worker-status offline");
     for (const window of ["15m", "1h", "24h"]) {
-      const estimate = worker.hashrate_windows?.[window];
+      const estimate = worker.local_hashrate_windows?.[window] ?? worker.hashrate_windows?.[window];
       cell(row, hashrate(estimate?.hashrate_hs) + (estimate?.warmup ? " *" : ""));
       row.lastChild.title = estimate ? t("Measured interval") + ": " + duration(Math.floor(estimate.measured_seconds)) : t("Difficulty unavailable in transparent mode");
     }

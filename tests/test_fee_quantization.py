@@ -1,3 +1,6 @@
+import csv
+import os
+from pathlib import Path
 from fractions import Fraction
 from random import Random
 
@@ -18,6 +21,7 @@ def test_quantized_fleet_profile():
     durations = []
     selected = []
     user_off = peak_diverted = 0
+    series = []
     for now in range(duration):
         clock[0] = now
         for worker in range(workers):
@@ -29,6 +33,7 @@ def test_quantized_fleet_profile():
                 durations.append(now - started.pop(worker))
                 windows.end(worker)
         peak_diverted = max(peak_diverted, len(started))
+        previous_fee = ledger.fee_work
         for worker in range(workers):
             opportunity = rng.randrange(4)
             if worker not in started:
@@ -38,6 +43,7 @@ def test_quantized_fleet_profile():
                 ledger.record('fee', 4)
                 allocator.finish_submit(token)
             user_off += 1
+        series.append((now, workers, workers - len(started), int(ledger.fee_work - previous_fee)))
     ratio = ledger.snapshot()['fee_percentage']
     print(f'ASICs={workers} ticks={duration} OFF_user_work={user_off} '
           f'ON_user_work={ledger.user_work} ON_fee_work={ledger.fee_work} '
@@ -47,6 +53,12 @@ def test_quantized_fleet_profile():
     assert len(set(selected)) == workers
     assert max(durations) <= 12
     assert 0.99 <= ratio <= 1.01
+    destination = os.environ.get("CHEFAS_QUANTIZATION_CSV")
+    if destination:
+        with Path(destination).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(("simulated_second", "off_user_work", "on_user_work", "on_fee_accepted_work"))
+            writer.writerows(series)
 
 
 def test_window_expiry_cooldown_and_round_robin():
@@ -104,3 +116,29 @@ def test_small_groups_have_short_windows_and_wait_for_full_quota():
         assert not windows.acquire(0, 1)
         windows.end(0)
         assert not windows.acquire(0, 1)
+
+
+def test_sqlite_restores_each_tenant_quota_independently(tmp_path):
+    import asyncio
+    from history_store import DevFeeJournal
+
+    async def scenario():
+        path = tmp_path / "work.sqlite3"
+        journal = DevFeeJournal(path)
+        try:
+            assert await journal.record("user", "primary", "accepted", 99, True, "rack-a")
+            assert await journal.record("user", "primary", "accepted", 198, True, "rack-b")
+            assert await journal.record("fee", "shared-fee", "accepted", 1, False, "rack-a")
+        finally:
+            await journal.close()
+        journal = DevFeeJournal(path)
+        try:
+            a, b = AcceptedWorkLedger(), AcceptedWorkLedger()
+            journal.restore_budget(a, "rack-a")
+            journal.restore_budget(b, "rack-b")
+            assert FairnessAllocator(a).outstanding == 0
+            assert FairnessAllocator(b).outstanding == 2
+        finally:
+            await journal.close()
+
+    asyncio.run(scenario())

@@ -154,3 +154,53 @@ The default SQLite journal restores confirmed user and fee work, plus eligible
 user work recorded by this version. Older journal rows lack eligibility
 metadata, so they are not retroactively made eligible for commission. Use a
 separate journal per independent deployment.
+
+### Enterprise pilot settings
+
+Enable `aggregate_worker_mode: "account"` to combine dotted worker names
+under the same account. For example, `user.worker_1` and `user.worker_2`
+authorize as `user.chefas_mux` upstream while retaining both original names in
+CHEFAS. Use this only with pools that accept the consolidated worker name.
+Credentials, TLS settings, negotiated version masks, client agents, and
+tenant IDs still separate user upstream groups.
+
+Set `max_connections` for the fleet and `aggregate_shard_size` for the
+per-upstream limit (default 256). The next compatible upstream is opened
+automatically when a shard fills. The virtual prefix is one byte for up to
+256 connections and two bytes above that. Pools must provide enough nonce
+space to leave the configured ASIC minimum. Virtual prefixes are never
+reused during a process lifetime, so cumulative churn can exhaust the
+prefix space. Size Linux file descriptor limits for the listeners and pools.
+
+Set `aggregate_vardiff: true` to adapt local job difficulty towards one valid
+local share every 12 seconds. Pool and DevFee work still use upstream-confirmed
+difficulty. The dashboard distinguishes local estimates from pool outcomes
+through its worker API.
+
+Set `tenant_profiles` to a separate JSON file with extra listeners:
+
+```json
+{
+  "rack-b": {
+    "listen_port": 3334,
+    "pool_host": "pool.example",
+    "pool_port": 3333,
+    "backup_host": "backup.example",
+    "backup_port": 3333,
+    "allow_cidr": ["192.168.20.0/24"]
+  }
+}
+```
+
+Each profile has independent user sockets, network restrictions, and a persisted
+DevFee budget. Compatible fee sockets can be shared across profiles. The global
+dashboard is for the operator of the entire instance. Do not share it as a
+tenant-scoped dashboard. Historical journal rows from before tenant accounting
+remain in the global total, with no tenant attribution.
+
+The WAN comparison adds the estimated extra copies of observed upstream
+broadcasts to the measured application bytes. It holds handshakes, share
+submissions, and other traffic constant. For a benchmark, run
+`tests/test_live_devfee_router.py -k enterprise_unique` with
+`CHEFAS_STRESS_CLIENTS=1000` and `psutil` installed. The stress test measures
+connection admission and one validated submit per shard.

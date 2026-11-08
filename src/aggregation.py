@@ -41,8 +41,8 @@ def _size(value: int, name: str) -> int:
 
 
 def _workers(value: int) -> int:
-    if type(value) is not int or not 1 <= value <= 100:
-        raise ValueError("maximum_workers must be 1..100")
+    if type(value) is not int or not 1 <= value <= 10000:
+        raise ValueError("maximum_workers must be 1..10000")
     return value
 
 
@@ -96,6 +96,7 @@ class AggregationKey:
     version_mask: Optional[str] = None
     user_agent: str = ""
     tls_policy: str = "default"
+    tenant: str = ""
 
     def __post_init__(self):
         for name in ("host", "worker", "password", "user_agent", "tls_policy"):
@@ -278,7 +279,7 @@ class NonceLease:
 class NoncePartitioner:
     """Fixed-width, never-reused prefixes for exactly one upstream lifetime.
 
-    At most 100 leases are active. Releasing a worker frees an active slot but
+    Active leases are capped by configuration. Releasing a worker frees an active slot but
     does not recycle its prefix, since old jobs may still be in flight. Exhausted
     prefix space requires a fresh upstream session before any new allocation.
     Instances must not be reset/recreated while reusing the same pool session.

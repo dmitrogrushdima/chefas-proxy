@@ -103,6 +103,7 @@ class DevFeeJournal:
                 PRIMARY KEY (day, route, pool)
             )''')
             self.database.execute('CREATE TABLE IF NOT EXISTS fee_eligible_v1 (id INTEGER PRIMARY KEY, difficulty TEXT NOT NULL)')
+            self.database.execute('CREATE TABLE IF NOT EXISTS tenant_budget_v1 (tenant TEXT, route TEXT, accepted INTEGER, difficulty TEXT, eligible TEXT, PRIMARY KEY (tenant,route))')
             self.database.commit()
         except sqlite3.Error as exc:
             self.database.close()
@@ -111,7 +112,7 @@ class DevFeeJournal:
         self.error = None
         self.closed = False
 
-    def _commit(self, day, route, pool, outcome, difficulty, fee_eligible=False):
+    def _commit(self, day, route, pool, outcome, difficulty, fee_eligible=False, tenant="main"):
         key = (day, route, pool)
         with self.database:
             self.database.execute('BEGIN IMMEDIATE')
@@ -121,6 +122,14 @@ class DevFeeJournal:
             accepted, rejected, unknown, work = row or (0, 0, 0, '0')
             if outcome == 'accepted':
                 work = str(Fraction(work) + Fraction(str(difficulty)))
+            if outcome == 'accepted':
+                row = self.database.execute('SELECT accepted,difficulty,eligible FROM tenant_budget_v1 WHERE tenant=? AND route=?',
+                                            (tenant, route)).fetchone()
+                count, total, eligible_work = row or (0, '0', '0')
+                work_delta = Fraction(str(difficulty))
+                self.database.execute('INSERT OR REPLACE INTO tenant_budget_v1 VALUES (?,?,?,?,?)',
+                                      (tenant, route, count + 1, str(Fraction(total) + work_delta),
+                                       str(Fraction(eligible_work) + (work_delta if fee_eligible else 0))))
             if outcome == 'accepted' and fee_eligible:
                 row = self.database.execute('SELECT difficulty FROM fee_eligible_v1 WHERE id=1').fetchone()
                 eligible = Fraction(row[0] if row else 0) + Fraction(str(difficulty))
@@ -129,9 +138,9 @@ class DevFeeJournal:
                                   (*key, accepted + (outcome == 'accepted'),
                                    rejected + (outcome == 'rejected'), unknown + (outcome == 'unknown'), work))
 
-    def _record(self, day, route, pool, outcome, difficulty, fee_eligible=False):
+    def _record(self, day, route, pool, outcome, difficulty, fee_eligible=False, tenant="main"):
         try:
-            self._commit(day, route, pool, outcome, difficulty, fee_eligible)
+            self._commit(day, route, pool, outcome, difficulty, fee_eligible, tenant)
         except (sqlite3.Error, OSError, ValueError):
             if self.error is None:
                 logging.getLogger('mining_proxy').error('DevFee journal write failed')
@@ -139,14 +148,19 @@ class DevFeeJournal:
             return False
         return True
 
-    async def record(self, route, pool, outcome, difficulty, fee_eligible=False):
+    async def record(self, route, pool, outcome, difficulty, fee_eligible=False, tenant="main"):
         day = datetime.now(timezone.utc).date().isoformat()
         return await asyncio.shield(asyncio.get_running_loop().run_in_executor(
-            self.executor, self._record, day, route, pool, outcome, difficulty, fee_eligible))
+            self.executor, self._record, day, route, pool, outcome, difficulty, fee_eligible, tenant))
 
-    def restore_budget(self, ledger):
-        rows = self.database.execute('SELECT route, accepted, difficulty FROM work_v1')
-        for route, accepted, difficulty in rows:
+    def restore_budget(self, ledger, tenant=None):
+        if tenant is None:
+            rows = self.database.execute("SELECT route,accepted,difficulty,'0' FROM work_v1")
+        else:
+            rows = self.database.execute(
+                'SELECT route,accepted,difficulty,eligible FROM tenant_budget_v1 WHERE tenant=?', (tenant,))
+        for route, accepted, difficulty, eligible in rows:
+            ledger.eligible_user_work += Fraction(eligible)
             if route == "fee":
                 ledger.fee_work += Fraction(difficulty)
                 ledger.fee_shares += accepted
@@ -154,7 +168,8 @@ class DevFeeJournal:
                 ledger.user_work += Fraction(difficulty)
                 ledger.user_shares += accepted
         row = self.database.execute('SELECT difficulty FROM fee_eligible_v1 WHERE id=1').fetchone()
-        ledger.eligible_user_work = Fraction(row[0]) if row else Fraction(0)
+        if tenant is None:
+            ledger.eligible_user_work = Fraction(row[0]) if row else Fraction(0)
         ledger._user_since_window = max(Fraction(0), ledger.eligible_user_work - 99 * ledger.fee_work)
 
     def _snapshot(self):

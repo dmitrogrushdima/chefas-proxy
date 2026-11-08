@@ -104,6 +104,14 @@ class SharedUpstreamGroup:
     async def _notification(self, connection, packet):
         # The original handler owns upstream state. Each subscriber has its
         # own bounded queue so a slow ASIC cannot stall the pool reader.
+        metrics = getattr(connection, 'metrics', None)
+        if metrics is not None and self.key.tls_policy != 'release-fee' and packet.get('method') in (
+                'mining.notify', 'mining.set_difficulty', 'mining.set_version_mask'):
+            # Compare canonical Stratum payloads, excluding TCP/TLS framing.
+            # A direct connection would receive one copy per subscribed ASIC.
+            size = len(encode_packet(packet))
+            metrics.wan_shared_broadcast_bytes += size
+            metrics.wan_direct_broadcast_bytes += size * len(self.subscribers)
         await self._upstream_notification(connection, packet)
         for session_id, (queue, task, on_failure) in list(self.subscribers.items()):
             try:

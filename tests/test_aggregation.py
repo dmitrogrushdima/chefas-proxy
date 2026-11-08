@@ -54,7 +54,7 @@ class AggregationMathTests(unittest.TestCase):
             with self.subTest(size=size), self.assertRaises(ValueError):
                 NoncePartitioner("aabb", 4, size)
         with self.assertRaises(ValueError):
-            NoncePartitioner("aabb", 4, 3, maximum_workers=101)
+            NoncePartitioner("aabb", 4, 3, maximum_workers=10001)
 
     def test_hundred_workers_have_disjoint_headers_and_preserve_full_pow(self):
         partitions = NoncePartitioner("12345678", 4, 3)
