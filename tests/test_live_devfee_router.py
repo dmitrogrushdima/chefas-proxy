@@ -493,8 +493,10 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         import psutil
         from pow_validator import build_stratum_header
 
-        count = 2500
+        count = int(os.environ.get("CHEFAS_SOAK_CLIENTS", "2500"))
         duration = int(os.environ.get("CHEFAS_SOAK_SECONDS", "180"))
+        shards = (count + 255) // 256
+        fee_cap = (count + 49) // 50
         rate = 32
         csv_path = Path(os.environ["CHEFAS_SOAK_CSV"])
         only_on = os.environ.get("CHEFAS_SOAK_ONLY_ON") == "1"
@@ -509,7 +511,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             await self.launch(fee=fee, aggregate=True, user_extra_size=8, fee_extra_size=8,
                               connect_timeout=10,
                               extra_args=("--aggregate-worker-mode", "account",
-                                          "--max-connections", str(count)))
+                                          "--max-connections", str(count), "--listen-host", "127.0.0.1"))
             self.user_pool.allowed_workers = {"user.chefas_mux"}
             process = psutil.Process(self.process.pid)
             miners = []
@@ -521,12 +523,12 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 miners.extend(batch)
                 await asyncio.gather(*(miner.connect() for miner in batch))
             print(f"{label}: admitted {count} in {time.monotonic()-start:.1f}s", flush=True)
-            self.assertEqual(len(self.user_pool.writers), 10)
+            self.assertEqual(len(self.user_pool.writers), shards)
             if fee:
                 deadline = time.monotonic() + 30
-                while len(self.fee_pool.writers) != 10 and time.monotonic() < deadline:
+                while len(self.fee_pool.writers) != shards and time.monotonic() < deadline:
                     await asyncio.sleep(.1)
-                self.assertEqual(len(self.fee_pool.writers), 10)
+                self.assertEqual(len(self.fee_pool.writers), shards)
             rng = random.Random(708)
             order = list(range(count))
             rng.shuffle(order)
@@ -570,6 +572,13 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                 fee_pool = self.fee_pool if fee else None
                 elapsed = time.monotonic() - start
                 memory = process.memory_info()
+                peak = getattr(memory, "peak_wset", memory.rss)
+                swap = None
+                status = Path(f"/proc/{process.pid}/status")
+                if status.is_file():
+                    proc_values = dict(line.split(":", 1) for line in status.read_text().splitlines())
+                    peak = int(proc_values["VmHWM"].split()[0]) * 1024
+                    swap = int(proc_values["VmSwap"].split()[0]) * 1024
                 rows.append(dict(profile=label, tick=tick, elapsed=elapsed, diverted=diverted,
                                  connected=sum(not miner.closed.is_set() for miner in miners),
                                  user_ok=self.user_pool.accepted,
@@ -578,7 +587,8 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                                  fee_rej=fee_pool.rejected if fee_pool else 0,
                                  submit_failed=outcomes["submit_failed"], rpc_timeout=outcomes["rpc_timeout"],
                                  cpu_s=sum(process.cpu_times()[:2])-before_cpu,
-                                 rss_mib=memory.rss/2**20, peak_rss_mib=getattr(memory,"peak_wset",memory.rss)/2**20))
+                                 rss_mib=memory.rss/2**20, peak_rss_mib=peak/2**20,
+                                 swap_mib=None if swap is None else swap/2**20))
                 if (tick + 1) % 30 == 0:
                     print(rows[-1], flush=True)
                 if elapsed >= duration:
@@ -598,7 +608,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(outcomes["submit_failed"] + outcomes["rpc_timeout"], 0)
             if fee:
                 self.assertGreater(rows[-1]["fee_ok"], 0)
-                self.assertLessEqual(max(row["diverted"] for row in rows if row["profile"] == "on"), 50)
+                self.assertLessEqual(max(row["diverted"] for row in rows if row["profile"] == "on"), fee_cap)
             await asyncio.gather(*(miner.close() for miner in miners))
             self.miners.clear()
             self.process.terminate()
