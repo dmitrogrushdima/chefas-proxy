@@ -75,6 +75,16 @@ def pilot_ipv4_addresses(bind):
                            if line.strip()})
         except (ValueError, OSError, subprocess.SubprocessError):
             pass
+    if sys.platform.startswith("linux"):
+        try:
+            result = subprocess.run(["ip", "-j", "-4", "address", "show", "up"],
+                                    capture_output=True, text=True, timeout=5, check=True)
+            return sorted({str(ipaddress.IPv4Address(address["local"]))
+                           for device in json.loads(result.stdout)
+                           for address in device.get("addr_info", [])
+                           if address.get("family") == "inet" and address.get("scope") != "link"})
+        except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+            pass
     return sorted({item[4][0] for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)})
 
 

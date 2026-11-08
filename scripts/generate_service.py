@@ -28,7 +28,7 @@ def service_text(install_dir="/opt/chefas-proxy", config="/etc/chefas-proxy/chef
                       '--control-state=/var/lib/chefas-proxy/control.json '
                       '--history-file=/var/lib/chefas-proxy/history.json '
                       '--compatibility-state=/var/lib/chefas-proxy/compatibility.json '
-                      '--devfee-journal=/var/lib/chefas-proxy/devfee.sqlite3 --log-dir=/var/log/chefas-proxy'),
+                      '--pilot-console --log-dir=/var/log/chefas-proxy'),
     }
     lines = []
     for line in template.splitlines():

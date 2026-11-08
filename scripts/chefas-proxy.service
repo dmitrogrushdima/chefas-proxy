@@ -11,7 +11,7 @@ User=chefas-proxy
 Group=chefas-proxy
 WorkingDirectory="/etc/chefas-proxy"
 EnvironmentFile="/etc/chefas-proxy/chefas-proxy.env"
-ExecStart="/opt/chefas-proxy/chefas-proxy" --config "/etc/chefas-proxy/chefas-proxy.json" --env-file= --control-state=/var/lib/chefas-proxy/control.json --history-file=/var/lib/chefas-proxy/history.json --compatibility-state=/var/lib/chefas-proxy/compatibility.json --devfee-journal=/var/lib/chefas-proxy/devfee.sqlite3 --log-dir=/var/log/chefas-proxy
+ExecStart="/opt/chefas-proxy/chefas-proxy" --config "/etc/chefas-proxy/chefas-proxy.json" --env-file= --control-state=/var/lib/chefas-proxy/control.json --history-file=/var/lib/chefas-proxy/history.json --compatibility-state=/var/lib/chefas-proxy/compatibility.json --pilot-console --log-dir=/var/log/chefas-proxy
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM

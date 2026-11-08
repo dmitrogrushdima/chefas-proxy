@@ -231,7 +231,19 @@ def main():
             shutil.copyfile(ROOT / "install.sh", installer)
             installer.chmod(0o755)
             starter = bundle / "start.sh"
-            starter.write_text('#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\ncd "$base"\nexec "$base/chefas-proxy" "$@"\n', encoding="utf-8", newline="\n")
+            starter.write_text(
+                '#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\ncd "$base"\n'
+                'if [ "$#" -eq 0 ]; then\n'
+                '  if [ ! -f chefas-proxy.json ]; then\n'
+                '    cp -n chefas-proxy.example.json chefas-proxy.json\n'
+                '  fi\n'
+                '  if grep -Fq POOL_HOST chefas-proxy.json; then\n'
+                '    printf "%s\\n" "Set your BTC pool in chefas-proxy.json, then run ./start.sh again."\n'
+                '    exit 1\n'
+                '  fi\n'
+                'fi\n'
+                'exec "$base/chefas-proxy" --pilot-console "$@"\n',
+                encoding="utf-8", newline="\n")
             starter.chmod(0o755)
         if not args.skip_smoke_test:
             smoke_test(bundle)

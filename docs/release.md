@@ -8,7 +8,7 @@ Keep the executable and its `_internal` directory together.
 
 1. Unpack the **matching Windows x64 or Linux x64** release. On Windows,
    `start.cmd` creates `chefas-proxy.json` on first launch and opens it for editing.
-   On Linux, copy `chefas-proxy.example.json` to `chefas-proxy.json` manually.
+   On Linux, run `./start.sh` to create `chefas-proxy.json` from the template.
    Replace `POOL_HOST` and set the pool address/port. Aggregation is enabled by
    the release template. Set both `backup_host` and `backup_port` for Smart Failover. The default Stratum listener binds to `0.0.0.0` and
    accepts loopback and private IPv4 addresses. Use an explicit `allow_cidr`
@@ -22,7 +22,7 @@ Keep the executable and its `_internal` directory together.
    The operator JSON configures the customer routes and listener. The release
    attempts verified TLS to ViaBTC and can fall back to TCP. Pool credentials
    saved by the routing API use the encrypted secret store.
-3. Run `start.cmd` / `chefas-proxy.exe` (Windows) or `./chefas-proxy` (Linux). `start.cmd`
+3. Run `start.cmd` / `chefas-proxy.exe` (Windows) or `./start.sh` (Linux). `start.cmd`
    keeps the console open after startup errors. With `chefas-proxy.json` present
    it starts without CLI arguments. Open `http://127.0.0.1:8080`. The dashboard
    stays loopback-only; use an authenticated SSH tunnel for remote access.
@@ -130,7 +130,7 @@ operation; these remain pilot qualification tasks.
 
 ### Pilot console
 
-The Windows launcher prints local ASIC URLs and primary/backup TCP or TLS
+Both launchers and the Linux service print local ASIC URLs and primary/backup TCP or TLS
 connection timings. It then reports worker, shared-socket and share counts every
 minute in the console and in the rotating `logs/pilot-summary.log`. The traffic
 percentage compares observed LAN and WAN application bytes in this process.
