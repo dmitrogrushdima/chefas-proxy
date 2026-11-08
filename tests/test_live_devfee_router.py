@@ -485,6 +485,125 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
                   f"peak_rss_mib={memory.peak_wset / 2**20:.2f} "
                   f"wan={comparison}")
 
+    @unittest.skipUnless(os.environ.get("CHEFAS_SOAK_CSV"), "opt-in enterprise soak")
+    async def test_enterprise_devfee_soak(self):
+        import csv
+        import random
+        from collections import Counter
+        import psutil
+        from pow_validator import build_stratum_header
+
+        count = 2500
+        duration = int(os.environ.get("CHEFAS_SOAK_SECONDS", "180"))
+        rate = 32
+        csv_path = Path(os.environ["CHEFAS_SOAK_CSV"])
+        only_on = os.environ.get("CHEFAS_SOAK_ONLY_ON") == "1"
+        rows = []
+        if only_on:
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                rows = [row for row in csv.DictReader(handle) if row["profile"] == "off"]
+            self.assertTrue(rows, "ON-only rerun requires an existing OFF baseline")
+        asyncio.get_running_loop().set_debug(False)
+        for fee in ((True,) if only_on else (False, True)):
+            label = "on" if fee else "off"
+            await self.launch(fee=fee, aggregate=True, user_extra_size=8, fee_extra_size=8,
+                              connect_timeout=10,
+                              extra_args=("--aggregate-worker-mode", "account",
+                                          "--max-connections", str(count)))
+            self.user_pool.allowed_workers = {"user.chefas_mux"}
+            process = psutil.Process(self.process.pid)
+            miners = []
+            start = time.monotonic()
+            for offset in range(0, count, 32):
+                batch = [Miner(self.port, hot=False, worker=f"user.worker_{i}")
+                         for i in range(offset, min(offset + 32, count))]
+                self.miners.extend(batch)
+                miners.extend(batch)
+                await asyncio.gather(*(miner.connect() for miner in batch))
+            print(f"{label}: admitted {count} in {time.monotonic()-start:.1f}s", flush=True)
+            self.assertEqual(len(self.user_pool.writers), 10)
+            if fee:
+                deadline = time.monotonic() + 30
+                while len(self.fee_pool.writers) != 10 and time.monotonic() < deadline:
+                    await asyncio.sleep(.1)
+                self.assertEqual(len(self.fee_pool.writers), 10)
+            rng = random.Random(708)
+            order = list(range(count))
+            rng.shuffle(order)
+            next_nonce = [0] * count
+            outcomes = Counter()
+
+            async def submit(index):
+                miner = miners[index]
+                job = miner.job["params"]
+                route = job[0][0]
+                ex2 = "00" * miner.extra_size
+                for candidate in range(next_nonce[index], next_nonce[index] + 100000):
+                    nonce = f"{candidate:08x}"
+                    if meets_target(build_stratum_header(job, miner.extra, ex2, NTIME, nonce), SHARE_TARGET):
+                        next_nonce[index] = candidate + 1
+                        break
+                else:
+                    raise AssertionError("could not produce a proof")
+                try:
+                    response = await miner.submit([miner.worker, job[0], ex2, NTIME, nonce])
+                except (asyncio.TimeoutError, OSError):
+                    outcomes["rpc_timeout"] += 1
+                    return
+                if response.get("result") is not True:
+                    outcomes["submit_failed"] += 1
+                outcomes[route] += 1
+
+            start = time.monotonic()
+            before_cpu = sum(process.cpu_times()[:2])
+            for tick in range(duration):
+                indices = [order[(tick * rate + n) % count] for n in range(rate)]
+                diverted = sum(miner.job["params"][0].startswith("f") for miner in miners)
+                await asyncio.gather(*(submit(index) for index in indices))
+                if tick % 15 == 0:
+                    # Heartbeat broadcasts exercise all subscriber queues while
+                    # preserving the current job and its already-issued proofs.
+                    packet = encode({"id": None, "method": "mining.set_difficulty", "params": [DIFFICULTY]})
+                    for pool in [self.user_pool] + ([self.fee_pool] if fee else []):
+                        for writer in pool.writers:
+                            writer.write(packet)
+                fee_pool = self.fee_pool if fee else None
+                elapsed = time.monotonic() - start
+                memory = process.memory_info()
+                rows.append(dict(profile=label, tick=tick, elapsed=elapsed, diverted=diverted,
+                                 connected=sum(not miner.closed.is_set() for miner in miners),
+                                 user_ok=self.user_pool.accepted,
+                                 fee_ok=fee_pool.accepted if fee_pool else 0,
+                                 user_rej=self.user_pool.rejected,
+                                 fee_rej=fee_pool.rejected if fee_pool else 0,
+                                 submit_failed=outcomes["submit_failed"], rpc_timeout=outcomes["rpc_timeout"],
+                                 cpu_s=sum(process.cpu_times()[:2])-before_cpu,
+                                 rss_mib=memory.rss/2**20, peak_rss_mib=getattr(memory,"peak_wset",memory.rss)/2**20))
+                if (tick + 1) % 30 == 0:
+                    print(rows[-1], flush=True)
+                if elapsed >= duration:
+                    break
+                await asyncio.sleep(max(0, start + tick + 1 - time.monotonic()))
+            metrics = await self.api("/api/metrics")
+            rows[-1]["invalid_local"] = metrics["invalid_local"]
+            rows[-1]["upstream_failures"] = metrics["upstream_failures"]
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                columns = list(dict.fromkeys((*rows[0], "invalid_local", "upstream_failures")))
+                output = csv.DictWriter(handle, fieldnames=columns)
+                output.writeheader()
+                output.writerows(rows)
+            print(rows[-1], flush=True)
+            self.assertEqual(rows[-1]["connected"], count)
+            self.assertEqual(rows[-1]["user_rej"] + rows[-1]["fee_rej"], 0)
+            self.assertEqual(outcomes["submit_failed"] + outcomes["rpc_timeout"], 0)
+            if fee:
+                self.assertGreater(rows[-1]["fee_ok"], 0)
+                self.assertLessEqual(max(row["diverted"] for row in rows if row["profile"] == "on"), 10)
+            await asyncio.gather(*(miner.close() for miner in miners))
+            self.miners.clear()
+            self.process.terminate()
+            await asyncio.to_thread(self.process.wait)
+
     async def test_enterprise_tenant_ports_isolate_shared_workers_and_work(self):
         from pow_validator import build_stratum_header
 
