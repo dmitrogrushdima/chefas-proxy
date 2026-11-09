@@ -7,7 +7,7 @@
 [![Version](https://img.shields.io/badge/version-0.1.0rc1-cb8b5f?style=flat-square)](docs/release.md)
 [![Stage](https://img.shields.io/badge/stage-pilot_candidate-64748b?style=flat-square)](docs/compatibility.md)
 [![Windows](https://img.shields.io/badge/Windows-x64-334155?style=flat-square)](docs/release.md)
-[![Linux](https://img.shields.io/badge/Ubuntu-24.04_x64_pilot-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
+[![Linux](https://img.shields.io/badge/Linux-x64_build_target-334155?style=flat-square&logo=linux&logoColor=white)](docs/release.md#linux-service)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](#license)
 
 [![Releases](https://img.shields.io/badge/GitHub-Releases-181717?style=flat-square&logo=github)](https://github.com/dmitrogrushdima/chefas-proxy/releases)
@@ -16,16 +16,17 @@
 
 **Installation:** [English](#install-on-your-farm) · [Русский](docs/install.ru.md) · [简体中文](docs/install.zh-CN.md)
 
-[Quick start](#install-on-your-farm) · [Compatibility](#pools--hardware) · [Documentation](docs/README.md) · [Support development](#support-development)
+[Quick start](#install-on-your-farm) · [Web dashboard](#open-the-dashboard) · [Compatibility](#pools--hardware) · [Documentation](docs/README.md) · [Support development](#support-development)
 
 </div>
 
 **CHEFAS Proxy** sits between your Bitcoin ASICs and mining pools. Route connections, follow worker activity and inspect the DevFee ledger from a local dashboard. Built exclusively for **BTC · SHA-256d · Stratum V1**.
 
-> **Pilot candidate:** Windows x64 and Ubuntu 24.04 x64 packages have been
-> tested on the bench. Physical ASIC and pool combinations still need a farm pilot.
+> **Pilot candidate.** Start with one ASIC and confirm that your pool accepts shares before expanding.
 
 ## Install on your farm
+
+Install CHEFAS on a computer or server reachable from the ASICs over your farm network. Each farm runs its own proxy and dashboard.
 
 Open [GitHub Releases](https://github.com/dmitrogrushdima/chefas-proxy/releases) and
 look under **Assets** for your operating system.
@@ -35,39 +36,98 @@ look under **Assets** for your operating system.
 | Windows x64 | `chefas-proxy-windows-x64.zip` |
 | Ubuntu 24.04 x64 | `chefas-proxy-linux-x64.tar.gz` |
 
-During the private pilot, get the same release archive from the maintainer if
-its asset is unavailable to you. GitHub's **Code → Download ZIP** and
+**If Releases is empty, request the standalone pilot archive for your OS from the maintainer.** GitHub's **Code → Download ZIP** and
 **Source code** assets contain the developer checkout. The standalone archives
 already include the runtime and dashboard. Keep the executable and `_internal`
 together after extraction.
 
 ### Windows
 
-1. Extract the archive and run `start.cmd`.
-2. Enter your BTC pool host and port in the generated `chefas-proxy.json`.
-3. Run `start.cmd` again. Copy the `ASIC URL` for your farm network from the console.
+1. Extract the ZIP and double-click `start.cmd`. It opens `chefas-proxy.json`.
+2. Set `pool_host` to your current BTC pool URL, including its port. For example, `"pool_host": "stratum+tcp://btc.viabtc.io:3333"`. Keep the rest of the JSON and save.
+3. Copy `.env.example` to `.env` beside the JSON and set the dashboard credentials below. Run `start.cmd` again. Keep the window open and copy the `ASIC URL` shown in the console.
 
 ### Ubuntu
 
-1. Extract the archive and open a terminal in the extracted directory.
-2. Run `sudo bash install.sh`, then set your BTC pool in
-   `/etc/chefas-proxy/chefas-proxy.json`.
-3. Run `sudo systemctl enable --now chefas-proxy`. Find the `ASIC URL` with
-   `sudo journalctl -u chefas-proxy -n 30 --no-pager`.
+From the directory containing the archive, run:
+
+```sh
+tar -xzf chefas-proxy-linux-x64.tar.gz
+cd chefas-proxy-linux-x64
+sudo bash install.sh
+sudoedit /etc/chefas-proxy/chefas-proxy.json
+```
+
+Set `pool_host` to your BTC pool URL, including its port. Save the JSON. Run
+`sudoedit /etc/chefas-proxy/chefas-proxy.env` and set the dashboard credentials
+below. Then start the service and copy the `ASIC URL` for your farm network:
+
+```sh
+sudo systemctl enable --now chefas-proxy
+sudo journalctl -u chefas-proxy -n 30 --no-pager
+```
+
+<details>
+<summary>Set the dashboard credentials</summary>
+
+Generate two separate values. Use the first for `CHEFAS_PROXY_ADMIN_TOKEN`
+and the second for `CHEFAS_PROXY_SECRETS_KEY`. Remove the leading `#` on these
+two lines in the environment file, keep the trailing `=` of each generated
+value, and store the file privately.
+
+**Windows PowerShell** (run twice):
+
+```powershell
+$bytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+[Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_')
+```
+
+**Ubuntu** (run twice):
+
+```sh
+openssl rand -base64 32 | tr '+/' '-_'
+```
+
+</details>
 
 ### Connect one ASIC first
 
-In the ASIC's pool settings, set `Pool 1` to the local proxy address, for example
-`stratum+tcp://192.168.1.50:3333`. Keep your existing pool worker and password.
-Keep the direct pool address in `Pool 2` as a fallback. Verify that your pool
-accepts work through CHEFAS before adding more ASICs.
+| ASIC setting | Value |
+| --- | --- |
+| **Pool 1 URL** | Copy the farm's `ASIC URL` from the startup output, for example `stratum+tcp://192.168.1.50:3333`. |
+| **Worker and password** | Keep the values already used with your BTC pool. |
+| **Pool 2 URL** | Keep the direct BTC pool address as a fallback, with its existing credentials. |
 
-CHEFAS runs on the farm computer. The ASICs connect over the farm LAN and
-CHEFAS connects to the mining pool. There is no account with CHEFAS to create
-and no public IP to send to the maintainer. The dashboard is local at
-`http://127.0.0.1:8080` on the proxy computer.
+Apply the settings and check that **Pool 1** is active. In CHEFAS, confirm the
+worker appears and accepted shares increase. Check the pool's worker page
+before adding more ASICs. To roll back, restore the original Pool 1 settings.
 
-[Installation and checksum details](docs/release.md) · [Operator configuration](docs/quickstart.md)
+### Open the dashboard
+
+**On the proxy computer:** open `http://127.0.0.1:8080` and sign in with
+`CHEFAS_PROXY_ADMIN_TOKEN`.
+
+**On another computer:** if the proxy host has SSH access, run the following
+in PowerShell or a terminal. Replace `operator` and `192.168.1.50` with
+your SSH username and the proxy host's reachable address.
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:127.0.0.1:8080 operator@192.168.1.50
+```
+
+Keep the terminal open and visit `http://127.0.0.1:18080`. The ASIC uses
+Stratum on port **3333**. The browser uses the dashboard on port **8080**
+on the proxy host, or **18080** through the tunnel.
+
+**Read-only access:** sign in as admin and choose **Routes → Create Observer
+Link**. The link expires after one hour and works for recipients who can reach
+the dashboard. A link using a loopback address requires their own tunnel on
+the same local port.
+
+[Operator guide and troubleshooting](docs/quickstart.md) · [Release checksums](docs/release.md)
 
 ## Built around your farm
 
