@@ -2,6 +2,13 @@
 
 [English](../README.md#download) · [简体中文](install.zh-CN.md)
 
+![Пользовательская панель CHEFAS с работающим ASIC](assets/dashboard-ru.jpg)
+
+*Реальные показатели одного ASIC в режиме просмотра. Имя воркера и IP заменены;
+значения хешрейта показывают конкретный замер, а не обещанную мощность.*
+
+[Короткий обзор панели — 18 секунд, MP4](assets/dashboard-overview-ru.mp4).
+
 ## 1. Скачайте готовую сборку
 
 Откройте [Releases → Assets](https://github.com/dmitrogrushdima/chefas-proxy/releases).

@@ -12,6 +12,11 @@ CHEFAS runs on your farm computer between your ASICs and your BTC pool. It
 provides a local dashboard, shared upstream connections, accepted-work
 statistics and a transparent **1% DevFee target**.
 
+![CHEFAS operator dashboard with a live ASIC worker](docs/assets/dashboard-en.jpg)
+
+*Read-only operator view with real field statistics. Worker name and IP are
+anonymized; hashrate is an example measurement, not a performance promise.*
+
 Start with one ASIC, confirm accepted work at your pool and
 keep a direct-pool fallback before connecting the rest of your farm.
 
