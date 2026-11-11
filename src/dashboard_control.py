@@ -288,7 +288,8 @@ class DashboardControl:
         if path == '/api/access' and method == 'GET':
             await self.respond(writer, b'200 OK', {'role': 'admin' if admin else 'observer' if observer else
                                                  'unauthenticated' if self.admin_token or token else 'public',
-                                                 'admin_configured': self.admin_token is not None})
+                                                 'admin_configured': self.admin_token is not None,
+                                                 'fee_locked': bool(getattr(self.relay, 'fee_locked', False))})
             return True
         if observer and method == 'GET':
             if path == '/api/stream':

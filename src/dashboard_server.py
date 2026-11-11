@@ -95,8 +95,16 @@ async def dashboard_request(reader, writer, metrics, sessions=lambda: [], status
         expected_host = ("host: 127.0.0.1:" + str(sock[1])).encode()
         origins = [h for h in headers if h.startswith(b"origin:")]
         expected_origin = b"origin: http://127.0.0.1:" + str(sock[1]).encode()
+        # A link from installation docs may open the public HTML shell. This
+        # exception is only top-level navigation; APIs, frames and mutations
+        # retain the cross-site denial and normal authentication checks.
+        shell_navigation = (len(first) == 3 and first[0] == b"GET"
+                            and first[1] in (b"/", b"/index.html")
+                            and b"sec-fetch-mode: navigate" in headers
+                            and b"sec-fetch-dest: document" in headers)
         if (len(request) > 8192 or len(first) != 3 or (first[0] != b"GET" and control is None) or hosts != [expected_host]
-                or origins and origins != [expected_origin] or b"sec-fetch-site: cross-site" in headers):
+                or origins and origins != [expected_origin]
+                or b"sec-fetch-site: cross-site" in headers and not shell_navigation):
             status, body, content_type = b"403 Forbidden", b"Forbidden", b"text/plain"
         elif control is not None and await control.handle(reader, writer, first[0].decode("ascii"), first[1].decode("ascii"), request.split(b"\r\n")[1:-2]):
             return

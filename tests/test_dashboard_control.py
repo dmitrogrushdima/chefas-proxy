@@ -55,6 +55,9 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b'400', headers)
         self.assertIsNone(self.control.public_config()['devfee_pool'])
         self.assertIsNone(self.control.public_config()['fee_test'])
+        _, access = await self.request('/api/access', method='GET')
+        self.assertTrue(access['fee_locked'])
+        self.assertEqual(access['role'], 'unauthenticated')
         headers, _ = await self.request('/api/fee-test', 'A'*32,
                                         {'worker': 'private.test', 'percent': 50})
         self.assertIn(b'404', headers)

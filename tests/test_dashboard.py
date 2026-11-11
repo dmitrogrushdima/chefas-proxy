@@ -16,9 +16,10 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.server.close()
         await self.server.wait_closed()
 
-    async def request(self, path, host):
+    async def request(self, path, host, extra_headers=()):
         reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
-        writer.write(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+        fields = ''.join(header + '\r\n' for header in extra_headers)
+        writer.write(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n{fields}\r\n".encode())
         await writer.drain()
         response = await reader.read()
         writer.close()
@@ -44,6 +45,20 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejects_unexpected_host(self):
         self.assertIn(b"403 Forbidden", await self.request("/api/metrics", "attacker.example"))
+
+    async def test_installation_link_can_open_shell_but_not_cross_site_api_or_frame(self):
+        host = f'127.0.0.1:{self.port}'
+        navigation = ('Sec-Fetch-Site: cross-site', 'Sec-Fetch-Mode: navigate',
+                      'Sec-Fetch-Dest: document')
+        for path in ('/', '/index.html'):
+            self.assertIn(b'200 OK', await self.request(path, host, navigation))
+        for path in ('/api/snapshot', '/api/access', '/api/audit-export', '/metrics'):
+            self.assertIn(b'403 Forbidden', await self.request(path, host, navigation))
+        self.assertIn(b'403 Forbidden', await self.request('/', host,
+                      ('Sec-Fetch-Site: cross-site', 'Sec-Fetch-Mode: navigate', 'Sec-Fetch-Dest: iframe')))
+        self.assertIn(b'403 Forbidden', await self.request('/', 'attacker.example', navigation))
+        self.assertIn(b'403 Forbidden', await self.request('/', host,
+                      (*navigation, 'Origin: https://attacker.example')))
 
     async def test_diagnostic_export_does_not_invent_fee_or_difficulty(self):
         response = await self.request("/api/audit-export", f"127.0.0.1:{self.port}")
