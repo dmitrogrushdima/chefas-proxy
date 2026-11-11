@@ -35,3 +35,5 @@ bin/
 test-results.xml
 frozen-verification.json
 linux-install-verification.json
+*.egg-info/
+.coverage
