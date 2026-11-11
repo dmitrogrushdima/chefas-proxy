@@ -88,6 +88,12 @@ def verify(bundle):
                     raise RuntimeError('Frozen dashboard did not become ready')
                 assert status == 200 and current['fee_locked'] is True
                 assert current['fee_test'] is None and current['devfee_pool'] is None
+                assert request(dashboard, '/api/access')[1]['fee_locked'] is True
+                navigation = urllib.request.Request('http://127.0.0.1:' + str(dashboard) + '/',
+                    headers={'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate',
+                             'Sec-Fetch-Dest': 'document'})
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(navigation, timeout=3) as page:
+                    assert page.status == 200 and b'/app.js' in page.read()
                 assert request(dashboard, '/api/config')[0] == 403
                 assert request(dashboard, '/api/fee-test', admin,
                                {'worker': 'private.test', 'percent': 50})[0] == 404

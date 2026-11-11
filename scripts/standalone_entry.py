@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 
 CORE_MODULES = ()  # Replaced in the staged entry point; never import src/ here.
-RELEASE_VERSION = '0.1.0-rc.3'
+RELEASE_VERSION = '0.1.0-rc.4'
 
 
 def setup_files(directory):
