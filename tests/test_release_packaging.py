@@ -94,7 +94,10 @@ class ReleaseConfigurationTests(unittest.TestCase):
                 entry.main()
         finally:
             os.chdir(original_directory)
-        self.assertEqual(captured, [(["chefas-proxy", "--pool-host=example.invalid", "--pool-port=3333", "--pool-port", "4444"], path.parent)])
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][0], ["chefas-proxy", "--pool-host=example.invalid", "--pool-port=3333", "--pool-port", "4444"])
+        # Windows runner TEMP can use its 8.3 alias while cwd is expanded.
+        self.assertTrue(captured[0][1].samefile(path.parent))
 
     def test_invalid_configuration_never_echoes_credential(self):
         path = self.config({"CHEFAS_PROXY_ADMIN_TOKEN": "do-not-print-this-secret"})
