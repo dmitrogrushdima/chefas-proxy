@@ -4,6 +4,9 @@ set -euo pipefail
 
 if [[ "${1:-}" == --help ]]; then
     printf '%s\n' 'Usage: sudo bash install.sh [extracted-linux-release-directory]'
+    printf '%s\n' 'First installation only. Existing installations are not overwritten.' \
+        'Edit /etc/chefas-proxy/chefas-proxy.json, then start the chefas-proxy service.' \
+        'Private dashboard credentials are generated in /etc/chefas-proxy/chefas-proxy.env.'
     exit 0
 fi
 if (( $# > 1 || EUID != 0 )); then
