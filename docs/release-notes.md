@@ -1,5 +1,9 @@
 # CHEFAS Proxy — dashboard and installation update
 
+[Installation](https://github.com/dmitrogrushdima/chefas-proxy#download) ·
+[Русский](https://github.com/dmitrogrushdima/chefas-proxy/blob/main/docs/install.ru.md) ·
+[简体中文](https://github.com/dmitrogrushdima/chefas-proxy/blob/main/docs/install.zh-CN.md)
+
 BTC / SHA-256d / Stratum V1. Packages include the native runtime and dashboard;
 Python is not required on the farm computer. Extract the full archive and keep
 the executable together with `_internal`.

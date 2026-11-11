@@ -53,4 +53,10 @@ sudo sed -n 's/^CHEFAS_PROXY_ADMIN_TOKEN=//p' /etc/chefas-proxy/chefas-proxy.env
 矿池确认难度的 1%，不提供维护者私有面板或手动费率控制。
 
 先测试一台 ASIC 并确认矿池接受份额；Pool 2 保留原有直连矿池作为备用。
+
+面板显示矿池接受的工作量、分时算力、拒绝份额、矿工状态和 DevFee 统计。
+没有通用的 TH/s 目标；应在没有维修和停机的完整时间窗口内，
+与自己的 ASIC 型号通常表现进行比较。过期份额已包含在拒绝份额中。
+流量计数是应用层字节，不包括 TCP/TLS 开销；估算节省比例不代表
+整台电脑的总网络用量，也不是流量节省保证。
 [故障排查](quickstart.md) · [兼容性](compatibility.md)

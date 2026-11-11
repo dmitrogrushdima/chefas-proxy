@@ -27,7 +27,10 @@ farm configuration. Configure only your own customer pool and ASIC identities.
 
 The default miner listener is `0.0.0.0:3333`, restricted to loopback and private IPv4 sources. Use `--allow-cidr YOUR_LAN_CIDR` and restrict the port in the host firewall to your farm subnet. For local-only use, set `--listen-host 127.0.0.1`.
 
-`--pool-host` and `--devfee-host` accept bare hosts with separate port flags or full `stratum+ssl://HOST:PORT` URLs. SSL URLs verify the certificate and hostname. `--tls-ca-file PATH` supplies a private CA; it does not disable verification. `--tls` forces TLS for every upstream; omit that global flag when intentionally mixing TCP and SSL routes.
+Set `pool_host` in `chefas-proxy.json` to your pool's BTC Stratum address,
+for example `stratum+tcp://btc.viabtc.io:3333`. A
+`stratum+ssl://HOST:PORT` address uses TLS with certificate and hostname
+verification. Use the protocol and port documented by your pool.
 
 Configure the first ASIC with:
 
@@ -39,7 +42,11 @@ Configure the first ASIC with:
 
 The ASIC-facing connection is TCP, even when upstreams use TLS. Preserve a direct-pool backup entry on the ASIC according to the farm operator's availability policy. The proxy's `--backup-host/--backup-port` is a separate upstream failover mechanism.
 
-Enable `--active-router --validate-pow` for stateful routing and local PoW checks. Configure all three fee fields (`--devfee-host`, port or URL port, `--devfee-worker`) when using DevFee. `--require-devfee` explicitly stops mining after a sustained fee outage; restarting a still-broken configuration does not fix that outage.
+The generated configuration already enables routing, aggregation and local
+proof-of-work validation. The standalone release configures its fixed 1%
+DevFee automatically; no commission account or fee settings are needed from
+the farm operator. Developer-only flags are described separately in the
+engineering documentation.
 
 ## Open the dashboard
 
@@ -76,7 +83,22 @@ administrator, generate the link from that HTTPS address.
 
 ## Verify before expanding
 
-Check accepted shares at **both pools**, compare pool rejects, inspect the audit export and confirm worker identity. Measure reconnects and hashrate over complete windows; an estimate during warmup is not farm capacity. Test primary failure, restoration and an orderly shutdown on the actual OS. Record ASIC model, firmware version and pool endpoint in the [compatibility matrix](compatibility.md).
+Confirm accepted work on **your own pool account** and check the worker name,
+rejects and connection state in CHEFAS. The panel's **DevFee accounting** shows
+the fixed target and work accepted on the commission route; you do not need
+access to the developer's pool account. The JSON export supplies more detail.
+
+Compare your ASIC's usual performance over complete measurement windows.
+Different models have different capacities; CHEFAS has no universal TH/s
+target. Warmup, share difficulty, outages and repair periods affect estimates.
+Once the first ASIC works correctly, add the rest gradually and confirm
+accepted work for each worker. Record model, firmware and pool endpoint when
+reporting a compatibility problem.
+
+The traffic counters show application bytes observed by the proxy, excluding
+TCP/TLS overhead. Estimated savings are a comparison model, not the network
+adapter's total usage or a promised reduction. Stale shares are included in
+rejected shares, so do not add those columns together.
 
 If chips disconnect after hot changes, use `--hot-switch-mode reconnect` while investigating. Automatic fallback profiles are local, expire after 24 hours and can be reset by stopping the process and removing the chosen compatibility-state file. Start with conservative defaults; do not copy zero-jitter settings from laboratory tests.
 
