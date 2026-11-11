@@ -128,7 +128,7 @@ by the systemd manager. State and logs live in `/var/lib/chefas-proxy` and
 
 ### Prometheus and DevFee journal
 
-For the aggregation pilot, set `"aggregate": true` alongside
+For aggregation, set `"aggregate": true` alongside
 `"active_router": true` in `chefas-proxy.json`.
 Scrape `http://127.0.0.1:8080/metrics` on the proxy host, using the configured
 dashboard port if different. LAN and WAN counters measure application bytes
@@ -148,9 +148,9 @@ and committed result locally.
 
 Standalone startup checks are packaging checks. They do not certify real ASIC
 compatibility, network throughput, Linux deployment, or unattended long-term
-operation; these remain pilot qualification tasks.
+operation; these require separate deployment validation.
 
-### Pilot console
+### Runtime console
 
 Both launchers and the Linux service print local ASIC URLs and primary/backup TCP or TLS
 connection timings. It then reports worker, shared-socket and share counts every
@@ -177,7 +177,7 @@ user work recorded by this version. Older journal rows lack eligibility
 metadata, so they are not retroactively made eligible for commission. Use a
 separate journal per independent deployment.
 
-### Enterprise pilot settings
+### Farm settings
 
 Enable `aggregate_worker_mode: "account"` to combine dotted worker names
 under the same account. For example, `user.worker_1` and `user.worker_2`

@@ -1,6 +1,6 @@
 # Operator quick start
 
-Use a trusted standalone build made for the pilot machine: it bundles Python and the native core. Start with [Install on your farm](../README.md#download) for the download, installation and ASIC setup. Only the separate native development runtime needs an installed matching Python; see [development](development.md).
+Use a trusted standalone build made for your farm computer: it bundles Python and the native core. Start with [Install on your farm](../README.md#download) for the download, installation and ASIC setup. Only the separate native development runtime needs an installed matching Python; see [development](development.md).
 
 ## Configure the server
 
@@ -29,7 +29,7 @@ The default miner listener is `0.0.0.0:3333`, restricted to loopback and private
 
 `--pool-host` and `--devfee-host` accept bare hosts with separate port flags or full `stratum+ssl://HOST:PORT` URLs. SSL URLs verify the certificate and hostname. `--tls-ca-file PATH` supplies a private CA; it does not disable verification. `--tls` forces TLS for every upstream; omit that global flag when intentionally mixing TCP and SSL routes.
 
-Configure each pilot ASIC with:
+Configure the first ASIC with:
 
 | ASIC field | Value |
 | --- | --- |
