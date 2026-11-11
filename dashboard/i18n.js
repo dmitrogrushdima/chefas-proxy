@@ -2,11 +2,11 @@
 
 const translations = {
   ru: {
-    "CHEFAS Proxy — overview":"CHEFAS Proxy — обзор", "Sections":"Разделы", "WORKSPACE":"РАБОЧЕЕ ПРОСТРАНСТВО", "OVERVIEW":"ОБЗОР", "Overview":"Обзор", "Connections":"Подключения", "Pools":"Пулы", "Diagnostics":"Диагностика", "Local dashboard":"Локальная панель", "Data stays here":"Данные остаются здесь", "Language":"Язык", "PILOT BUILD":"ПИЛОТНАЯ ВЕРСИЯ", "Connecting":"Подключение", "CONTROL CENTER":"ЦЕНТР УПРАВЛЕНИЯ", "Proxy overview":"Обзор прокси", "Connections and pool activity in one place.":"Состояние подключений и работы с пулами в одном месте.", "Waiting for data":"Ожидание данных", "Refresh data":"Обновить данные", "Refresh":"Обновить", "Proxy connection lost. The last data may be out of date.":"Нет связи с прокси. Последние данные могут быть неактуальны.", "Overview metrics":"Общие показатели", "Active connections":"Активные подключения", "Accepted shares":"Принято шар", "Since proxy start":"За время работы прокси", "Rejected shares":"Отклонено шар", "From pool responses":"По ответам пула", "Connection errors":"Ошибки подключения", "While connecting to a pool":"При подключении к пулу", "MONITORING":"МОНИТОРИНГ", "Active miner sessions":"Активные сеансы майнеров", "Search worker":"Поиск воркера", "Status filter":"Фильтр состояния", "All sessions":"Все сеансы", "Connected":"Подключены", "WORKER":"ВОРКЕР", "STATUS":"СОСТОЯНИЕ", "ROUTE":"МАРШРУТ", "ACCEPTED":"ПРИНЯТО", "REJECTED":"ОТКЛОНЕНО", "DURATION":"ВРЕМЯ", "Current session data":"Данные текущих сеансов", "Auto-refresh · 3 sec":"Автообновление · 3 сек", "Counters since process start":"Счётчики за время работы процесса", "Total connections":"Всего подключений", "Backup connections":"Переходов на резерв", "Pending / unmatched":"Ожидают ответа / не сопоставлены", "Capacity limit / obvious loops":"Лимит / очевидные петли", "Counters are based on observed pool responses and may differ from pool statistics. They do not calculate revenue.":"Счётчики основаны на наблюдаемых ответах пула и могут отличаться от его статистики. Это не расчёт дохода.", "Current configuration":"Текущая конфигурация", "PRIMARY POOL":"ОСНОВНОЙ ПУЛ", "BACKUP POOL":"РЕЗЕРВНЫЙ ПУЛ", "On connection failure":"При ошибке подключения", "Proxy port":"Порт прокси", "NOTE":"НА ЗАМЕТКУ", "Clarity that matters":"Прозрачно по делу", "We show only what we can observe. Hashrate, revenue and DevFee will appear once implemented and verified.":"Показываем только то, что можем наблюдать. Хешрейт, доход и DevFee появятся после их реализации и проверки.", "About the counters":"О счётчиках", "PILOT CANDIDATE":"ПИЛОТНАЯ ВЕРСИЯ", "Built for those who keep things under control.":"Создано для тех, кто держит процесс под контролем.", "Local monitoring · BTC / Stratum V1":"Локальный мониторинг · BTC / Stratum V1",
+    "CHEFAS Proxy — overview":"CHEFAS Proxy — обзор", "Sections":"Разделы", "WORKSPACE":"РАБОЧЕЕ ПРОСТРАНСТВО", "OVERVIEW":"ОБЗОР", "Overview":"Обзор", "Connections":"Подключения", "Pools":"Пулы", "Diagnostics":"Диагностика", "Local dashboard":"Локальная панель", "Data stays here":"Данные остаются здесь", "Language":"Язык", "Connecting":"Подключение", "CONTROL CENTER":"ЦЕНТР УПРАВЛЕНИЯ", "Proxy overview":"Обзор прокси", "Connections and pool activity in one place.":"Состояние подключений и работы с пулами в одном месте.", "Waiting for data":"Ожидание данных", "Refresh data":"Обновить данные", "Refresh":"Обновить", "Proxy connection lost. The last data may be out of date.":"Нет связи с прокси. Последние данные могут быть неактуальны.", "Overview metrics":"Общие показатели", "Active connections":"Активные подключения", "Accepted shares":"Принято шар", "Since proxy start":"За время работы прокси", "Rejected shares":"Отклонено шар", "From pool responses":"По ответам пула", "Connection errors":"Ошибки подключения", "While connecting to a pool":"При подключении к пулу", "MONITORING":"МОНИТОРИНГ", "Active miner sessions":"Активные сеансы майнеров", "Search worker":"Поиск воркера", "Status filter":"Фильтр состояния", "All sessions":"Все сеансы", "Connected":"Подключены", "WORKER":"ВОРКЕР", "STATUS":"СОСТОЯНИЕ", "ROUTE":"МАРШРУТ", "ACCEPTED":"ПРИНЯТО", "REJECTED":"ОТКЛОНЕНО", "DURATION":"ВРЕМЯ", "Current session data":"Данные текущих сеансов", "Auto-refresh · 3 sec":"Автообновление · 3 сек", "Counters since process start":"Счётчики за время работы процесса", "Total connections":"Всего подключений", "Backup connections":"Переходов на резерв", "Pending / unmatched":"Ожидают ответа / не сопоставлены", "Capacity limit / obvious loops":"Лимит / очевидные петли", "Counters are based on observed pool responses and may differ from pool statistics. They do not calculate revenue.":"Счётчики основаны на наблюдаемых ответах пула и могут отличаться от его статистики. Это не расчёт дохода.", "Current configuration":"Текущая конфигурация", "PRIMARY POOL":"ОСНОВНОЙ ПУЛ", "BACKUP POOL":"РЕЗЕРВНЫЙ ПУЛ", "On connection failure":"При ошибке подключения", "Proxy port":"Порт прокси", "NOTE":"НА ЗАМЕТКУ", "Clarity that matters":"Прозрачно по делу", "We show only what we can observe. Hashrate, revenue and DevFee will appear once implemented and verified.":"Показываем только то, что можем наблюдать. Хешрейт, доход и DevFee появятся после их реализации и проверки.", "About the counters":"О счётчиках", "Built for those who keep things under control.":"Создано для тех, кто держит процесс под контролем.", "Local monitoring · BTC / Stratum V1":"Локальный мониторинг · BTC / Stratum V1",
     "No connections yet":"Подключений пока нет", "Miners connected to the proxy will appear here.":"Здесь появятся майнеры, подключённые к прокси.", "Nothing found":"Ничего не найдено", "Try changing the search or filter.":"Попробуйте изменить поиск или фильтр.", "Waiting for authorization":"Ожидание авторизации", "Primary":"Основной", "Backup":"Резервный", "Not configured":"Не настроен", "TLS · certificate verified":"TLS · проверка сертификата", "TCP · no TLS":"TCP · без TLS", "Online":"На связи", "Offline":"Нет связи", "Limit":"Лимит", "Updated":"Обновлено", "sec":"с", "min":"мин", "hr":"ч"
   },
   "zh-CN": {
-    "CHEFAS Proxy — overview":"CHEFAS Proxy — 概览", "Sections":"栏目", "WORKSPACE":"工作区", "OVERVIEW":"概览", "Overview":"概览", "Connections":"连接", "Pools":"矿池", "Diagnostics":"诊断", "Local dashboard":"本地面板", "Data stays here":"数据保留在本地", "Language":"语言", "PILOT BUILD":"测试版本", "Connecting":"正在连接", "CONTROL CENTER":"控制中心", "Proxy overview":"代理概览", "Connections and pool activity in one place.":"在一处查看连接和矿池状态。", "Waiting for data":"正在等待数据", "Refresh data":"刷新数据", "Refresh":"刷新", "Proxy connection lost. The last data may be out of date.":"代理连接已断开，显示的数据可能已过期。", "Overview metrics":"概览指标", "Active connections":"活动连接", "Accepted shares":"已接受份额", "Since proxy start":"自代理启动以来", "Rejected shares":"已拒绝份额", "From pool responses":"根据矿池响应", "Connection errors":"连接错误", "While connecting to a pool":"连接矿池时", "MONITORING":"监控", "Active miner sessions":"活动矿机会话", "Search worker":"搜索矿工", "Status filter":"状态筛选", "All sessions":"全部会话", "Connected":"已连接", "WORKER":"矿工", "STATUS":"状态", "ROUTE":"路由", "ACCEPTED":"已接受", "REJECTED":"已拒绝", "DURATION":"时长", "Current session data":"当前会话数据", "Auto-refresh · 3 sec":"自动刷新 · 3 秒", "Counters since process start":"进程启动以来的计数", "Total connections":"总连接数", "Backup connections":"备用矿池连接数", "Pending / unmatched":"等待响应 / 无法匹配", "Capacity limit / obvious loops":"连接数上限 / 明显环路", "Counters are based on observed pool responses and may differ from pool statistics. They do not calculate revenue.":"计数基于观察到的矿池响应，可能与矿池统计不同，不用于计算收益。", "Current configuration":"当前配置", "PRIMARY POOL":"主矿池", "BACKUP POOL":"备用矿池", "On connection failure":"连接失败时使用", "Proxy port":"代理端口", "NOTE":"提示", "Clarity that matters":"清晰透明", "We show only what we can observe. Hashrate, revenue and DevFee will appear once implemented and verified.":"只显示可以观察到的数据。算力、收益和开发费将在实现并验证后显示。", "About the counters":"关于计数器", "PILOT CANDIDATE":"试运行版本", "Built for those who keep things under control.":"为掌控运行状态的人而设计。", "Local monitoring · BTC / Stratum V1":"本地监控 · BTC / Stratum V1",
+    "CHEFAS Proxy — overview":"CHEFAS Proxy — 概览", "Sections":"栏目", "WORKSPACE":"工作区", "OVERVIEW":"概览", "Overview":"概览", "Connections":"连接", "Pools":"矿池", "Diagnostics":"诊断", "Local dashboard":"本地面板", "Data stays here":"数据保留在本地", "Language":"语言", "Connecting":"正在连接", "CONTROL CENTER":"控制中心", "Proxy overview":"代理概览", "Connections and pool activity in one place.":"在一处查看连接和矿池状态。", "Waiting for data":"正在等待数据", "Refresh data":"刷新数据", "Refresh":"刷新", "Proxy connection lost. The last data may be out of date.":"代理连接已断开，显示的数据可能已过期。", "Overview metrics":"概览指标", "Active connections":"活动连接", "Accepted shares":"已接受份额", "Since proxy start":"自代理启动以来", "Rejected shares":"已拒绝份额", "From pool responses":"根据矿池响应", "Connection errors":"连接错误", "While connecting to a pool":"连接矿池时", "MONITORING":"监控", "Active miner sessions":"活动矿机会话", "Search worker":"搜索矿工", "Status filter":"状态筛选", "All sessions":"全部会话", "Connected":"已连接", "WORKER":"矿工", "STATUS":"状态", "ROUTE":"路由", "ACCEPTED":"已接受", "REJECTED":"已拒绝", "DURATION":"时长", "Current session data":"当前会话数据", "Auto-refresh · 3 sec":"自动刷新 · 3 秒", "Counters since process start":"进程启动以来的计数", "Total connections":"总连接数", "Backup connections":"备用矿池连接数", "Pending / unmatched":"等待响应 / 无法匹配", "Capacity limit / obvious loops":"连接数上限 / 明显环路", "Counters are based on observed pool responses and may differ from pool statistics. They do not calculate revenue.":"计数基于观察到的矿池响应，可能与矿池统计不同，不用于计算收益。", "Current configuration":"当前配置", "PRIMARY POOL":"主矿池", "BACKUP POOL":"备用矿池", "On connection failure":"连接失败时使用", "Proxy port":"代理端口", "NOTE":"提示", "Clarity that matters":"清晰透明", "We show only what we can observe. Hashrate, revenue and DevFee will appear once implemented and verified.":"只显示可以观察到的数据。算力、收益和开发费将在实现并验证后显示。", "About the counters":"关于计数器", "Built for those who keep things under control.":"为掌控运行状态的人而设计。", "Local monitoring · BTC / Stratum V1":"本地监控 · BTC / Stratum V1",
     "No connections yet":"暂无连接", "Miners connected to the proxy will appear here.":"连接到代理的矿机会显示在这里。", "Nothing found":"未找到结果", "Try changing the search or filter.":"请尝试更改搜索或筛选条件。", "Waiting for authorization":"等待授权", "Primary":"主矿池", "Backup":"备用矿池", "Not configured":"未配置", "TLS · certificate verified":"TLS · 验证证书", "TCP · no TLS":"TCP · 未加密", "Online":"在线", "Offline":"离线", "Limit":"上限", "Updated":"更新于", "sec":"秒", "min":"分", "hr":"小时"
   }
 };
@@ -243,7 +243,8 @@ translations["zh-CN"]["Session"] = "会话";
 translations.ru["History in memory"] = "История только в памяти";
 translations["zh-CN"]["History in memory"] = "历史仅保留在内存中";
 const locales = {en: "en-US", ru: "ru-RU", "zh-CN": "zh-CN"};
-let language = "en";
+const browserLanguage = (navigator.language || "en").toLowerCase();
+let language = browserLanguage.startsWith("ru") ? "ru" : browserLanguage.startsWith("zh") ? "zh-CN" : "en";
 try { const saved = localStorage.getItem("chefas-proxy-language"); if (Object.prototype.hasOwnProperty.call(locales, saved)) language = saved; } catch (_) { /* storage can be disabled */ }
 Object.assign(translations.ru, {
   "Route performance": "Работа по маршрутам",
@@ -285,6 +286,57 @@ translations["zh-CN"]["Pool-accepted shares · 15 minute window"] = "矿池已�
 
 translations.ru["Live estimated hashrate"] = "Текущий оценочный хешрейт";
 translations["zh-CN"]["Live estimated hashrate"] = "实时估算算力";
+
+Object.assign(translations.ru, {
+  "Sign in to your dashboard": "Вход в вашу панель",
+  "Use the token created during installation to manage your farm.": "Используйте токен, созданный при установке, для управления своей фермой.",
+  "Panel token": "Токен панели",
+  "Where is my token?": "Где найти токен?",
+  "Windows: open .env beside chefas-proxy.json. Copy only the value after CHEFAS_PROXY_ADMIN_TOKEN=.": "Windows: откройте .env рядом с chefas-proxy.json. Скопируйте только значение после CHEFAS_PROXY_ADMIN_TOKEN=.",
+  "Ubuntu: the token is in /etc/chefas-proxy/chefas-proxy.env. See the installation guide for the command.": "Ubuntu: токен находится в /etc/chefas-proxy/chefas-proxy.env. Команда приведена в инструкции по установке.",
+  "Connection details": "Подробности подключений",
+  "IP access controls": "Управление доступом по IP",
+  "Connect your first ASIC": "Подключите первый ASIC",
+  "The proxy is running. Worker statistics appear after pool authorization.": "Прокси запущен. Статистика появится после авторизации воркера на пуле.",
+  "In ASIC Pool 1, use the proxy computer’s LAN address and Stratum port.": "В Pool 1 ASIC укажите локальный адрес компьютера с прокси и порт Stratum.",
+  "Keep your existing pool worker name and password.": "Оставьте прежнее имя воркера и пароль пула.",
+  "Keep the direct pool in Pool 2 as a fallback.": "Сохраните прямой пул в Pool 2 как резерв.",
+  "Use an address reachable from the ASIC network, not 127.0.0.1. If several ASIC URLs appear in the console, choose the address on the ASIC network.": "Используйте адрес, доступный из сети ASIC, а не 127.0.0.1. Если в консоли несколько ASIC URL, выберите адрес в сети ASIC.",
+  "Stratum port": "Порт Stratum",
+  "DevFee accounting": "Учёт DevFee",
+  "Accounting details": "Подробности учёта",
+  "Remaining fee work": "Остаток работы для комиссии",
+  "Pool-confirmed work. Short windows may differ from the target.": "Работа, принятая пулом. На коротком интервале доля может отличаться от цели.",
+  "DevFee uses separate pool jobs; estimates are not payouts.": "DevFee использует отдельные задания пула; оценки не являются выплатами.",
+  "Fixed DevFee target": "Фиксированная цель DevFee",
+  "Measured by pool-accepted difficulty": "По сложности, принятой пулом",
+  "Fixed target: 1%. The rate cannot be changed in this release.": "Фиксированная цель: 1%. В этой сборке ставка не изменяется."
+});
+Object.assign(translations["zh-CN"], {
+  "Sign in to your dashboard": "登录您的面板",
+  "Use the token created during installation to manage your farm.": "使用安装时生成的令牌管理自己的矿场。",
+  "Panel token": "面板令牌",
+  "Where is my token?": "在哪里找到令牌？",
+  "Windows: open .env beside chefas-proxy.json. Copy only the value after CHEFAS_PROXY_ADMIN_TOKEN=.": "Windows：打开 chefas-proxy.json 旁的 .env，只复制 CHEFAS_PROXY_ADMIN_TOKEN= 后的值。",
+  "Ubuntu: the token is in /etc/chefas-proxy/chefas-proxy.env. See the installation guide for the command.": "Ubuntu：令牌位于 /etc/chefas-proxy/chefas-proxy.env，读取命令见安装指南。",
+  "Connection details": "连接详情",
+  "IP access controls": "IP 访问管理",
+  "Connect your first ASIC": "连接第一台 ASIC",
+  "The proxy is running. Worker statistics appear after pool authorization.": "代理已运行，矿池授权后将显示矿工统计。",
+  "In ASIC Pool 1, use the proxy computer’s LAN address and Stratum port.": "在 ASIC 的 Pool 1 中填写代理电脑的局域网地址和 Stratum 端口。",
+  "Keep your existing pool worker name and password.": "保留原有矿工名和矿池密码。",
+  "Keep the direct pool in Pool 2 as a fallback.": "在 Pool 2 保留直连矿池作为备用。",
+  "Use an address reachable from the ASIC network, not 127.0.0.1. If several ASIC URLs appear in the console, choose the address on the ASIC network.": "使用 ASIC 网络可以访问的地址，不要使用 127.0.0.1；若控制台显示多个 ASIC URL，请选择 ASIC 所在网络的地址。",
+  "Stratum port": "Stratum 端口",
+  "DevFee accounting": "DevFee 统计",
+  "Accounting details": "统计详情",
+  "Remaining fee work": "剩余佣金工作量",
+  "Pool-confirmed work. Short windows may differ from the target.": "基于矿池确认的工作量，短期比例可能偏离目标。",
+  "DevFee uses separate pool jobs; estimates are not payouts.": "DevFee 使用独立的矿池任务，估算值不等于收益。",
+  "Fixed DevFee target": "固定 DevFee 目标",
+  "Measured by pool-accepted difficulty": "按矿池接受的难度计算",
+  "Fixed target: 1%. The rate cannot be changed in this release.": "固定目标为 1%，此发行版不能更改费率。"
+});
 
 const staticNodes = [];
 const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);

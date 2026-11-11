@@ -153,6 +153,22 @@ table thead th{position:sticky;top:0;z-index:1}
   padding: 16px 22px;
   font-weight: 650;
 }
+.user-details > summary {
+  cursor: pointer;
+  padding: 16px 22px;
+  font-weight: 650;
+}
+.user-details > summary:focus-visible, .login-help > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+.user-details[open] > summary { border-bottom: 1px solid var(--border); }
+.login-help { margin: 14px 0; font-size: 14px; line-height: 1.5; }
+.login-help > summary, .accounting-details > summary { cursor: pointer; }
+.getting-started ol { margin: 0 24px 18px 44px; padding: 0; line-height: 1.8; }
+.getting-started .worker-notice { margin-bottom: 16px; }
+.fee-policy { font-weight: 600; line-height: 1.6; }
+.accounting-details { margin: 16px 0; }
 .connection-history > summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -4px;

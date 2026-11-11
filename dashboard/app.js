@@ -23,6 +23,7 @@ let adminToken = "";
 try { adminToken = sessionStorage.getItem("chefas-proxy-admin") || ""; } catch (_) {}
 let accessRole = observerToken ? "observer" : "public";
 let routeConfig = null;
+let feePolicyLocked = false;
 // Farm operators also sign in as admin. Only the private test listener
 // advertises manual-fee controls and the combined VPS view.
 const serviceAdmin = () => accessRole === "admin" && !!routeConfig?.fee_test && !routeConfig?.fee_locked;
@@ -230,11 +231,11 @@ function renderSnapshot() {
   $("last-update").textContent = lastUpdate ? `${t("Updated")} ${lastUpdate.toLocaleTimeString(locales[language])}` : t("Waiting for data");
   if (!latestMetrics || !latestStatus) { $("active-hint").textContent = t("Waiting for data"); renderSessions(); return; }
   const metrics = latestMetrics, status = latestStatus, sessions = latestSessions;
-  const pilot = accessRole === "admin" ? pilotSnapshot : null;
-  const combined = accessRole === "admin" && pilotSeen;
+  const pilot = serviceAdmin() ? pilotSnapshot : null;
+  const combined = serviceAdmin() && pilotSeen;
   const overviewSessions = pilot ? [...sessions, ...pilot.sessions] : sessions;
   const scope = $("overview-scope");
-  scope.hidden = !(accessRole === "admin" && pilotSeen);
+  scope.hidden = !combined;
   scope.textContent = t(pilot ? "Overview includes ports 3333 and 3334." : "Port 3333 data unavailable. Overview shows port 3334 only.");
   renderRouteDiagnostics(status);
   $("active").textContent = number(combined ? overviewSessions.length : metrics.active);
@@ -245,7 +246,7 @@ function renderSnapshot() {
   $("accepted-scope").textContent = t(combined ? "Current session data" : "Since proxy start");
   $("rejected-scope").textContent = t(combined ? "Current session data" : "From pool responses");
   $("upstream-failure-hint").textContent = t("While connecting to a pool") +
-    (accessRole === "admin" && pilotSeen ? " · 3334" : "");
+    (combined ? " · 3334" : "");
   $("upstream-failures").textContent = number(metrics.upstream_failures);
   $("connections-total").textContent = number(metrics.connections);
   $("backup-connections").textContent = number(metrics.backup_connections);
@@ -261,12 +262,15 @@ function renderSnapshot() {
   const totalRate = estimates.length ? estimates.reduce((sum, estimate) => sum + estimate.hashrate_hs, 0) : null;
   $("kpi-hashrate").textContent = hashrate(totalRate) + (estimates.length && (estimates.length !== onlineWorkers.length || estimates.some(estimate => estimate.warmup)) ? " *" : "");
   $("kpi-workers").textContent = number(onlineWorkers.length);
-  const debt = String(audit?.outstanding_fee_difficulty ?? "—");
   const feeShare = routeFeeShare((pilot?.workers || []).filter(worker => worker.status === "online"));
-  $("kpi-fee-label").textContent = t(combined ? "DevFee share 1h" : "DevFee debt");
-  $("kpi-fee-hint").textContent = combined ? "3333 · " + t("Accepted difficulty · target 1%") : t("Accepted difficulty");
-  $("kpi-fee-debt").textContent = combined ? formatFeeShare(feeShare) : debt.length > 24 ? debt.slice(0, 21) + "…" : debt;
-  $("kpi-fee-debt").title = combined ? "" : debt;
+  const actualFee = Number.isFinite(audit?.fee_percentage) ? number(Math.round(audit.fee_percentage * 100) / 100) + "%" : "—";
+  $("kpi-fee-label").textContent = t(combined ? "DevFee share 1h" : feePolicyLocked ? "Fixed DevFee target" : "DevFee share of difficulty");
+  $("kpi-fee-hint").textContent = combined ? "3333 · " + t("Accepted difficulty · target 1%") : t("Measured by pool-accepted difficulty");
+  $("kpi-fee-debt").textContent = combined ? formatFeeShare(feeShare) : feePolicyLocked ? "1%" : actualFee;
+  $("kpi-fee-debt").title = "";
+  $("fee-policy-hint").textContent = feePolicyLocked ? t("Fixed target: 1%. The rate cannot be changed in this release.") : "";
+  $("getting-started").hidden = !(accessRole === "admin" && feePolicyLocked && !latestRegistry.workers.length);
+  $("setup-listener").textContent = status.listeners?.join(", ") || "—";
   $("audit-debt").textContent = audit?.outstanding_fee_difficulty ?? "—";
   $("audit-user").textContent = audit ? audit.user_accepted_difficulty + " / " + number(audit.user_accepted_shares) : "—";
   $("audit-fee").textContent = audit ? audit.fee_accepted_difficulty + " / " + number(audit.fee_accepted_shares) : "—";
@@ -461,6 +465,8 @@ function renderWorkers() {
 function renderEvents() {
   const rows = $("fee-events");
   rows.replaceChildren();
+  $("fee-log").hidden = !serviceAdmin();
+  if (!serviceAdmin()) return;
   for (const event of latestEvents.slice(-50).reverse()) {
     const row = document.createElement("tr");
     const timestamp = new Date(event.timestamp);
@@ -475,6 +481,13 @@ function renderEvents() {
 
 $("worker-search").addEventListener("input", renderWorkers);
 $("worker-filter").addEventListener("change", renderWorkers);
+
+function revealNavigationTarget() {
+  const target = document.getElementById(location.hash.slice(1));
+  if (target?.tagName === "DETAILS") target.open = true;
+}
+window.addEventListener("hashchange", revealNavigationTarget);
+revealNavigationTarget();
 
 
 function renderAccess() {
@@ -505,6 +518,7 @@ function managementMessage(message) { $("management-result").textContent = messa
 async function bootAccess() {
   try {
     const access = await api("/api/access");
+    feePolicyLocked = access.fee_locked === true;
     accessRole = access.role;
     renderAccess();
     if (accessRole === "unauthenticated" && !observerToken && !$("login-dialog").open) $("login-dialog").showModal();
