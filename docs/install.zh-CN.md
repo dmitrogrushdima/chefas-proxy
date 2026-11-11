@@ -1,6 +1,13 @@
 # 安装 CHEFAS Proxy
 
-[English](../README.md#download) · [Русский](install.ru.md)
+[English](quickstart.md) · [Русский](install.ru.md)
+
+## 面板视频
+
+[观看面板演示：18 秒，MP4，俄语界面](assets/dashboard-overview-ru.mp4)。
+
+视频展示一台 ASIC 的真实统计和只读用户界面，矿工名与 IP 已匿名化。
+这是界面演示，不是安装过程录像。
 
 ## 下载
 

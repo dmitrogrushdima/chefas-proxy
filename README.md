@@ -13,7 +13,7 @@
 [![Telegram](https://img.shields.io/badge/Telegram-News-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxy)
 [![Community](https://img.shields.io/badge/Telegram-Community-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/Chefasproxychat)
 
-**Installation:** [English](#install-on-your-farm) · [Русский](docs/install.ru.md) · [简体中文](docs/install.zh-CN.md)
+**Installation:** [English](docs/quickstart.md) · [Русский](docs/install.ru.md) · [简体中文](docs/install.zh-CN.md)
 
 [Quick start](#install-on-your-farm) · [Web dashboard](#open-the-dashboard) · [Compatibility](#pools--hardware) · [Documentation](docs/README.md) · [Support development](#support-development)
 

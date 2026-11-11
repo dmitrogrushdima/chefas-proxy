@@ -1,6 +1,6 @@
 # Documentation
 
-**Install:** [English](../README.md#download) · [Русский](install.ru.md) · [简体中文](install.zh-CN.md).
+**Install:** [English](quickstart.md) · [Русский](install.ru.md) · [简体中文](install.zh-CN.md).
 The farm dashboard is separate from the maintainer's private VPS administration.
 
 Start with the [operator quick start](quickstart.md), [hardware compatibility](compatibility.md) and [build/test guide](development.md).

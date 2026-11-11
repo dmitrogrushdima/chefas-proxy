@@ -2,6 +2,13 @@
 
 Use a trusted standalone build made for your farm computer: it bundles Python and the native core. Start with [Install on your farm](../README.md#download) for the download, installation and ASIC setup. Only the separate native development runtime needs an installed matching Python; see [development](development.md).
 
+## Dashboard video
+
+[Watch the panel overview — 18 seconds, MP4, Russian UI](assets/dashboard-overview-ru.mp4).
+
+The clip shows real statistics from one ASIC in the read-only operator view.
+Worker name and IP are anonymized. This is an interface overview, not an installation recording.
+
 ## Configure the server
 
 The standalone launchers generate `chefas-proxy.json` and private `.env`
