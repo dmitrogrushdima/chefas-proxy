@@ -6,7 +6,7 @@ import string
 import hashlib
 import ipaddress
 from datetime import datetime, timezone
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from fractions import Fraction
 
 
@@ -125,7 +125,7 @@ class DeviceWork:
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.started = clock()
-        self.windows = {"15m": (900, deque()), "1h": (3600, deque()), "24h": (86400, deque())}
+        self.windows = {"5m": (300, deque()), "15m": (900, deque()), "1h": (3600, deque()), "24h": (86400, deque())}
         self.totals = {label: Fraction(0) for label in self.windows}
         self.buckets = self.windows["24h"][1]
 
@@ -215,7 +215,8 @@ class WorkerRegistry:
         row["last_seen_utc"] = datetime.now(timezone.utc).isoformat()
         self.entries.move_to_end(key)
 
-    def record(self, session_id, name, outcome, difficulty=None, rtt_ms=None, stale=False):
+    def record(self, session_id, name, outcome, difficulty=None, rtt_ms=None, stale=False, *,
+               route=None, timing=None):
         key = next((k for k in self.sessions.get(session_id, ()) if k[0] == name), None)
         if key is None or key not in self.entries:
             self.dropped_observations += 1
@@ -231,6 +232,21 @@ class WorkerRegistry:
         if rtt_ms is not None and math.isfinite(rtt_ms) and rtt_ms >= 0:
             row["rtt_samples"] += 1
             row["rtt_total_ms"] += rtt_ms
+        if route is not None:
+            routes = row.setdefault("routes", {})
+            if route not in routes:
+                work = DeviceWork(self.clock)
+                work.started = row.setdefault("routes_started", work.started)
+                routes[route] = (work, Counter(), {})
+            work, counts, averages = routes[route]
+            counts[outcome] += 1
+            if stale and outcome == "rejected":
+                counts["stale"] += 1
+            if outcome == "accepted" and difficulty is not None:
+                work.record(difficulty)
+            for name, ms in (timing or {}).items():
+                samples, total = averages.get(name, (0, 0.0))
+                averages[name] = (samples + 1, total + ms)
         self._touch(key)
 
     def record_local(self, session_id, name, difficulty):
@@ -275,6 +291,13 @@ class WorkerRegistry:
                           notify_to_first_share_samples=row["first_share_samples"],
                           latency_basis="notify queued to first pool-accepted submit received; EMA alpha=0.2; not TCP RTT",
                           scope="worker name + source IP; can combine multiple physical devices")
+            if row.get("routes"):
+                result["route_diagnostics"] = {
+                    route: {"counts": dict(counts), "hashrate_windows": work.snapshot(),
+                            "timing": {name: {"mean_ms": total / samples, "samples": samples}
+                                       for name, (samples, total) in averages.items()}}
+                    for route, (work, counts, averages) in row["routes"].items()
+                }
             rows.append(result)
         return {"workers": rows, "limit": self.max_workers,
                 "retention_seconds": self.retention, "dropped_observations": self.dropped_observations,

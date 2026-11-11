@@ -144,6 +144,46 @@ def test_sqlite_restores_each_tenant_quota_independently(tmp_path):
     asyncio.run(scenario())
 
 
+def test_event_fee_scheduler_skips_unaffordable_worker_at_fixed_and_manual_rates():
+    import asyncio
+    from devfee_scheduler import EventFeeWindows, FeeCapacity
+
+    async def scenario(percent):
+        ledger = AcceptedWorkLedger()
+        if percent != 1:
+            ledger.set_fee_percent(percent)
+        ledger.record("user", 100 * (100 - percent))
+        quantum = 100 * percent
+        windows = EventFeeWindows(FairnessAllocator(ledger), 60, 5, 0, FeeCapacity())
+        activated = []
+
+        async def heavy(enabled):
+            activated.append(("heavy", enabled))
+
+        async def light(enabled):
+            activated.append(("light", enabled))
+
+        windows.join("heavy", "tenant")
+        windows.join("light", "tenant")
+        windows.offer("heavy", 2 * quantum, heavy, "shared")
+        windows.offer("light", quantum, light, "shared")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert activated == [("light", True)]
+        assert windows.allocator.reserved == quantum
+
+        windows.leave("light")
+        ledger.record("user", 100 * (100 - percent))
+        windows.wake()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert activated == [("light", True), ("heavy", True)]
+        windows.leave("heavy")
+
+    for percent in (1, 20):
+        asyncio.run(scenario(percent))
+
+
 def test_event_fee_scheduler_caps_fleet_and_rotates_shards():
     import asyncio
     from collections import Counter

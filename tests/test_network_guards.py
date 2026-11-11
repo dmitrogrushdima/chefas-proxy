@@ -52,6 +52,7 @@ class NetworkGuardsTests(unittest.IsolatedAsyncioTestCase):
         ready = asyncio.Event()
         ready.set()
         return SimpleNamespace(closed=False, ready=ready, target=target, extranonce1='22222222',extranonce2_size=4,
+            pool_label='pool.test:3333',
             job_extranonce='22222222',job_extra_size=4,job_difficulty=difficulty,
             job=['pool-job','00'*32,'','',[],'20000000','207fffff','65000000',False])
 

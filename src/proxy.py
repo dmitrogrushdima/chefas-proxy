@@ -203,6 +203,9 @@ async def run(args, stop_event=None):
         getattr(args, 'failover_max_rtt', 2),
         getattr(args, 'failover_recovery', 30),
     )
+    relay.fee_test_worker = getattr(args, "fee_test_worker", None)
+    relay.fee_test_port = args.listen_port
+    relay.fee_test_percent = 1
     relay.fee_locked = getattr(args, "fee_locked", False)
     relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
     relay.fee_worker = args.devfee_worker
@@ -233,7 +236,11 @@ async def run(args, stop_event=None):
             raise ValueError('aggregation requires optional DevFee and a fixed fee worker')
         relay.aggregate_sizes = ExtranonceSizeCache()
         local_size = min(relay.asic_extranonce2_max, max(4, relay.asic_extranonce2_min))
-        relay.aggregate_prefixes = VirtualPrefixAllocator(1 if relay.limit <= 256 else 2, local_size, maximum_workers=relay.limit)
+        # The private switching listener uses a four-byte extranonce1, even
+        # with a single connection. A one-byte value was observed on the
+        # hardware session that stayed authorized but stopped submitting.
+        prefix_bytes = 4 if relay.fee_test_worker else (1 if relay.limit <= 256 else 2)
+        relay.aggregate_prefixes = VirtualPrefixAllocator(prefix_bytes, local_size, maximum_workers=relay.limit)
         relay.shared_upstreams = SharedUpstreamManager(lambda key: open_aggregate_channel(relay, key),
                                                        max_groups=max(128, relay.limit * 3))
     relay.route_configs = load_tenant_profiles(getattr(args, "tenant_profiles", None), args.listen_port, relay, args)
@@ -348,6 +355,7 @@ async def run(args, stop_event=None):
         await asyncio.gather(*(control._reconnect(session) for session in list(relay.sessions.values())))
         await stream.close()
         await control.observer_stream.close()
+        await control.public_stream.close()
         await relay.shutdown()
         if journal is not None:
             await journal.close()
@@ -465,6 +473,8 @@ def main():
                         help="Allow miner source network (repeatable, e.g. 192.168.10.0/24)")
     parser.add_argument("--allow-any-miner", action="store_true",
                         help="Explicitly allow all miner source addresses on a non-loopback listener")
+    parser.add_argument("--fee-test-worker", metavar="WORKER",
+                        help="Enable rate switching for an exact worker on a private listener")
     parser.add_argument("--pilot-console", action="store_true")
     args = parser.parse_args()
     args.fee_locked = release_fee_locked()
@@ -500,6 +510,12 @@ def main():
     args.tp_mode = not args.fee_locked and (args.tp_mode or tp_env == "true")
     if args.aggregate and (not args.active_router or args.tp_mode):
         parser.error('--aggregate requires --active-router without TP mode')
+    if args.fee_test_worker is not None and (
+        not args.aggregate or not args.devfee_host
+        or args.tenant_profiles or args.backup_host or not os.environ.get("CHEFAS_PROXY_ADMIN_TOKEN")
+        or not 1 <= len(args.fee_test_worker) <= 128 or not args.fee_test_worker.isprintable()
+    ):
+        parser.error("--fee-test-worker requires aggregation, a fee pool, an admin token, no backup pool and no tenant profiles")
     if args.aggregate and (args.require_devfee or args.devfee_worker_template):
         parser.error('--aggregate requires optional DevFee and a fixed fee worker')
     if args.tp_mode:
@@ -553,6 +569,9 @@ def main():
         parser.error(f"invalid --allow-cidr: {exc}")
     if args.allow_any_miner and args.allow_cidr:
         parser.error("--allow-any-miner cannot be combined with --allow-cidr")
+    if args.fee_test_worker is not None and not is_loopback_bind(args.listen_host):
+        if len(args.allow_cidr) != 1 or args.allow_cidr[0].num_addresses != 1:
+            parser.error("--fee-test-worker on a non-loopback listener requires exactly one allowed source IP")
     if not is_loopback_bind(args.listen_host) and not args.allow_cidr and not args.allow_any_miner:
         parser.error("non-loopback listeners require --allow-cidr or explicit --allow-any-miner")
     pilot = None

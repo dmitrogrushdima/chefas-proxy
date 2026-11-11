@@ -17,6 +17,11 @@ python -m pytest -q
 python -m unittest discover -s tests -t . -v
 ```
 
+The pytest command is the release gate and is used by CI on Windows and Linux.
+Unittest discovery alone omits the function-based quantization regressions;
+use it only as an additional check. The enterprise soak remains opt-in and a
+skipped soak is not evidence of measured fleet capacity.
+
 `pytest.ini` selects the tests and source path. The `lab` package also supports `python -m lab.load_test`; it is a synthetic echo experiment, not a farm benchmark.
 
 ## Build

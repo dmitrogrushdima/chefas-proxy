@@ -4,6 +4,23 @@ Release builds contain an executable, a bundled Python runtime, compiled core
 modules, and the CHEFAS Proxy dashboard. Operators do not need Python or Cython.
 Keep the executable and its `_internal` directory together.
 
+## Operator dashboard and private administration
+
+The farm operator signs in to the local dashboard as its administrator. This
+role manages that farm's workers and customer routes; the standalone release
+still locks DevFee at the published 1% target. It does not provide access to
+the maintainer's private VPS or a manual commission-rate control.
+
+The maintainer's 3334 test listener and combined 3333/3334 view are private
+deployment features. They are enabled only when the unlocked test listener
+advertises `fee_test`, not merely because someone signs in as a farm admin.
+See [DevFee accounting](engineering/devfee.md) for the exact accounting basis
+and the distinction between job switching and distributing accepted work.
+
+A release must be rebuilt after source or dashboard changes. Check its
+`release-manifest.json` against the exact tested sources; an older ZIP is not
+updated by editing the checkout. Keep the previous package for rollback.
+
 ## Operator: three steps
 
 1. Unpack the **matching Windows x64 or Linux x64** release. On Windows,

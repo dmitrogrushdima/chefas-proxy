@@ -135,6 +135,21 @@ class AcceptedWorkLedger:
         self.max_fee_share_work = Fraction(0)
         self._user_since_window = Fraction(0)
         self._window_active = False
+        self._rate = Fraction(1, 99)
+        self._rate_origin = Fraction(0)
+
+    @property
+    def outstanding(self):
+        return self.eligible_user_work * self._rate - self.fee_work - self._rate_origin
+
+    def set_fee_percent(self, percent):
+        rate = Fraction(str(percent))
+        if not 1 <= rate < 100:
+            raise ValueError("scheduled rate must be at least 1 and below 100")
+        self._rate = rate / (100 - rate)
+        self._rate_origin = self.eligible_user_work * self._rate - self.fee_work
+        self._window_active = False
+        self._user_since_window = Fraction(0)
 
     def record(self, target, difficulty, accepted=True, *, fee_available=True):
         if target not in ("user", "fee"):
@@ -155,14 +170,14 @@ class AcceptedWorkLedger:
             self.fee_shares += 1
             self.max_fee_share_work = max(self.max_fee_share_work, work)
             self._window_active = True
-            if self.fee_work * 99 >= self.eligible_user_work:
+            if self.outstanding <= 0:
                 self._window_active = False
                 self._user_since_window = Fraction(0)
 
     def should_fee(self, *, fee_available=True):
         if not isinstance(fee_available, bool):
             raise ValueError("fee_available must be boolean")
-        return (fee_available and self.fee_work * 99 < self.eligible_user_work
+        return (fee_available and self.outstanding > 0
                 and (self._window_active or self._user_since_window >= self.min_user_work))
 
     def snapshot(self):
@@ -170,11 +185,11 @@ class AcceptedWorkLedger:
         eligible_total = self.eligible_user_work + self.fee_work
         # This is an observed deviation, not a promise about future in-flight
         # shares. The router can have several already accepted responses pending.
-        excess = max(Fraction(0), self.fee_work - self.eligible_user_work / 99)
+        excess = max(Fraction(0), -self.outstanding)
         return {
             "user_accepted_difficulty": _exact(self.user_work),
             "fee_accepted_difficulty": _exact(self.fee_work),
-            "outstanding_fee_difficulty": _exact(max(Fraction(0), self.eligible_user_work / 99 - self.fee_work)),
+            "outstanding_fee_difficulty": _exact(max(Fraction(0), self.outstanding)),
             "eligible_user_difficulty": _exact(self.eligible_user_work),
             "outage_user_difficulty": _exact(self.user_work - self.eligible_user_work),
             "user_accepted_shares": self.user_shares,
@@ -252,7 +267,7 @@ class FairnessAllocator:
     @property
     def outstanding(self) -> Fraction:
         """Actual accepted-work debt, which may be negative after late proofs."""
-        return self.ledger.eligible_user_work / 99 - self.ledger.fee_work
+        return self.ledger.outstanding
 
     @property
     def reserved(self) -> Fraction:
@@ -548,14 +563,16 @@ class EventFeeWindows:
         self.scheduled = False
         limit = (self.capacity.workers + 49) // 50
         while self.ready and self.capacity.active < limit and self.allocator.ledger.should_fee():
-            shard = next(iter(self.ready))
-            queue = self.ready[shard]
-            worker = next(iter(queue))
-            work, callback, _ = self.candidates[worker]
             budget = self.allocator.outstanding - self.allocator.reserved
-            if budget <= 0 or budget < work * (1 - self.overdraft):
+            if budget <= 0:
                 return
-            if not self.allocator.acquire(worker, work):
+            budget_factor = 1 - self.overdraft
+            # Keep blocked workers in order so they get another chance as debt accrues.
+            for worker in (worker for queue in self.ready.values() for worker in queue):
+                work, callback, shard = self.candidates[worker]
+                if budget >= work * budget_factor and self.allocator.acquire(worker, work):
+                    break
+            else:
                 return
             self.unqueue(worker)
             if shard in self.ready:
@@ -571,6 +588,15 @@ class EventFeeWindows:
         if lease is not None and not lease[0].cancelled():
             lease[0].cancel()
             asyncio.create_task(lease[1](False))
+
+    def reserve_next_share(self, worker, difficulty):
+        lease = self.leases.get(worker)
+        if lease is None or lease[0].cancelled():
+            return False
+        work = _difficulty(difficulty)
+        budget = self.allocator.outstanding - self.allocator.reserved
+        return (budget > 0 and budget >= work * (1 - self.overdraft)
+                and self.allocator.acquire(worker, work))
 
     def end(self, worker):
         lease = self.leases.pop(worker, None)

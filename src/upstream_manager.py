@@ -376,22 +376,30 @@ class UpstreamConnection:
     async def configure_version_rolling(self, mask, minimum_bits=0):
         params = [['version-rolling'], {'version-rolling.mask': mask,
                                         'version-rolling.min-bit-count': minimum_bits}]
-        self.version_mask = negotiated_mask(params, await self.request('mining.configure', params))
+        await self.request('mining.configure', params)
         return self.version_mask
 
-    async def request(self, method, params):
+    async def request(self, method, params, *, timing=None):
         if self.closed or len(self.pending) >= MAX_PENDING:
             raise ConnectionError("upstream unavailable or request limit reached")
         self.sequence += 1
         ident = self.sequence
         future = asyncio.get_running_loop().create_future()
-        self.pending[ident] = future
+        rolling = params if method == 'mining.configure' and 'version-rolling' in params[0] else None
+        self.pending[ident] = (future, rolling)
         try:
+            write_started = time.monotonic() if timing is not None else None
             async with self.write_lock:
                 write_bounded(self.writer, encode_packet({"id":ident,"method":method,"params":params}),
                               self.metrics, traffic='wan_tx_bytes')
                 await drain_bounded(self.writer,self.timeout,self.miner_writer,self.miner_reader,self.metrics)
-            return await asyncio.wait_for(future, self.timeout)
+            if timing is not None:
+                drained_at = time.monotonic()
+                timing["socket_ms"] = (drained_at - write_started) * 1000
+            response = await asyncio.wait_for(future, self.timeout)
+            if timing is not None:
+                timing["reply_ms"] = (time.monotonic() - drained_at) * 1000
+            return response
         finally:
             self.pending.pop(ident, None)
 
@@ -403,15 +411,20 @@ class UpstreamConnection:
                 else:
                     ident = packet.get("id")
                     if type(ident) is int:
-                        future = self.pending.get(ident)
-                        if future is not None and not future.done():
-                            future.set_result(packet)
+                        pending = self.pending.get(ident)
+                        if pending is not None:
+                            future, rolling = pending
+                            if not future.done():
+                                # The pool may echo the mask in the very next frame.
+                                if rolling is not None:
+                                    self.version_mask = negotiated_mask(rolling, packet)
+                                future.set_result(packet)
         except (OSError, asyncio.TimeoutError, ProtocolError, ValueError, TypeError):
             pass
         finally:
             self.closed = True
             self.ready.set()
-            for future in self.pending.values():
+            for future, _ in self.pending.values():
                 if not future.done():
                     future.set_exception(ConnectionError("upstream disconnected"))
             self.writer.close()

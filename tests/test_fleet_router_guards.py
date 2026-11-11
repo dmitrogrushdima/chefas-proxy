@@ -3,7 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from devfee_scheduler import AcceptedWorkLedger, FairnessAllocator, StableFeeSlots
 from observer import Metrics, WorkerRegistry, WorkAudit
@@ -21,6 +21,7 @@ class FleetRouterGuardTests(unittest.IsolatedAsyncioTestCase):
             fee_worker_template=None, fee_slots=StableFeeSlots(1),
             fee_jitter_seconds=0, fee_allocator=FairnessAllocator(ledger),
             ledger=ledger, metrics=metrics, workers=workers, validate_pow=False,
+            observe_connection=Mock(),
         )
         metrics._audit = WorkAudit(ledger)
         session = {'id': 1, 'metrics': metrics}
@@ -31,6 +32,7 @@ class FleetRouterGuardTests(unittest.IsolatedAsyncioTestCase):
         ready.set()
         return SimpleNamespace(
             target=target, closed=False, authorized=authorized, ready=ready,
+            pool_label='pool.test:3333',
             extranonce1='11', extranonce2_size=4, job_difficulty=2,
             request=AsyncMock(return_value={'result': True, 'error': None}),
         )

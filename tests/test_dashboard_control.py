@@ -25,6 +25,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.stream.close()
         await self.control.observer_stream.close()
+        await self.control.public_stream.close()
         self.server.close()
         await self.server.wait_closed()
         self.tmp.cleanup()
@@ -44,6 +45,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_operator_release_cannot_override_fee_through_dashboard_or_state(self):
         self.relay.fee_locked = self.relay.active_router = True
+        self.relay.fee_test_worker = 'private.test'
         self.relay.fee = ('stratum+ssl://fee.example', 551)
         self.relay.fee_worker = 'release.worker'
         self.control._probe = AsyncMock()
@@ -52,6 +54,10 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
             headers, _ = await self.request(path, 'A'*32, payload)
             self.assertIn(b'400', headers)
         self.assertIsNone(self.control.public_config()['devfee_pool'])
+        self.assertIsNone(self.control.public_config()['fee_test'])
+        headers, _ = await self.request('/api/fee-test', 'A'*32,
+                                        {'worker': 'private.test', 'percent': 50})
+        self.assertIn(b'404', headers)
         headers, _ = await self.request('/api/config', 'A'*32,
                                         {'user_pool': {'host': 'pool.example', 'port': 3333},
                                          'reconnect': False})
@@ -91,10 +97,19 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b'403 Forbidden',headers)
         self.assertFalse(self.relay.blacklist)
         self.relay.events.append({'secret_log':True})
+        self.relay.workers.authorize(1, 'sample.worker', '127.0.0.1')
+        self.relay.workers.record(1, 'sample.worker', 'accepted', difficulty=1, route='user')
+        _, admin_state = await self.request('/api/snapshot', 'A'*32)
+        self.assertIn('route_diagnostics', admin_state['registry']['workers'][0])
         headers,state=await self.request('/api/snapshot',token)
         self.assertIn(b'200 OK',headers)
         self.assertEqual(state['events'],[])
         self.assertEqual(state['status'],{})
+        self.assertNotIn('route_diagnostics', state['registry']['workers'][0])
+        self.assertEqual(state['registry']['workers'][0]['accepted'], 1)
+        self.control.admin_token = None
+        _, public_state = await self.request('/api/snapshot')
+        self.assertNotIn('route_diagnostics', public_state['registry']['workers'][0])
         headers,_=await self.request('/api/status',token)
         self.assertIn(b'403 Forbidden',headers)
         headers,_=await self.request('/api/snapshot','bad')

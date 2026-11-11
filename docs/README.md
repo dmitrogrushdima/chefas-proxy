@@ -12,6 +12,7 @@ Detailed references are grouped under `engineering/`:
 - [Jitter, TTL and TLS](engineering/long-term-stability.md).
 - [Fleet scaling and network isolation](engineering/fleet-scaling.md).
 - [Research sources](engineering/research.md), [pilot/testing criteria](engineering/testing.md).
+- [Current DevFee accounting and private-admin separation](engineering/devfee.md).
 - [CHEFAS Proxy naming and upgrade notes](engineering/branding.md).
 
 The operator and compatibility guides describe current entrypoints and limitations. The engineering roadmap tracks unfinished release gates.

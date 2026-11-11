@@ -47,7 +47,7 @@ between a hostname preflight and a new TTL-zero DNS answer. Address attempts
 currently share one total timeout and run sequentially; a blackholed first
 address can exhaust it. Happy Eyeballs is not implemented yet.
 
-## Live fee allocator
+## Live fee allocator (independent upstream mode)
 
 `FairnessAllocator` replaces exclusive global window ownership. An assignment
 reserves one expected share at the fee job's actual difficulty. Submitted work
@@ -137,16 +137,24 @@ generated Linux build/service still needs qualification on Linux.
 
 ## Pilot telemetry and TP mode
 
+TP mode below applies to the unlocked development runtime. The operator
+standalone rejects TP overrides and keeps its fixed fee policy.
+
 `TP_MODE=true` in the server environment or `"TP_MODE": true` in the standalone JSON configuration selects raw forwarding. The CLI equivalent is `--tp-mode`. The authenticated `POST /api/mode` accepts `{"tp_mode": true}` and persists the selection for new connections. Existing sessions retain their admission mode. `/api/config` and live status expose the selected mode.
 
 TP sessions bypass Stratum parsing, local PoW checks and DevFee routing. Basic connection admission, deadlines and backpressure still apply. Disabling TP restores the configured routing mode for subsequent connections.
 
 `coalesced_read_batches` counts socket reads containing multiple complete JSON messages. `coalesced_extra_messages` counts the additional messages in those batches. These describe application reads, whose boundaries can differ from TCP packets. Both counters and `compatibility_fallbacks` appear in the metrics API and minute-summary logs. Learning a compatibility fallback emits `reconnect_fallback`.
 
-Use `--active-router --aggregate` (standalone JSON: `"active_router": true, "aggregate": true`) to pilot shared user-pool sockets. The mode supports up to 100 simultaneous local subscriptions and 50 miners per shared socket. The pool, effective worker, password, transport and ASIC agent must match. A cached nonce width is scoped by route, client address and agent because credentials are unavailable at subscription time. The actual upstream response is always checked. A mismatch that can be corrected updates the hint and sends `client.reconnect`.
+Use `--active-router --aggregate` (standalone JSON: `"active_router": true, "aggregate": true`) to pilot shared user-pool sockets. The current connection default is 512 and the default shared-socket shard size is 256 (`--aggregate-shard-size`, configurable from 1 to 1024). These are configured admission limits, not measured hardware capacity. The pool, effective worker, password, transport and ASIC agent must match. A cached nonce width is scoped by route, client address and agent because credentials are unavailable at subscription time. The actual upstream response is always checked. A mismatch that can be corrected updates the hint and sends `client.reconnect`.
 
 The mode can share a separate optional DevFee connection using a fixed fee worker. Both routes use the same virtual extranonce for each ASIC, so switching jobs preserves the ASIC connection. Previously issued jobs remain bound to their issuing pool. Only confirmed upstream work enters the fee ledger. A fee connection failure returns the miner to user work.
 
 For BIP310 version rolling, the proxy first negotiates with the user pool on a temporary connection. Shared sockets are keyed by the effective version mask, and both routes must confirm that exact mask before receiving work. An incompatible optional fee pool leaves the ASIC on user work. Pool-driven changes to the negotiated mask retire the affected shared socket.
 
-Shared routes can keep a warm backup with `--backup-host` and `--backup-port`. Health monitoring switches ASIC work on the same downstream socket and resumes the primary after recovery. See [Smart Failover](failover.md) for thresholds and compatibility. Required DevFee, fee worker templates and socket-preserving configuration reloads are outside this mode. Qualification on physical ASICs and production pools remains open.
+Shared routes can keep a warm backup with `--backup-host` and `--backup-port`. Health monitoring switches ASIC work on the same downstream socket and resumes the primary after recovery. See [Smart Failover](failover.md) for thresholds and compatibility. Required DevFee and fee worker templates are outside this mode. Configuration changes are generation-bound and can request miner reconnects; do not assume an arbitrary reload preserves an existing socket. Qualification on physical ASICs and production pools remains open.
+
+The aggregate path uses event-driven fee windows, per-route accepted-work
+budgets and in-flight reservations, rather than the independent router's
+periodic reconciliation. See [DevFee](devfee.md) for current window ceilings,
+funded multi-share windows and the separate private manual-rate listener.

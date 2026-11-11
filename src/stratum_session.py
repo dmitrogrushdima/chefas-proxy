@@ -93,6 +93,7 @@ class Relay:
         self.fee_slots = StableFeeSlots(limit)
         self.fee_worker_template = None
         self.events = deque(maxlen=500)
+        self.diagnostic_events = deque(maxlen=100)
         self.workers = WorkerRegistry(max_workers=max(512, limit))
         self.blacklist = ()
         self.route_configs = {}
@@ -135,6 +136,8 @@ class Relay:
                    "route_id": route_id, "protocol_started": not self.active_router or self.tp_mode}
         session["endpoint"] = self.route_configs.get(route_id, {}).get("endpoint", (self.host, self.port))
         self.sessions[session_id] = session
+        if self.active_router and not self.tp_mode:
+            self.observe_connection(session, "tcp_connected")
         if not self.active_router or self.tp_mode:
             event(logging.INFO, "session_started", session_id=session_id, active_router=False)
 
@@ -259,6 +262,8 @@ class Relay:
                 self.active -= 1
                 self.metrics.active -= 1
                 observer.close()
+                if "diagnostic" in session:
+                    self.observe_connection(session, "disconnected")
                 self.workers.disconnect(session_id)
                 self.sessions.pop(session_id, None)
                 self.tasks.discard(task)
@@ -334,17 +339,48 @@ class Relay:
                  "ip": item["ip"], "route_id": item["route_id"],
                  "pool_response_ms": (item["metrics"].share_rtt_total_ms / item["metrics"].share_rtt_samples
                                       if item["metrics"].share_rtt_samples else None),
+                 "diagnostic": dict(item.get("diagnostic", {})),
+                 "test_fee_percent": getattr(item.get("fee_test_router"), "test_fee_percent", None),
                  "asic_ping_ms": None, "scope": "TCP session; multiple workers may share a connection"}
                 for item in self.sessions.values()]
 
     def live_snapshot(self):
         safe_keys = ("id", "state", "worker", "pool", "ip", "route_id", "duration_seconds",
-                     "submitted", "accepted", "rejected", "unmatched", "pending")
+                     "submitted", "accepted", "rejected", "unmatched", "pending", "diagnostic", "test_fee_percent")
         return {"generated_at_utc": datetime.now(timezone.utc).isoformat(),
                 "metrics": self.metrics.snapshot(), "status": self.status_snapshot(),
                 "sessions": [{key: item[key] for key in safe_keys} for item in self.session_snapshot()],
                 "registry": self.workers.snapshot(), "events": list(self.events),
+                "diagnostic_events": list(self.diagnostic_events),
                 "stream": {"interval_seconds": 1, "scope": "local process; latest state; no replay"}}
+
+    def observe_connection(self, session, stage, route=None, pool=None, *, worker=None):
+        state = session.setdefault("diagnostic", {})
+        route = route if route is not None else state.get("route")
+        pool = pool if pool is not None else state.get("pool")
+        if isinstance(worker, str):
+            state["worker"] = "".join(c if c.isprintable() else "?" for c in worker[:128])
+        previous = state.get("stage")
+        same_route = (route, pool) == (state.get("route"), state.get("pool"))
+        if stage == "job_sent" and same_route and previous == "share_accepted":
+            return
+        if stage == "share_accepted" and (not same_route or previous not in ("job_sent", "share_accepted")):
+            # A reply to an old job must not mark the new route as working.
+            return
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if stage == "share_accepted":
+            state["last_accepted_utc"] = timestamp
+            state["last_session_accepted_utc"] = timestamp
+        if same_route and stage == previous:
+            return
+        if not same_route:
+            state.pop("last_accepted_utc", None)
+        state.update(stage=stage, route=route, pool=pool, changed_at_utc=timestamp)
+        self.diagnostic_events.append({
+            "timestamp": timestamp, "session_id": session["id"],
+            "worker": session["worker"] or state.get("worker"),
+            "route": route, "pool": pool, "stage": stage,
+        })
 
     def event(self, session, target, kind="switch"):
         self.events.append({"timestamp": datetime.now(timezone.utc).isoformat(),

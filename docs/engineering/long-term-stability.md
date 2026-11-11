@@ -4,9 +4,14 @@ These changes add bounded lifecycle rules and synthetic regression coverage. The
 
 ## DevFee startup, jitter and retries
 
+This section describes the independent-router lifecycle. Aggregate mode uses
+shared upstreams and event-driven windows; see [current DevFee accounting](devfee.md).
+The operator release sets its own locked jitter value (15 seconds), while the
+unlocked CLI default described below is 180 seconds.
+
 `FeeJitter` uses monotonic time and independent OS-backed uniform draws. Default `--devfee-jitter-seconds 180` spreads initial eligibility and subsequent fee windows over 0..180 seconds. Scheduling is per ASIC TCP session: multiple authorized worker names on the same socket share its extranonce and scheduling context.
 
-In normal startup, the ASIC subscribes/authorizes on the user pool immediately. A background supervisor prepares the independent fee connection after its jitter delay; it replays configure/version rolling, subscription and authorized worker credentials. User traffic does not wait for the random delay. `FeeConnectionGate` also spaces fee connection admissions across the entire process (`--devfee-connect-interval .25` by default), including retries. Existing fee connections are reused; switching work is not equivalent to opening a new socket. The pre-existing global fee-owner reservation prevents many sessions from simultaneously owning a fee window.
+In normal startup, the ASIC subscribes/authorizes on the user pool immediately. A background supervisor prepares the independent fee connection after its jitter delay; it replays configure/version rolling, subscription and authorized worker credentials. User traffic does not wait for the random delay. `FeeConnectionGate` also spaces fee connection admissions across the entire process (`--devfee-connect-interval .25` by default), including retries. Existing fee connections are reused; switching work is not equivalent to opening a new socket. Shared accepted-work reservations bound concurrent fee assignments.
 
 After a failed fee reader or RPC, the supervisor retries with fresh jitter and at least five seconds of backoff. Cancelling an upstream reader does not cancel its supervisor. Closing an ASIC cancels the supervisor and any queued admission; no detached reconnect loop survives the session. Required-fee outage accounting starts at the first admitted fee attempt after user authorization. The deliberate initial jitter/gate wait is not an outage; subsequent retries never reset the health grace. Actual sustained failure still activates the global block.
 

@@ -157,6 +157,9 @@ class CheckedPool:
                 if method == "mining.submit" and self.submit_delay:
                     await asyncio.sleep(self.submit_delay)
                 writer.write(encode(response))
+                if method == "mining.configure" and rolling_mask is not None and getattr(self, "echo_mask", False):
+                    writer.write(encode({"id": None, "method": "mining.set_version_mask",
+                                         "params": [f"{rolling_mask:08x}"]}))
                 if method == "mining.authorize" and response["result"]:
                     writer.write(encode({"id": None, "method": "mining.set_difficulty", "params": [self.difficulty]}))
                     writer.write(encode({"id": None, "method": "mining.notify", "params": [
@@ -386,6 +389,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         environment.pop("CHEFAS_PROXY_ADMIN_TOKEN", None)
         if admin_token:
             environment["CHEFAS_PROXY_ADMIN_TOKEN"] = admin_token
+        self.process_environment = environment
         self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr, env=environment)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
@@ -768,6 +772,256 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01)
         self.assertFalse(self.user_pool.writers)
 
+    async def test_lab_fee_switch_stays_on_one_listener_and_isolates_other_worker(self):
+        from pow_validator import build_stratum_header
+
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8,
+                          admin_token="a" * 32, connect_timeout=5,
+                          extra_args=("--listen-host", "127.0.0.1", "--fee-test-worker", "user.lab",
+                                      "--fee-cooldown-seconds", "0", "--fee-overdraft", "0"))
+        self.user_pool.allowed_workers.add("user.lab")
+        lab = Miner(self.port, worker="user.lab", hot=False, configure=True)
+        self.miners.append(lab)
+        await lab.connect()
+        regular = await self.miner(hot=False)
+        original_socket = lab.writer
+        original_extra = lab.extra
+        self.assertEqual(len(original_extra), 8)
+        counters = {}
+        self.fee_test_results = []
+
+        async def route(miner, expected):
+            for _ in range(100):
+                if miner.job["params"][0].startswith(expected):
+                    return
+                await asyncio.sleep(.02)
+            self.fail(f"{miner.worker} did not receive route {expected}")
+
+        async def share(miner, job=None, *, expect=True):
+            job = job or miner.job
+            params = job["params"]
+            extra2 = "00" * job["size"]
+            key = (miner.worker, params[0][0])
+            for candidate in range(counters.get(key, 0), 1_000_000):
+                nonce = f"{candidate:08x}"
+                header = build_stratum_header(params, job["extra"], extra2, NTIME, nonce,
+                                              miner.version_bits, getattr(miner, "version_mask", None))
+                if meets_target(header, SHARE_TARGET):
+                    counters[key] = candidate + 1
+                    break
+            else:
+                self.fail("no valid test share")
+            upstream = self.fee_pool if params[0].startswith("f") else self.user_pool
+            accepted = upstream.accepted
+            submit = [miner.worker, params[0], extra2, NTIME, nonce]
+            if miner.version_bits is not None:
+                submit.append(miner.version_bits)
+            response = await miner.submit(submit)
+            self.assertIs(response["result"], expect)
+            self.assertEqual(upstream.accepted, accepted + int(expect))
+            return response
+
+        def pool_counts():
+            return self.user_pool.accepted, self.fee_pool.accepted
+
+        def capture_phase(percent, before):
+            user, fee = (current - previous for current, previous in zip(pool_counts(), before))
+            self.fee_test_results.append((percent, user, fee))
+
+        async def one_percent(miner):
+            await route(miner, "u")
+            for _ in range(99):
+                await share(miner)
+            await route(miner, "f")
+            await share(miner)
+            await route(miner, "u")
+
+        for _ in range(100):
+            if (await self.api("/api/config"))["fee_test"]["ready"]:
+                break
+            await asyncio.sleep(.03)
+        else:
+            self.fail(f"test fee pool not ready: {self.fee_pool.authorize_requests}")
+        await self.api("/api/fee-test", {"worker": regular.worker, "percent": 100}, expected=400)
+        before = pool_counts()
+        await one_percent(lab)
+        capture_phase(1, before)
+        old_job = lab.job
+        response = await self.api("/api/fee-test", {"worker": lab.worker, "percent": 100})
+        self.assertEqual(response["route"], "fee")
+        await route(lab, "f")
+        before = pool_counts()
+        for _ in range(20):
+            await share(lab)
+            self.assertTrue(lab.job["params"][0].startswith("f"))
+        self.assertEqual(self.fee_pool.accepted - before[1], 20)
+        capture_phase(100, before)
+        await one_percent(regular)
+        self.assertTrue(lab.job["params"][0].startswith("f"))
+        forced_job = lab.job
+        response = await self.api("/api/fee-test", {"worker": lab.worker, "percent": 1})
+        self.assertEqual(response["route"], "user")
+        await route(lab, "u")
+        await share(lab, forced_job)
+        before = pool_counts()
+        await one_percent(lab)
+        capture_phase(1, before)
+        await share(lab, old_job)
+        self.assertEqual(pool_counts(), (298, 24))
+        self.assertEqual(self.fee_test_results, [(1, 99, 1), (100, 0, 20), (1, 99, 1)])
+        self.assertEqual((self.user_pool.rejected, self.fee_pool.rejected), (0, 0))
+        self.assertIs(lab.writer, original_socket)
+        self.assertEqual(lab.extra, original_extra)
+        self.assertFalse(lab.closed.is_set() or lab.reconnect.is_set())
+        report = await self.api("/api/audit-export")
+        self.assertAlmostEqual(report["fee_percentage"], 1.0)
+        await route(regular, "u")
+        user_job = regular.job
+        before = pool_counts()
+        # Shares already found for the user job can arrive during a fee window.
+        # Two funded fee shares should share one window on the fixed-rate path.
+        for _ in range(198):
+            await share(regular, user_job)
+        await route(regular, "f")
+        fee_job = regular.job
+        await share(regular, fee_job)
+        await share(regular, fee_job)
+        await route(regular, "u")
+        self.assertEqual(tuple(after - start for after, start in zip(pool_counts(), before)), (198, 2))
+        route_jobs = [msg["params"][0] for msg in regular.notifications if msg["method"] == "mining.notify"]
+        self.assertEqual(route_jobs[route_jobs.index(fee_job["params"][0]) + 1:], [regular.job["params"][0]])
+        self.assertFalse(regular.closed.is_set() or regular.reconnect.is_set())
+        await share(regular)
+        await share(regular)
+        workers = (await self.api("/api/snapshot"))["registry"]["workers"]
+        diagnostic = next(w for w in workers if w["worker"] == regular.worker)["route_diagnostics"]
+        for target in ("user", "fee"):
+            self.assertGreater(diagnostic[target]["hashrate_windows"]["1h"]["hashrate_hs"], 0)
+            for name in ("validation_ms", "socket_ms", "reply_ms"):
+                self.assertGreater(diagnostic[target]["timing"][name]["samples"], 0)
+        self.assertGreater(diagnostic["user"]["timing"]["after_fee_ms"]["samples"], 0)
+        self.assertGreater(diagnostic["user"]["timing"]["primary_gap_ms"]["samples"], 0)
+        for invalid in (0, 100.01, 25.001, True):
+            await self.api("/api/fee-test", {"worker": lab.worker, "percent": invalid}, expected=400)
+        response = await self.api("/api/fee-test", {"worker": lab.worker, "percent": 12.5})
+        self.assertEqual(response["percent"], 12.5)
+        response = await self.api("/api/fee-test", {"worker": lab.worker, "percent": 25})
+        self.assertEqual(response["percent"], 25)
+        before = pool_counts()
+        await route(lab, "u")
+        for _ in range(3):
+            await share(lab)
+        await route(lab, "f")
+        await share(lab)
+        await route(lab, "u")
+        self.assertEqual(tuple(after - start for after, start in zip(pool_counts(), before)), (3, 1))
+        await self.api("/api/fee-test", {"worker": lab.worker, "percent": 75})
+        before = pool_counts()
+        await share(lab)
+        for _ in range(3):
+            await route(lab, "f")
+            await share(lab)
+        await route(lab, "u")
+        self.assertEqual(tuple(after - start for after, start in zip(pool_counts(), before)), (1, 3))
+        await self.api("/api/fee-test", {"worker": lab.worker, "percent": 100})
+        await route(lab, "f")
+        self.fee_pool.reject_submits = True
+        rejection = await share(lab, expect=False)
+        self.assertEqual(rejection["error"][:2], [23, "Invalid PoW or session"])
+        self.fee_pool.reject_submits = False
+        await share(lab)
+        self.assertEqual((await self.api("/api/config"))["fee_test"]["percent"], 100)
+        self.assertTrue(lab.job["params"][0].startswith("f"))
+        log_path = Path(self.history.name) / "logs" / "proxy.log"
+        for _ in range(50):
+            events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+            if any(e.get("event") == "share_rejected_pool" and e.get("target") == "fee"
+                   and e.get("code") == 23 and e.get("reason") == "Invalid PoW or session" for e in events):
+                break
+            await asyncio.sleep(.02)
+        else:
+            self.fail("pool rejection code and reason were not logged")
+        self.assertFalse(lab.closed.is_set() or lab.reconnect.is_set())
+        await lab.close()
+        lab = Miner(self.port, worker="user.lab", hot=False, configure=True)
+        self.miners.append(lab)
+        await lab.connect()
+        await route(lab, "f")
+        before = pool_counts()
+        await share(lab)
+        self.assertEqual(tuple(after - start for after, start in zip(pool_counts(), before)), (0, 1))
+        self.assertEqual((await self.api("/api/config"))["fee_test"]["percent"], 100)
+        base_connections = self.user_pool.connections
+        fee_socket = lab.writer
+        for writer in tuple(self.user_pool.writers):
+            writer.close()
+        deadline = time.monotonic() + 5
+        while self.user_pool.connections == base_connections and time.monotonic() < deadline:
+            await asyncio.sleep(.02)
+        self.assertGreater(self.user_pool.connections, base_connections)
+        self.assertIs(lab.writer, fee_socket)
+        self.assertFalse(lab.closed.is_set() or lab.reconnect.is_set())
+        self.assertTrue(lab.job["params"][0].startswith("f"))
+        await share(lab)
+        for writer in tuple(self.fee_pool.writers):
+            writer.close()
+        await route(lab, "u")
+        status = (await self.api("/api/config"))["fee_test"]
+        self.assertEqual(status["percent"], 100)
+        self.assertFalse(status["ready"])
+        args = self.process.args
+        self.process.terminate()
+        await asyncio.wait_for(asyncio.to_thread(self.process.wait), 5)
+        self.process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.stderr,
+                                        env=self.process_environment)
+        for _ in range(100):
+            try:
+                self.assertEqual((await self.api("/api/config"))["fee_test"]["percent"], 100)
+                break
+            except OSError:
+                await asyncio.sleep(.05)
+        else:
+            self.fail("Proxy did not restart")
+        lab = Miner(self.port, worker="user.lab", hot=False, configure=True)
+        self.miners.append(lab)
+        await lab.connect()
+        await route(lab, "f")
+        before = pool_counts()
+        await share(lab)
+        self.assertEqual(tuple(after - start for after, start in zip(pool_counts(), before)), (0, 1))
+
+    async def test_aggregate_reconnects_optional_fee_pool_without_reconnecting_miner(self):
+        from pow_validator import build_stratum_header
+
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8)
+        miner = await self.miner(hot=False)
+
+        async def wait_for(condition, timeout):
+            deadline = time.monotonic() + timeout
+            while not condition() and time.monotonic() < deadline:
+                await asyncio.sleep(.05)
+            self.assertTrue(condition())
+
+        await wait_for(lambda: self.fee_pool.authorize_requests, 5)
+
+        for writer in tuple(self.fee_pool.writers):
+            writer.close()
+        await wait_for(lambda: not self.fee_pool.writers, 5)
+
+        job = miner.job
+        extranonce2 = '00' * job['size']
+        nonce = next(f'{number:08x}' for number in range(100000)
+                     if meets_target(build_stratum_header(job['params'], job['extra'],
+                                                          extranonce2, NTIME, f'{number:08x}'), SHARE_TARGET))
+        self.assertIs((await miner.submit(['user.worker', job['params'][0], extranonce2, NTIME, nonce]))['result'], True)
+        self.assertEqual(self.user_pool.accepted, 1)
+
+        await wait_for(lambda: len(self.fee_pool.authorize_requests) >= 2, 38)
+        self.assertEqual(self.fee_pool.authorize_requests, ['fee.worker', 'fee.worker'])
+        self.assertEqual(self.user_pool.authorize_requests, ['user.worker'])
+        self.assertFalse(miner.reconnect.is_set())
+        self.assertFalse(miner.closed.is_set())
+
     async def test_aggregate_fee_rolls_versions_on_shared_sockets_without_reconnecting(self):
         from pow_validator import build_stratum_header
 
@@ -1001,6 +1255,14 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.user_pool.accepted,5)
         self.assertEqual(self.fee_pool.accepted,0)
         self.assertFalse(miner.closed.is_set())
+
+    async def test_pool_echoes_negotiated_mask_before_subscribe(self):
+        await self.launch()
+        self.user_pool.echo_mask = True
+        self.fee_pool.echo_mask = True
+        miner = await self.miner(configure=True)
+        self.assertTrue((await miner.submit())['result'])
+        self.assertFalse(miner.reconnect.is_set())
 
     async def test_fee_negotiates_exact_user_mask_instead_of_wider_superset(self):
         await self.launch(user_mask='00006000')
@@ -1454,6 +1716,41 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await miner.submit())["result"])
         await asyncio.wait_for(miner.closed.wait(), 4)
         self.assertTrue((await self.api("/api/status"))["fee_policy_blocked"])
+
+    async def test_connection_diagnostics_distinguish_rejection_waiting_and_pool_loss(self):
+        await self.launch(fee=False)
+
+        denied = Miner(self.port, worker="wrong.worker")
+        self.miners.append(denied)
+        with self.assertRaises(AssertionError):
+            await denied.connect()
+        self.assertIn("authorization_rejected", {
+            event["stage"] for event in (await self.api("/api/snapshot"))["diagnostic_events"]
+        })
+        await denied.close()
+
+        miner = await self.miner()
+        snapshot = await self.api("/api/snapshot")
+        session = next(row for row in snapshot["sessions"] if row["worker"] == miner.worker)
+        self.assertEqual(session["diagnostic"]["stage"], "job_sent")
+        self.assertTrue((await miner.submit())["result"])
+        snapshot = await self.api("/api/snapshot")
+        session = next(row for row in snapshot["sessions"] if row["worker"] == miner.worker)
+        self.assertEqual(session["diagnostic"]["stage"], "share_accepted")
+        self.assertIsNotNone(session["diagnostic"]["last_accepted_utc"])
+
+        for writer in tuple(self.user_pool.writers):
+            writer.close()
+        await asyncio.wait_for(miner.closed.wait(), 5)
+        for _ in range(40):
+            snapshot = await self.api("/api/snapshot")
+            stages = [event["stage"] for event in snapshot["diagnostic_events"]
+                      if event["session_id"] == session["id"]]
+            if stages[-1] == "disconnected":
+                break
+            await asyncio.sleep(.05)
+        self.assertEqual(stages, ["tcp_connected", "authorized", "job_sent",
+                                  "share_accepted", "upstream_lost", "disconnected"])
 
     async def test_live_worker_stream_updates_and_survives_miner_reconnect(self):
         await self.launch(fee=False)

@@ -45,6 +45,12 @@ class DashboardControl:
             if type(mode) is not bool:
                 raise ValueError("invalid TP mode")
             self.relay.tp_mode = not getattr(relay, "fee_locked", False) and (self.relay.tp_mode or mode)
+            fee_test = data.get('fee_test')
+            if (isinstance(fee_test, dict) and getattr(relay, 'fee_test_worker', None)
+                    and not getattr(relay, 'fee_locked', False)
+                    and fee_test.get('worker') == relay.fee_test_worker
+                    and fee_test.get('port') == relay.fee_test_port):
+                relay.fee_test_percent = self.validate_fee_test_percent(fee_test.get('percent'))
             stored_routes = data.get('routes')
             self.route_data = self.secrets.open_routes(stored_routes)
             if self.route_data is not None:
@@ -63,21 +69,37 @@ class DashboardControl:
                 self.save(self.relay.blacklist, self.tokens)
                 event(logging.WARNING, 'control_secrets_migrated')
         self.observer_stream = DashboardStream(self.observer_snapshot)
+        self.public_stream = DashboardStream(self.public_snapshot)
+
+    def public_snapshot(self):
+        snapshot = dict(self.stream.snapshot())
+        registry = snapshot['registry']
+        snapshot['registry'] = {
+            **registry,
+            'workers': [{key: value for key, value in worker.items() if key != 'route_diagnostics'}
+                        for worker in registry['workers']],
+        }
+        return snapshot
 
     def observer_snapshot(self):
-        snapshot = dict(self.stream.snapshot())
+        snapshot = self.public_snapshot()
         snapshot['events'], snapshot['sessions'], snapshot['status'] = [], [], {}
+        snapshot['diagnostic_events'] = []
         snapshot['access'] = 'observer'
         return snapshot
 
-    def save(self, blacklist, tokens, routes=None, generation=None, tp_mode=None):
+    def save(self, blacklist, tokens, routes=None, generation=None, tp_mode=None, fee_test_percent=None):
         sealed_routes = self.secrets.seal_routes(self.route_data if routes is None else routes)
+        fee_test = None
+        if getattr(self.relay, 'fee_test_worker', None) and not getattr(self.relay, 'fee_locked', False):
+            fee_test = {'worker': self.relay.fee_test_worker, 'port': self.relay.fee_test_port,
+                        'percent': self.relay.fee_test_percent if fee_test_percent is None else fee_test_percent}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(dir=self.path.parent, prefix='.control-')
         try:
             with os.fdopen(descriptor, 'w', encoding='utf-8') as file:
                 json.dump({'blacklist': [str(item) for item in blacklist], 'observers': tokens,
-                           'routes': sealed_routes,
+                           'routes': sealed_routes, 'fee_test': fee_test,
                            'tp_mode': self.relay.tp_mode if tp_mode is None else tp_mode,
                            'route_generation': getattr(self.relay, 'route_generation', 0) if generation is None else generation}, file)
                 file.flush()
@@ -119,11 +141,43 @@ class DashboardControl:
 
     def public_config(self):
         user, fee = current_pool_routes(self.relay)
-        return {'tp_mode': self.relay.tp_mode, 'generation': getattr(self.relay, 'route_generation', 0), 'user_pool': user.export(),
+        return {'fee_test': self.fee_test_status(), 'tp_mode': self.relay.tp_mode, 'generation': getattr(self.relay, 'route_generation', 0), 'user_pool': user.export(),
                 'devfee_pool': fee.export() if fee and not getattr(self.relay, 'fee_locked', False) else None,
                 'fee_locked': getattr(self.relay, 'fee_locked', False), 'require_devfee': getattr(self.relay, 'require_devfee', False)}
 
+    def fee_test_status(self):
+        worker = getattr(self.relay, 'fee_test_worker', None)
+        if worker is None or getattr(self.relay, 'fee_locked', False):
+            return None
+        routers = [session['fee_test_router'] for session in self.relay.sessions.values()
+                   if 'fee_test_router' in session]
+        router = routers[0] if len(routers) == 1 else None
+        return {'worker': worker, 'listen_port': self.relay.fee_test_port,
+                'rate_step': 0.01,
+                'percent': self.relay.fee_test_percent,
+                'ready': bool(router and router.fee_ready())}
+
+    @staticmethod
+    def validate_fee_test_percent(percent):
+        if (type(percent) not in (int, float) or not 1 <= percent <= 100
+                or round(percent, 2) != percent):
+            raise ValueError('test rate must be 1..100 with up to two decimal places')
+        return percent
+
     async def mutate(self, path, data):
+        if path == '/api/fee-test':
+            if not getattr(self.relay, 'fee_test_worker', None) or getattr(self.relay, 'fee_locked', False):
+                raise KeyError(path)
+            if set(data) != {'worker', 'percent'} or data['worker'] != self.relay.fee_test_worker:
+                raise ValueError('exact test worker required')
+            percent = self.validate_fee_test_percent(data['percent'])
+            sessions = [session['fee_test_router'] for session in self.relay.sessions.values()
+                        if 'fee_test_router' in session]
+            if len(sessions) != 1:
+                raise ValueError('exactly one live test worker session is required')
+            await sessions[0].change_test_fee(
+                percent, lambda: self.save(self.relay.blacklist, self.tokens, fee_test_percent=percent))
+            return {'worker': self.relay.fee_test_worker, 'percent': percent, 'route': sessions[0].route}
         if path == '/api/mode':
             if set(data) != {'tp_mode'} or type(data['tp_mode']) is not bool:
                 raise ValueError('boolean tp_mode required')
@@ -249,6 +303,13 @@ class DashboardControl:
             await self.respond(writer, b'403 Forbidden', {'error': 'administrator required'})
             return True
         if method == 'GET':
+            if not admin and path == '/api/stream':
+                await self.public_stream.serve(reader, writer)
+                return True
+            if not admin and path in ('/api/snapshot', '/api/workers'):
+                data = self.public_snapshot()
+                await self.respond(writer, b'200 OK', data['registry'] if path.endswith('workers') else data)
+                return True
             if path == '/api/config':
                 await self.respond(writer, b'200 OK' if admin else b'403 Forbidden', self.public_config() if admin else {'error': 'administrator required'})
                 return True

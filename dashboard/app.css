@@ -92,3 +92,147 @@ button:hover { border-color:#deb18c; background:#2a3036; }
   .mobile-brand span { color:#deb18c; font-weight:400; }
   .top-actions { width:100%; flex-wrap:wrap; gap:8px; }
 }
+
+/* Farm monitoring: readable type, restrained copper identity. */
+body{background:#10151b;color:#edf1f5;font-size:15px}
+.shell{grid-template-columns:220px minmax(0,1fr)}
+main{max-width:1680px;margin:auto;padding:32px}
+.topbar{min-height:76px;padding:0 32px}
+.brand b{font-size:18px}.brand small{font-size:10px}
+.nav-link{font-size:15px;padding:14px 16px}
+.nav-caption,.section-kicker,.eyebrow{font-size:11px;letter-spacing:.1em}
+h1{font-size:36px}.page-title p{font-size:15px;line-height:1.6}
+.product-metrics{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.product-metric{background:#1a222c;border:1px solid #394553;border-top:2px solid #c8976f;box-shadow:none;padding:24px}
+.product-metric:first-child{background:#1c272e;border-color:#465850}
+.metric-label{font-size:14px}.metric-description{font-size:13px}
+.product-metric strong{font-size:40px}.metric-top{font-size:14px}
+.metric-card{padding:22px;min-height:138px;background:#18212b}
+.metric-card .metric-value{font-size:34px}.metric-foot{font-size:13px;line-height:1.5}
+.summary-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
+.content-grid{grid-template-columns:minmax(0,1fr)}
+.panel{background:#18212b;border:1px solid #344150;box-shadow:none}
+.panel-header{padding:24px}.panel-header h2{font-size:22px}
+.panel-subtitle,.panel-footer,.worker-notice{font-size:13px;line-height:1.6}
+.table-toolbar{padding:0 24px 20px;gap:12px}
+input,select,button{font-size:14px;min-height:42px}
+table th{font-size:12px;letter-spacing:.03em;padding:16px 14px}
+table td{font-size:14px;padding:16px 14px}
+.worker-table{min-width:1000px}.worker-table th,.worker-table td{padding:14px 8px}
+.worker-table th{white-space:normal;overflow-wrap:anywhere}
+.worker-table .worker-actions{flex-wrap:wrap}
+.worker-table td:first-child{max-width:260px}.worker-status{font-size:14px}
+.table-scroll{overflow:auto;max-height:620px}
+table thead th{position:sticky;top:0;z-index:1}
+.worker-table td:first-child{position:sticky;left:0;background:#18212b;z-index:1}
+.worker-table{min-width:720px;width:100%;table-layout:fixed}
+.worker-table th,.worker-table td{padding:11px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
+.worker-table th:first-child{width:20%}
+.worker-table th:nth-child(2){width:12%}
+.worker-table th:nth-child(3),.worker-table th:nth-child(4){width:12%;text-align:right}
+.worker-table td:nth-child(3){text-align:right}
+.worker-table th.admin-only{width:16%}
+.worker-table td:first-child small{display:block;color:var(--muted,#91a4bb);font-weight:400;margin-top:3px}
+.worker-table .worker-actions{justify-content:flex-end;gap:4px;flex-wrap:wrap}
+.worker-table .worker-actions button{padding:5px 8px}
+.route-health-table{min-width:780px;font-variant-numeric:tabular-nums}
+.route-health-table :is(th,td){padding:10px;white-space:nowrap}
+.worker-actions button{font-size:13px}
+.live-status,.language-control,.test-badge{font-size:13px}
+.farm-chart{padding:26px;background:#18212b;border:1px solid #344150;border-radius:14px;margin-bottom:24px}
+.farm-chart-head h2{font-size:22px}.farm-chart-head strong{font-size:28px;font-variant-numeric:tabular-nums}
+.farm-chart p,.farm-chart-axis{font-size:14px;line-height:1.6}
+#farm-chart-plot{height:240px;margin:16px 0}
+.farm-chart-grid{stroke:#344150;stroke-dasharray:3 5}
+#farm-chart-line{stroke:#e8b88e;stroke-width:2.5}
+@media(max-width:1100px){.shell{grid-template-columns:185px minmax(0,1fr)}main{padding:24px}.brand b{font-size:15px}}
+@media(max-width:760px){.shell{grid-template-columns:minmax(0,1fr)}.sidebar{display:none}.mobile-brand{display:block}main{padding:18px}.topbar{padding:16px}.page-title{flex-wrap:wrap;gap:16px}h1{font-size:28px}.product-metrics,.summary-grid{grid-template-columns:repeat(auto-fit,minmax(155px,1fr))}.product-metric strong{font-size:32px}.farm-chart{padding:18px}#farm-chart-plot{height:190px}.farm-chart-head strong{font-size:23px}}
+
+.connection-history > summary {
+  cursor: pointer;
+  padding: 16px 22px;
+  font-weight: 650;
+}
+.connection-history > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+.connection-attention {
+  margin: 0 24px 16px;
+  border: 1px solid #78603c;
+  border-radius: 8px;
+  background: #28231d;
+}
+.connection-attention > summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: #ffe0a7;
+  font-weight: 650;
+}
+.connection-attention > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.connection-attention .count-pill {
+  margin-inline-start: 6px;
+}
+.connection-attention ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 18rem;
+  overflow: auto;
+}
+.connection-attention li {
+  display: grid;
+  gap: 4px;
+  padding: 10px 14px;
+  border-top: 1px solid #514333;
+  overflow-wrap: anywhere;
+}
+.connection-attention small {
+  color: #c5b7a5;
+}
+
+/* Overview keeps live work above secondary counters. */
+:root {
+  --console-surface: #171b20;
+  --console-line: #30363d;
+}
+body { background: #111418; }
+.sidebar, .topbar { background: #15191e; border-color: var(--console-line); }
+.topbar { min-height: 56px; height: auto; justify-content: flex-end; }
+.brand-mark { border: 0; border-radius: 0; }
+.nav-link.selected { background: #242a30; color: #f3eee7; }
+.page-title { margin-bottom: 20px; }
+.page-title h1 { margin-top: 0; font-size: clamp(25px, 3vw, 34px); }
+.product-metrics, .summary-grid {
+  gap: 1px;
+  background: var(--console-line);
+  border: 1px solid var(--console-line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.product-metric, .product-metric:first-child, .summary-grid .metric-card {
+  background: var(--console-surface);
+  border: 0;
+  border-radius: 0;
+  min-height: 0;
+  padding: 14px 18px;
+}
+.product-metric { gap: 6px; }
+.product-metric strong { font-size: clamp(23px, 3vw, 32px); min-height: 0; }
+.summary-grid .metric-value { margin: 5px 0; font-size: 22px; }
+.summary-grid .foot-dot { display: none; }
+.panel { background: var(--console-surface); border-color: var(--console-line); border-radius: 8px; }
+.connections .panel-header { align-items: center; padding: 16px 20px; }
+.connections .panel-header h2 { margin-top: 0; }
+.connections th { background: #1e2329; color: #a5aeb9; }
+.connections td { border-color: var(--console-line); font-variant-numeric: tabular-nums; }
+.connections tbody tr:hover { background: #20252b; }
+.connections td:first-child { position: sticky; left: 0; background: var(--console-surface); }
+@media (max-width: 760px) {
+  .topbar { justify-content: space-between; }
+  .product-metric, .product-metric:first-child, .summary-grid .metric-card { padding: 12px; }
+  .connection-attention { margin-inline: 14px; }
+}

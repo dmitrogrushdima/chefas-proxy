@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+admin.env
 chefas-proxy.json
 *.key
 *.pem

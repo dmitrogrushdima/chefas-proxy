@@ -202,11 +202,90 @@ translations.ru["History restored"] = "История восстановлена
 translations["zh-CN"]["History restored"] = "历史已恢复";
 translations.ru["History persistence enabled"] = "Сохранение истории включено";
 translations["zh-CN"]["History persistence enabled"] = "已启用历史保存";
+translations["ru"]["LAST ACCEPTED SHARE"] = "ПОСЛЕДНЯЯ ПРИНЯТАЯ ШАРА";
+translations["zh-CN"]["LAST ACCEPTED SHARE"] = "最近接受的份额";
+translations["ru"]["SESSION"] = "СЕССИЯ";
+translations["zh-CN"]["SESSION"] = "会话";
+translations["ru"]["ASIC connection history"] = "История подключений ASIC";
+translations["zh-CN"]["ASIC connection history"] = "ASIC 连接历史";
+translations["ru"]["Latest connection changes since this proxy started."] = "Последние изменения с момента запуска прокси.";
+translations["zh-CN"]["Latest connection changes since this proxy started."] = "代理启动以来的最近连接变化。";
+translations["ru"]["Authorized, waiting for job"] = "Авторизован, ждём задание";
+translations["zh-CN"]["Authorized, waiting for job"] = "已授权，等待任务";
+translations["ru"]["Pool rejected authorization"] = "Пул отклонил авторизацию";
+translations["zh-CN"]["Pool rejected authorization"] = "矿池拒绝授权";
+translations["ru"]["Waiting for first accepted share"] = "Ждём первую принятую шару";
+translations["zh-CN"]["Waiting for first accepted share"] = "等待首个被接受的份额";
+translations["ru"]["Pool accepted shares"] = "Пул принимает шары";
+translations["zh-CN"]["Pool accepted shares"] = "矿池已接受份额";
+translations["ru"]["Pool connection lost"] = "Связь с пулом потеряна";
+translations["zh-CN"]["Pool connection lost"] = "矿池连接已断开";
+translations["ru"]["Pool unavailable"] = "Пул недоступен";
+translations["zh-CN"]["Pool unavailable"] = "矿池不可用";
+translations["ru"]["ASIC disconnected"] = "ASIC отключился";
+translations["zh-CN"]["ASIC disconnected"] = "ASIC 已断开";
+translations.ru["Needs attention"] = "Требуется внимание";
+translations["zh-CN"]["Needs attention"] = "需要关注";
+translations.ru["No accepted shares for 5 minutes"] = "Нет принятых шар 5 минут";
+translations["zh-CN"]["No accepted shares for 5 minutes"] = "5 分钟内无已接受份额";
+translations.ru["Lab fee override"] = "Комиссия на стенде";
+translations["zh-CN"]["Lab fee override"] = "测试费率";
+translations.ru["Set test worker to 100%"] = "Переключить воркер на 100%";
+translations["zh-CN"]["Set test worker to 100%"] = "将测试矿工切换到 100%";
+translations.ru["Return test worker to 1%"] = "Вернуть воркер на 1%";
+translations["zh-CN"]["Return test worker to 1%"] = "将测试矿工恢复到 1%";
+translations.ru["Waiting for one test session"] = "Ожидание одного тестового подключения";
+translations["zh-CN"]["Waiting for one test session"] = "等待一个测试连接";
+translations.ru["Recent session"] = "Недавняя сессия";
+translations["zh-CN"]["Recent session"] = "最近的会话";
+translations.ru["Session"] = "Сессия";
+translations["zh-CN"]["Session"] = "会话";
 translations.ru["History in memory"] = "История только в памяти";
 translations["zh-CN"]["History in memory"] = "历史仅保留在内存中";
 const locales = {en: "en-US", ru: "ru-RU", "zh-CN": "zh-CN"};
 let language = "en";
 try { const saved = localStorage.getItem("chefas-proxy-language"); if (Object.prototype.hasOwnProperty.call(locales, saved)) language = saved; } catch (_) { /* storage can be disabled */ }
+Object.assign(translations.ru, {
+  "Route performance": "Работа по маршрутам",
+  "Overview includes ports 3333 and 3334.": "Обзор включает порты 3333 и 3334.",
+  "Port 3333 data unavailable. Overview shows port 3334 only.": "Нет данных с порта 3333. Обзор показывает только порт 3334.",
+  "Accepted difficulty": "Принятая сложность",
+  "Port 3333: fixed 1% DevFee": "Порт 3333: фиксированная комиссия 1%",
+  "Worker share totals include previous sessions. Stale shares are included in rejected.": "Счётчики воркеров включают прошлые сеансы. Устаревшие шары входят в отклонённые.",
+  "Overview counters cover port 3334. Worker and route tables include both ports.": "Счётчики обзора относятся к порту 3334. Таблицы воркеров и маршрутов охватывают оба порта.",
+  "DevFee share 1h": "Доля DevFee за час",
+  "Pool-confirmed hashrate over 1h. Counters and mean times (sample count) since start.": "Хешрейт за час по данным пула. Счётчики и среднее время (число замеров) с запуска.",
+  "Accepted / rejected / stale": "Принято / отказано / устарело",
+  "Validation": "Проверка",
+  "Socket write": "Запись в сокет",
+  "Pool wait": "Ожидание пула",
+  "First share after DevFee": "Первая шара после DevFee",
+  "Usual share interval": "Обычный интервал шар"
+});
+Object.assign(translations["zh-CN"], {
+  "Route performance": "路由性能",
+  "Overview includes ports 3333 and 3334.": "概览涵盖端口 3333 和 3334。",
+  "Port 3333 data unavailable. Overview shows port 3334 only.": "端口 3333 数据不可用。概览仅显示端口 3334。",
+  "Accepted difficulty": "已接受难度",
+  "Port 3333: fixed 1% DevFee": "端口 3333：固定 1% 开发费",
+  "Worker share totals include previous sessions. Stale shares are included in rejected.": "矿工份额总数包含历史会话。过期份额计入拒绝份额。",
+  "Overview counters cover port 3334. Worker and route tables include both ports.": "概览计数仅涵盖端口 3334。矿工和路由表涵盖两个端口。",
+  "DevFee share 1h": "1 小时开发费份额",
+  "Pool-confirmed hashrate over 1h. Counters and mean times (sample count) since start.": "矿池确认的 1 小时算力。计数和平均时间（样本数）自启动以来统计。",
+  "Accepted / rejected / stale": "接受 / 拒绝 / 过期",
+  "Validation": "验证",
+  "Socket write": "套接字写入",
+  "Pool wait": "等待矿池",
+  "First share after DevFee": "开发费后的首个份额",
+  "Usual share interval": "正常份额间隔"
+});
+
+translations.ru["Pool-accepted shares · 15 minute window"] = "Шары, принятые пулом · окно 15 минут";
+translations["zh-CN"]["Pool-accepted shares · 15 minute window"] = "矿池已接受的份额 · 15分钟窗口";
+
+translations.ru["Live estimated hashrate"] = "Текущий оценочный хешрейт";
+translations["zh-CN"]["Live estimated hashrate"] = "实时估算算力";
+
 const staticNodes = [];
 const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
 while (walker.nextNode()) {

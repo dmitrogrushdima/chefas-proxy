@@ -20,66 +20,86 @@
       </a>
       <p class="nav-caption">WORKSPACE</p>
       <nav aria-label="Sections">
-        <a class="nav-link selected" href="#overview"><span class="nav-icon">◫</span> Overview <span class="nav-indicator"></span></a>
-        <a class="nav-link" href="#workers"><span class="nav-icon">▦</span> Workers</a>
-        <a class="nav-link" href="#connections"><span class="nav-icon">▦</span> Connections</a>
-        <a class="nav-link admin-only" href="#routes" hidden><span class="nav-icon">⌁</span> Routes</a>
-        <a class="nav-link" href="#pools"><span class="nav-icon">⌁</span> Pools</a>
-        <a class="nav-link" href="#diagnostics"><span class="nav-icon">◈</span> Diagnostics</a>
+        <a class="nav-link selected" href="#overview">Overview</a>
+        <a class="nav-link" href="#workers">Workers</a>
+        <a class="nav-link" href="#connections">Connections</a>
+        <a class="nav-link admin-only" href="#routes" hidden>Routes</a>
+        <a class="nav-link" href="#pools">Pools</a>
+        <a class="nav-link" href="#diagnostics">Diagnostics</a>
       </nav>
       <div class="sidebar-bottom"><span class="sidebar-signal"></span><div><b>Local dashboard</b><small>Data stays here</small></div></div>
     </aside>
     <div class="workspace">
       <header class="topbar">
         <a class="mobile-brand" href="#overview">CHEFAS <span>Proxy</span></a>
-        <div class="breadcrumb">WORKSPACE <span>/</span> <strong>OVERVIEW</strong></div>
-        <div class="top-actions"><button id="login-open" type="button">Sign in</button><button id="logout" type="button" hidden>Sign out</button><label class="language-control"><span id="language-label">Language</span><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option><option value="zh-CN">简体中文</option></select></label><span class="test-badge">PILOT BUILD</span><span class="live-status" id="connection-status" role="status"><i></i> Connecting</span></div>
+        <div class="top-actions"><button id="login-open" type="button" hidden>Sign in</button><button id="logout" type="button" hidden>Sign out</button><label class="language-control"><span id="language-label">Language</span><select id="language" aria-label="Language"><option value="en">English</option><option value="ru">Русский</option><option value="zh-CN">简体中文</option></select></label><span class="test-badge">PILOT BUILD</span><span class="live-status" id="connection-status" role="status"><i></i> Connecting</span></div>
       </header>
       <main id="overview">
-        <div class="page-title"><div><div class="eyebrow"><span></span> CONTROL CENTER</div><h1>Proxy overview<span class="title-dot">.</span></h1><p>Connections and pool activity in one place.</p></div><div class="refresh-wrap"><span id="last-update">Waiting for data</span><button id="refresh" type="button" aria-label="Refresh data">↻ <span>Refresh</span></button></div></div>
+        <div class="page-title"><div><h1>Proxy overview</h1><p>Connections and pool activity in one place.</p><p id="overview-scope" hidden>Overview counters cover port 3334. Worker and route tables include both ports.</p></div><div class="refresh-wrap"><span id="last-update">Waiting for data</span><button id="refresh" type="button" aria-label="Refresh data">↻ <span>Refresh</span></button></div></div>
         <div id="offline-notice" class="offline-notice" hidden>Proxy connection lost. The last data may be out of date.</div>
         <div id="redirect-alert" class="redirect-alert" role="status" hidden><span aria-hidden="true">!</span><p>Pool requested miner reconnection. Requests are not blocked and a miner may bypass the proxy.</p><a href="#diagnostics">View diagnostics</a></div>
         <section class="product-metrics" aria-label="Farm performance">
-          <article class="product-metric"><span class="metric-label">Estimated hashrate</span><strong id="kpi-hashrate">—</strong><span class="metric-description">Accepted difficulty · 5 minute window</span></article>
+          <article class="product-metric"><span class="metric-label">Estimated hashrate</span><strong id="kpi-hashrate">—</strong><span class="metric-description">Pool-accepted shares · 15 minute window</span></article>
           <article class="product-metric"><span class="metric-label">Active workers</span><strong id="kpi-workers">—</strong><span class="metric-description">Authorized worker identities online</span></article>
-          <article class="product-metric fee-metric"><span class="metric-label">DevFee debt</span><strong id="kpi-fee-debt">—</strong><span class="metric-description">Accepted difficulty · target 1%</span></article>
+          <article class="product-metric fee-metric"><span class="metric-label" id="kpi-fee-label">DevFee debt</span><strong id="kpi-fee-debt">—</strong><span class="metric-description" id="kpi-fee-hint">Accepted difficulty</span></article>
         </section>
         <section class="summary-grid" aria-label="Overview metrics">
-          <article class="metric-card"><div class="metric-top"><span>Active connections</span><span class="metric-symbol blue">◉</span></div><div class="metric-value" id="active">—</div><div class="metric-foot"><span class="foot-dot"></span> <span id="active-hint">Waiting for data</span></div></article>
-          <article class="metric-card"><div class="metric-top"><span>Accepted shares</span><span class="metric-symbol green">↗</span></div><div class="metric-value" id="accepted">—</div><div class="metric-foot">Since proxy start</div></article>
-          <article class="metric-card"><div class="metric-top"><span>Rejected shares</span><span class="metric-symbol amber">↘</span></div><div class="metric-value" id="rejected">—</div><div class="metric-foot">From pool responses</div></article>
-          <article class="metric-card"><div class="metric-top"><span>Connection errors</span><span class="metric-symbol violet">⌁</span></div><div class="metric-value" id="upstream-failures">—</div><div class="metric-foot">While connecting to a pool</div></article>
+          <article class="metric-card"><div class="metric-top"><span>Active connections</span></div><div class="metric-value" id="active">—</div><div class="metric-foot"><span class="foot-dot"></span> <span id="active-hint">Waiting for data</span></div></article>
+          <article class="metric-card"><div class="metric-top"><span>Accepted shares</span></div><div class="metric-value" id="accepted">—</div><div class="metric-foot" id="accepted-scope">Since proxy start</div></article>
+          <article class="metric-card"><div class="metric-top"><span>Rejected shares</span></div><div class="metric-value" id="rejected">—</div><div class="metric-foot" id="rejected-scope">From pool responses</div></article>
+          <article class="metric-card"><div class="metric-top"><span>Connection errors</span></div><div class="metric-value" id="upstream-failures">—</div><div class="metric-foot" id="upstream-failure-hint">While connecting to a pool</div></article>
         </section>
         <div class="content-grid">
           <div class="main-column">
             <section class="panel connections" id="connections">
-              <div class="panel-header"><div><div class="section-kicker">MONITORING <span> / 01</span></div><h2>Connections</h2><p>Active miner sessions</p></div><span class="count-pill" id="session-count">—</span></div>
+              <div class="panel-header"><div><h2>Connections</h2><p>Active miner sessions</p></div><span class="count-pill" id="session-count">—</span></div>
+              <details id="connection-attention" class="connection-attention" hidden>
+                <summary><span>Needs attention</span> <span id="attention-count" class="count-pill"></span></summary>
+                <ul id="attention-items"></ul>
+              </details>
               <div class="table-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search worker" aria-label="Search worker"></label><label class="filter-label"><span class="sr-only">Status filter</span><select id="filter"><option value="all">All sessions</option><option value="connected">Connected</option><option value="connecting">Connecting</option></select></label></div>
-              <div class="table-scroll"><table><thead><tr><th>WORKER</th><th>STATUS</th><th>ROUTE</th><th>ACCEPTED</th><th>REJECTED</th><th>DURATION</th></tr></thead><tbody id="sessions"></tbody></table></div>
+              <div class="table-scroll"><table><thead><tr><th>WORKER</th><th>STATUS</th><th>ROUTE</th><th>LAST ACCEPTED SHARE</th><th>ACCEPTED</th><th>REJECTED</th><th>DURATION</th></tr></thead><tbody id="sessions"></tbody></table></div>
               <div class="empty" id="empty"><span class="empty-icon">⌁</span><b>No connections yet</b><p>Miners connected to the proxy will appear here.</p></div>
               <div class="panel-footer"><span>Current session data</span><span>Live updates · 1 sec</span></div>
             </section>
+            <details class="panel connection-history" id="connection-log" hidden>
+              <summary><span>ASIC connection history</span></summary>
+              <p class="worker-notice">Latest connection changes since this proxy started.</p>
+              <div class="table-scroll"><table><thead><tr><th>TIME</th><th>SESSION</th><th>WORKER</th><th>ROUTE</th><th>EVENT</th></tr></thead><tbody id="connection-events"></tbody></table></div>
+            </details>
             <section class="panel" id="workers">
               <div class="panel-header"><div><div class="section-kicker">LIVE OBSERVER</div><h2>Workers</h2><p>Grouped by worker name and source IP. Worker history can survive restarts.</p></div><span class="count-pill" id="worker-count">—</span></div>
-              <div class="table-toolbar"><label class="search"><input id="worker-search" type="search" placeholder="Search worker or IP" aria-label="Search worker or IP"></label><select id="worker-filter" aria-label="Worker status"><option value="all">All workers</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
+              <div class="table-toolbar"><label class="search"><input id="worker-search" type="search" placeholder="Search worker or IP" aria-label="Search worker or IP"></label><select id="worker-filter" aria-label="Worker status"><option value="all">All workers</option><option value="online" selected>Online</option><option value="offline">Offline</option></select></div>
               <p class="worker-notice" id="history-status"></p><p class="worker-notice" id="worker-limit" hidden>Worker history limit reached. Some observations are unavailable.</p>
-              <div class="table-scroll"><table class="worker-table"><thead><tr><th>WORKER</th><th>IP</th><th>STATUS</th><th>HASHRATE 15m</th><th>HASHRATE 1h</th><th>HASHRATE 24h</th><th>ACCEPTED</th><th>REJECTED</th><th>STALE</th><th>LOCAL</th><th>POOL RESPONSE</th><th>FIRST SHARE EMA</th><th class="admin-only" hidden>ACTIONS</th></tr></thead><tbody id="worker-rows"></tbody></table></div>
+              <div class="table-scroll" tabindex="0" role="region" aria-label="Workers"><table class="worker-table"><thead><tr><th>WORKER</th><th>STATUS</th><th>HASHRATE 15m</th><th>HASHRATE 1h</th><th>ACCEPTED</th><th>REJECTED</th><th>STALE</th><th class="admin-only" hidden>ACTIONS</th></tr></thead><tbody id="worker-rows"></tbody></table></div>
               <div class="empty" id="workers-empty"><b>No worker data yet</b><p>Statistics appear after pool authorization.</p></div>
+              <p class="worker-notice">Worker share totals include previous sessions. Stale shares are included in rejected.</p>
               <p class="worker-notice">* Incomplete window. Stale shares are included in rejected.</p><div class="panel-footer"><span>Hashrate is estimated from accepted difficulty; 1-minute buckets.</span><span id="stream-label">Connecting</span></div>
             </section>
             <section class="panel admin-only" id="routes" hidden><div class="panel-header"><div><h2>Routes</h2><p>Settings apply to new connections. Active miners can reconnect automatically.</p></div></div>
               <form id="tp-form" class="management-form"><label class="check-label"><input id="tp-mode" type="checkbox">TP mode · raw TCP for new connections</label><button type="submit">Apply TP mode</button><p id="tp-result" role="status"></p></form>
+              <form id="fee-test-controls" class="management-form" hidden>
+                <h3>DevFee rate</h3>
+                <p id="fee-test-state"></p>
+                <label>DevFee rate (%)<input id="fee-test-percent" type="number" required min="1" max="100" step="99" placeholder="1 or 100"></label>
+                <button id="fee-test-apply" type="submit">Apply DevFee rate</button>
+                <p id="fee-test-result" role="status"></p>
+              </form>
               <form id="route-form" class="management-form"><fieldset><legend>User Pool</legend><label>Host<input id="user-host" required maxlength="300"></label><label>Port<input id="user-port" type="number" required min="1" max="65535"></label><label>User / Wallet<input id="user-worker" maxlength="128" placeholder="Forward ASIC credentials"></label><label>Password<input id="user-password" type="password" maxlength="1024" placeholder="Leave blank to keep" autocomplete="off"></label></fieldset>
               <label class="check-label"><input id="fee-enabled" type="checkbox">Enable DevFee Pool</label><fieldset id="fee-fields"><legend>DevFee Pool</legend><label>Host<input id="fee-host" required maxlength="300"></label><label>Port<input id="fee-port" type="number" required min="1" max="65535"></label><label>User / Wallet<input id="fee-worker" required maxlength="128"></label><label>Password<input id="fee-password" type="password" maxlength="1024" placeholder="Leave blank to keep" autocomplete="off"></label></fieldset>
               <label class="check-label"><input id="route-reconnect" type="checkbox" checked>Reconnect active miners</label><button type="submit">Save routes</button><button id="route-reload" type="button">Reload routes</button><button id="observer-create" type="button">Create Observer Link</button><input id="observer-link" type="text" readonly hidden aria-label="Observer Link"><p id="management-result" role="status"></p></form>
             </section>
             <section class="panel admin-only" id="blacklist" hidden><div class="panel-header"><div><h2>IP Blacklist</h2><p>Blocks new connections. Use Kick to disconnect an active worker.</p></div></div><form id="ban-form" class="management-form"><label>IP / CIDR<input id="ban-address" required maxlength="64" placeholder="192.0.2.1"></label><button type="submit">Ban IP</button></form><div class="table-scroll"><table><thead><tr><th>IP / CIDR</th><th>ACTIONS</th></tr></thead><tbody id="blacklist-rows"></tbody></table></div></section>
+            <section class="panel" id="route-health" hidden>
+              <div class="panel-header"><div><h2>Route performance</h2><p>Pool-confirmed hashrate over 1h. Counters and mean times (sample count) since start.</p></div></div>
+              <div class="table-scroll" tabindex="0" role="region" aria-label="Route performance"><table class="route-health-table"><thead><tr><th>ROUTE</th><th>HASHRATE 1h</th><th>DevFee share 1h</th><th>Accepted / rejected / stale</th><th>Validation</th><th>Socket write</th><th>Pool wait</th><th>First share after DevFee</th><th>Usual share interval</th></tr></thead><tbody id="route-health-rows"></tbody></table></div>
+            </section>
             <section class="panel" id="fee-log"><div class="panel-header"><div><div class="section-kicker">DEVFEE LEDGER</div><h2>Session transitions</h2><p>Latest 500 events in memory. This is not a persistent audit log.</p></div></div><div class="table-scroll"><table><thead><tr><th>TIME</th><th>WORKER</th><th>TARGET</th><th>EVENT</th></tr></thead><tbody id="fee-events"></tbody></table></div><div class="empty" id="events-empty"><b>No transitions yet</b></div></section>
             <section class="panel diagnostic-panel" id="diagnostics"><div class="panel-header"><div><div class="section-kicker">STATUS <span> / 02</span></div><h2>Diagnostics</h2><p>Counters since process start</p></div><a class="export-link" href="/api/audit-export" download>Export JSON</a></div><div class="diagnostic-grid"><div><span>Total connections</span><b id="connections-total">—</b></div><div><span>Backup connections</span><b id="backup-connections">—</b></div><div><span>Pending / unmatched</span><b id="pending-unmatched">—</b></div><div><span>Capacity limit / obvious loops</span><b id="limits-loops">—</b></div><div><span>Blocked by IP filter</span><b id="refused-network">—</b></div><div><span>Pool redirect requests (not blocked)</span><b id="redirect-notices">—</b></div><div><span>Avg. share response time</span><b id="share-rtt">—</b></div><div><span>Idle sessions closed</span><b id="idle-timeouts">—</b></div></div><div class="information"><span>i</span><p>Counters are based on observed pool responses and may differ from pool statistics. They do not calculate revenue.</p></div></section>
           </div>
           <aside class="right-column">
             <section class="panel route-panel" id="pools"><div class="panel-header"><div><div class="section-kicker">ROUTE <span> / 03</span></div><h2>Pools</h2><p>Current configuration</p></div><span class="subtle-icon">⌁</span></div><div class="route"><div class="route-point"><span class="route-dot main-dot"></span><div><small>PRIMARY POOL</small><b id="primary-pool">—</b><span id="tls-label">—</span></div></div><div class="route-line"></div><div class="route-point"><span class="route-dot backup-dot"></span><div><small>BACKUP POOL</small><b id="backup-pool">—</b><span>On connection failure</span></div></div></div><div class="route-footer"><span>Proxy port</span><strong id="listener">—</strong></div></section>
-            <section class="note-card"><div class="note-top"><span class="note-icon">✳</span><span>AUDIT</span></div><h3>Accepted work</h3><p><span>User difficulty / shares</span>: <b id="audit-user">—</b></p><p><span>DevFee difficulty / shares</span>: <b id="audit-fee">—</b></p><p><span>DevFee share of difficulty</span>: <b id="audit-percent">—</b></p><p><span>Estimated hashrate · 5 min</span>: <b id="audit-hashrate">—</b></p><p><span>Outstanding DevFee difficulty</span>: <b id="audit-debt">—</b></p><p><span>Rejected locally</span>: <b id="audit-local">—</b></p><p>Pool-confirmed work since proxy start. Estimates are not payouts.</p><a href="/api/audit-export" download>Export JSON <span>↗</span></a></section>
+            <section class="note-card"><div class="note-top"><span class="note-icon">✳</span><span>AUDIT</span></div><h3>Accepted work</h3><p><span>User difficulty / shares</span>: <b id="audit-user">—</b></p><p><span>DevFee difficulty / shares</span>: <b id="audit-fee">—</b></p><p><span>DevFee share of difficulty</span>: <b id="audit-percent">—</b></p><p><span>Live estimated hashrate</span>: <b id="audit-hashrate">—</b></p><p><span>Outstanding DevFee difficulty</span>: <b id="audit-debt">—</b></p><p><span>Rejected locally</span>: <b id="audit-local">—</b></p><p>Pool-confirmed work since proxy start. Estimates are not payouts.</p><a href="/api/audit-export" download>Export JSON <span>↗</span></a></section>
             <div class="version"><span>CHEFAS Proxy / BITCOIN</span><span>PILOT CANDIDATE</span></div>
           </aside>
         </div>

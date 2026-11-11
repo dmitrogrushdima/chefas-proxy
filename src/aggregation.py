@@ -157,8 +157,8 @@ class VirtualPrefixAllocator:
     """
 
     def __init__(self, prefix_bytes, local_extranonce2_size, *, maximum_workers=100):
-        if type(prefix_bytes) is not int or prefix_bytes not in (1, 2):
-            raise ValueError('prefix_bytes must be 1 or 2')
+        if type(prefix_bytes) is not int or not 1 <= prefix_bytes <= 4:
+            raise ValueError('prefix_bytes must be 1..4')
         self.prefix_bytes = prefix_bytes
         self.local_extranonce2_size = _size(local_extranonce2_size, 'local extranonce2 size')
         self.maximum_workers = _workers(maximum_workers)
