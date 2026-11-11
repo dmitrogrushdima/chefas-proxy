@@ -1,4 +1,7 @@
-"""Development launcher. Distributed builds have their own native-only launcher."""
+"""Run from source for development; farm users install the standalone release.
+
+The packaged application has its own native-only bootstrap and bundled Python.
+"""
 from pathlib import Path
 import sys
 
