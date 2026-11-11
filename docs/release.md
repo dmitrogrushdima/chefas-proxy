@@ -4,6 +4,14 @@ Release builds contain an executable, a bundled Python runtime, compiled core
 modules, and the CHEFAS Proxy dashboard. Operators do not need Python or Cython.
 Keep the executable and its `_internal` directory together.
 
+## Publication policy
+
+Publish a new release only on the project owner's explicit instruction.
+Documentation, screenshots and video updates are ordinary commits; they do not
+create a version or tag. The release workflow is manual and defaults to checks
+only. Publishing additionally requires `publish: true` on the chosen version tag.
+Keep the existing release tag and its tested archives unchanged between releases.
+
 ## Operator dashboard and private administration
 
 The farm operator signs in to the local dashboard as its administrator. This
