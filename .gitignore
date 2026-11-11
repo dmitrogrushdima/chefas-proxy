@@ -24,8 +24,7 @@ logs/
 build/
 *.pyd
 *.so
-bin/*
-!bin/.gitkeep
+bin/
 .pytest_cache/
 
 .venv*/
@@ -33,3 +32,6 @@ bin/*
 *.tar.gz
 *.zip.sha256
 *.tar.gz.sha256
+test-results.xml
+frozen-verification.json
+linux-install-verification.json

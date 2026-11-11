@@ -1,0 +1,69 @@
+name: Qualify and publish release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+          - os: ubuntu-24.04
+            target: linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install -r requirements/release.txt pytest
+      - run: python -m pytest -q --junitxml=test-results.xml
+      - run: python scripts/build_release.py
+      - run: python scripts/verify_release.py --bundle dist/chefas-proxy-${{ matrix.target }} --report frozen-verification.json
+      - name: Verify Linux installation and service lifecycle
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo --preserve-env=GITHUB_ACTIONS "$(command -v python)" scripts/verify_linux_install.py --bundle "$PWD/dist/chefas-proxy-linux-x64" --report "$PWD/linux-install-verification.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.target }}
+          path: |
+            test-results.xml
+            frozen-verification.json
+            linux-install-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: qualify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: packages
+          merge-multiple: true
+      - name: Publish qualified pilot packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" packages/* --verify-tag --prerelease --title "CHEFAS Proxy $RELEASE_TAG" --notes-file docs/release-notes.md

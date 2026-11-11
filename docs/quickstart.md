@@ -1,39 +1,27 @@
 # Operator quick start
 
-Use a trusted standalone build made for the pilot machine: it bundles Python and the native core. Start with [Install on your farm](../README.md#install-on-your-farm) for the download, installation and ASIC setup. Only the separate native development runtime needs an installed matching Python; see [development](development.md).
+Use a trusted standalone build made for the pilot machine: it bundles Python and the native core. Start with [Install on your farm](../README.md#download) for the download, installation and ASIC setup. Only the separate native development runtime needs an installed matching Python; see [development](development.md).
 
 ## Configure the server
 
-1. For a standalone launcher, copy `.env.example` to `.env` beside `chefas-proxy.json`. For an Ubuntu service installed with `install.sh`, edit `/etc/chefas-proxy/chefas-proxy.env`. The installer creates this file from the template.
-2. Generate two independent secrets locally. Standalone operators do not need Python.
+The standalone launchers generate `chefas-proxy.json` and private `.env`
+credentials on first run. On Ubuntu, `install.sh` generates the service's
+`/etc/chefas-proxy/chefas-proxy.env` with mode 0600. Existing files are not
+replaced. Set your BTC pool in the JSON; keep passwords and tokens out of it.
 
-   Windows PowerShell (run twice, once for each secret):
+Open the environment file locally and copy `CHEFAS_PROXY_ADMIN_TOKEN` to sign
+in. Keep `CHEFAS_PROXY_SECRETS_KEY` in a private backup: losing it prevents
+recovery of encrypted route passwords. Never send either value to support.
+`.env.example` is a reference for manual developer setup, not a file to copy
+over generated credentials.
 
-   ```powershell
-   $bytes = New-Object byte[] 32
-   $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-   $rng.GetBytes($bytes)
-   $rng.Dispose()
-   [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_')
-   ```
+Run `start.cmd` on Windows. On Ubuntu, use `sudo systemctl enable --now
+chefas-proxy` after configuring the installed JSON. For a manual Linux launch,
+use `./start.sh` from the extracted package. Both packages include Python.
 
-   Linux with OpenSSL (run twice):
-
-   ```sh
-   openssl rand -base64 32 | tr '+/' '-_'
-   ```
-
-   Developers with Python may instead use:
-
-   ```sh
-   python -c "import secrets; print(secrets.token_urlsafe(32))"
-   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-   ```
-
-   Put the first in `CHEFAS_PROXY_ADMIN_TOKEN` and the second in `CHEFAS_PROXY_SECRETS_KEY`. Preserve the encryption key in a private backup; losing it prevents recovery of encrypted pool passwords. Do not send these values to support or add them to Git.
-3. Set `CHEFAS_PROXY_DEVFEE_PASSWORD` if your fee account requires it. The default pool password `x` is public convention, not the administrative secret. User credentials normally come from each ASIC; the authenticated Routes form can override them.
-
-Run `start.cmd` from the Windows standalone archive, or start the installed Ubuntu service with `sudo systemctl enable --now chefas-proxy`. For a manual Linux launch from the archive, run `./start.sh`. The root scripts prefer the matching standalone package in `dist/`, otherwise select `bin/chefas-proxy/`; a distributed bundle's scripts select their own directory. `CHEFAS_PROXY_PYTHON` can specify an absolute interpreter path. Missing binaries cause an error; the production scripts do not silently fall back to source.
+The operator release fixes the fee rate and account. Do not copy private VPS
+flags such as `--fee-test-worker` or development DevFee overrides into your
+farm configuration. Configure only your own customer pool and ASIC identities.
 
 ## Pool and miner addresses
 
@@ -71,7 +59,7 @@ ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18080:127.0.0.1:8080 operator@19
 Keep the terminal open and visit `http://127.0.0.1:18080` on your computer.
 If you changed the dashboard port, replace the final `8080` in the command.
 
-**Give someone read-only access** from **Routes → Create Observer Link**.
+**Give someone read-only access** from **Routes в†’ Create Observer Link**.
 The built-in link shows the proxy's worker statistics and expires after
 one hour. Share it privately with someone allowed to see that farm's
 statistics. The recipient must be able to reach the URL in the link.
@@ -95,3 +83,22 @@ If chips disconnect after hot changes, use `--hot-switch-mode reconnect` while i
 State lives in `state/`, rotated logs in `logs/`. Restrict both directories and `.env` to the service account. SIGINT/SIGTERM perform orderly cleanup; a forced kill can lose the last checkpoint. The UI shows only measured data: ASIC network RTT is not invented from mining time.
 
 Defaults currently allow 512 TCP connections and retain at most 512 worker-history identities. Raising `--max-connections` alone does not enlarge the history table. A multi-thousand-device rollout requires capacity and telemetry scaling work; do not infer support from a higher numeric connection limit.
+
+## Rollback and upgrades
+
+For immediate rollback, restore the ASIC's original direct-pool entry as Pool 1
+and confirm accepted work at the pool before stopping CHEFAS. This is also the
+safe path while changing proxy binaries; an upgrade can require reconnects.
+
+On Windows, keep the old package folder. Stop its proxy, back up
+`chefas-proxy.json`, `.env` and `state/` privately, then copy these operator
+files into a freshly extracted new package. Keep the new executable with its
+own new `_internal`; do not mix libraries from different versions. Run
+`start.cmd`, verify one ASIC and restore the old package if checks fail.
+
+The Linux installer performs first installation and refuses to overwrite an
+existing `/opt/chefas-proxy` or service unit. Do not delete the installation to
+bypass that check: keep `/etc/chefas-proxy`, `/var/lib/chefas-proxy` and the
+previous package backed up before a planned maintenance upgrade. For the first
+public pilot, prefer the direct-pool fallback during maintainer-assisted Linux
+upgrades rather than replacing files beneath a running process.

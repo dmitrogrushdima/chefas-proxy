@@ -27,8 +27,8 @@ skipped soak is not evidence of measured fleet capacity.
 ## Build
 
 ```sh
-python -m pip install -r requirements-build.txt
-python build_ext.py
+python -m pip install -r requirements/build.txt
+python scripts/build_ext.py
 ```
 
 Windows requires MSVC/Windows SDK; Linux requires a C compiler and Python development headers. Default output: ignored `bin/chefas-proxy/`. An existing output is never overwritten; pass `--output bin/ANOTHER_NAME` for a fresh build. `--generate-only` checks Cython translation without linking. Compiled distributions include 17 native modules, the bootstrap, local UI, launcher scripts, dependency files and a hash manifest, without runtime source, real ENV files, state or logs.

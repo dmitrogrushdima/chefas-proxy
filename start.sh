@@ -7,7 +7,7 @@ if [ -x "$base/dist/chefas-proxy-linux-x64/chefas-proxy" ]; then
 fi
 if [ -d "$base/src" ]; then runtime="$base/bin/chefas-proxy"; else runtime="$base"; fi
 if [ ! -f "$runtime/launch.py" ]; then
-  echo "Compiled runtime missing. Run: python build_ext.py" >&2
+  echo "Compiled runtime missing. Run: python scripts/build_ext.py" >&2
   exit 1
 fi
 cd "$base"

@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible CHEFAS Proxy problem without sharing credentials.
+body:
+  - type: markdown
+    attributes:
+      value: Never include admin tokens, environment files, passwords, wallets or identifying network details. Keep a direct-pool fallback while diagnosing mining interruptions.
+  - type: input
+    id: version
+    attributes:
+      label: Release tag or source commit
+      placeholder: v0.1.0-rc.1
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and installation method
+      placeholder: Ubuntu 24.04 x64, standalone systemd service
+    validations:
+      required: true
+  - type: input
+    id: miner
+    attributes:
+      label: ASIC model and exact firmware version
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: What happened and how to reproduce it
+      description: Include expected behavior, actual behavior, measurement window and whether reconnects occurred.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Relevant error messages, accepted/rejected difficulty and stale counts. Do not upload your environment or state files.

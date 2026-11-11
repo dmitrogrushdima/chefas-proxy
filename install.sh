@@ -24,8 +24,9 @@ config_dir=/etc/chefas-proxy
 unit=/etc/systemd/system/chefas-proxy.service
 service_user=chefas-proxy
 umask 022
+command -v openssl >/dev/null || { printf '%s\n' 'OpenSSL is required to generate private credentials.' >&2; exit 1; }
 
-for file in chefas-proxy chefas-proxy.example.json .env.example chefas-proxy.service release-manifest.json LICENSE RELEASE.md; do
+for file in chefas-proxy chefas-proxy.example.json .env.example chefas-proxy.service release-manifest.json LICENSE RELEASE.md README.md docs/quickstart.md; do
     if [[ ! -f "$source_dir/$file" || -L "$source_dir/$file" ]]; then
         printf 'Missing Linux release file: %s\n' "$file" >&2
         exit 1
@@ -33,6 +34,10 @@ for file in chefas-proxy chefas-proxy.example.json .env.example chefas-proxy.ser
 done
 if [[ ! -d "$source_dir/_internal" || -L "$source_dir/_internal" || ! -x "$source_dir/chefas-proxy" ]]; then
     printf '%s\n' 'The extracted Linux executable and its _internal directory are required.' >&2
+    exit 1
+fi
+if [[ ! -d "$source_dir/docs" || -L "$source_dir/docs" ]]; then
+    printf '%s\n' 'The bundled operator documentation is required.' >&2
     exit 1
 fi
 if [[ -e "$destination" || -L "$destination" || -e "$unit" || -L "$unit" || -L "$config_dir" ]]; then
@@ -45,6 +50,7 @@ stage=$(mktemp -d /opt/.chefas-proxy-install.XXXXXXXX)
 trap 'rm -rf -- "$stage"' EXIT
 install -m 0755 -- "$source_dir/chefas-proxy" "$stage/chefas-proxy"
 cp -a -- "$source_dir/_internal" "$stage/_internal"
+cp -a -- "$source_dir/docs" "$stage/docs"
 while IFS= read -r -d '' link; do
     target=$(realpath -e -- "$link")
     if [[ "$target" != "$stage/_internal/"* ]]; then
@@ -55,7 +61,7 @@ done < <(find "$stage/_internal" -type l -print0)
 chown -hR root:root "$stage"
 chmod -R u-s,g-s,go-w "$stage"
 chmod 0755 "$stage"
-install -m 0644 -- "$source_dir/release-manifest.json" "$source_dir/LICENSE" "$source_dir/RELEASE.md" "$stage/"
+install -m 0644 -- "$source_dir/release-manifest.json" "$source_dir/LICENSE" "$source_dir/RELEASE.md" "$source_dir/README.md" "$stage/"
 
 if ! getent group "$service_user" >/dev/null; then
     groupadd --system "$service_user"
@@ -78,7 +84,14 @@ if [[ ! -e "$config_dir/chefas-proxy.json" ]]; then
     install -m 0640 -o root -g "$service_user" -- "$source_dir/chefas-proxy.example.json" "$config_dir/chefas-proxy.json"
 fi
 if [[ ! -e "$config_dir/chefas-proxy.env" ]]; then
-    install -m 0600 -o root -g root -- "$source_dir/.env.example" "$config_dir/chefas-proxy.env"
+    # The private file is created with restrictive permissions before secrets
+    # are written. Existing operator credentials are never replaced.
+    install -m 0600 -o root -g root /dev/null "$config_dir/chefas-proxy.env"
+    admin_token=$(openssl rand -base64 32 | tr '+/' '-_')
+    secrets_key=$(openssl rand -base64 32 | tr '+/' '-_')
+    printf '# Private CHEFAS credentials. Do not share.\nCHEFAS_PROXY_ADMIN_TOKEN=%s\nCHEFAS_PROXY_SECRETS_KEY=%s\nCHEFAS_PROXY_USER_PASSWORD=x\n' \
+        "$admin_token" "$secrets_key" > "$config_dir/chefas-proxy.env"
+    unset admin_token secrets_key
 fi
 mv -T -- "$stage" "$destination"
 install -m 0644 -- "$source_dir/chefas-proxy.service" "$unit"

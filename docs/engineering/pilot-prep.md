@@ -48,8 +48,8 @@ SIGINT and SIGTERM request a cooperative stop, rather than abruptly cancelling t
 ## Compile
 
 ```sh
-python -m pip install -r requirements-build.txt
-python build_ext.py --output dist/chefas-proxy-pilot
+python -m pip install -r requirements/build.txt
+python scripts/build_ext.py --output dist/chefas-proxy-pilot
 ```
 
 MSVC C++ tools and Windows SDK are required on Windows; a C compiler and Python development headers on Linux. The script translates all 14 runtime modules, including the bounded Stratum codec, and builds platform-native .pyd/.so files. It stages sources/C/object files under ignored build/, uses short relative object paths for Windows, never overwrites the source modules and refuses an existing output directory. `--generate-only` validates Cython translation without a native compiler.

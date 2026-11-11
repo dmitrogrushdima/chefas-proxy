@@ -4,7 +4,7 @@ param(
     [switch]$SkipSmokeTest
 )
 $ErrorActionPreference = "Stop"
-$arguments = @((Join-Path $PSScriptRoot "scripts/build_release.py"))
+$arguments = @((Join-Path $PSScriptRoot "build_release.py"))
 if ($Output) { $arguments += @("--output", $Output) }
 if ($SkipSmokeTest) { $arguments += "--skip-smoke-test" }
 & $Python @arguments

@@ -32,13 +32,13 @@ updated by editing the checkout. Keep the previous package for rollback.
    list to restrict access to the farm subnet (for example
    `["192.168.10.0/24"]`). ASIC wallet/worker credentials normally come from
    each ASIC's Stratum authorization. Route overrides are configured in CHEFAS Proxy.
-2. Copy `.env.example` to `.env`, generate your own admin token and encryption
-   key, and set `CHEFAS_PROXY_ADMIN_TOKEN` / `CHEFAS_PROXY_SECRETS_KEY`. Restrict the file to
-   the service owner. Never place tokens or passwords in `chefas-proxy.json`. DevFee
-   targets 1% of accepted difficulty and is built into the operator release.
-   The operator JSON configures the customer routes and listener. The release
-   attempts verified TLS to ViaBTC and can fall back to TCP. Pool credentials
-   saved by the routing API use the encrypted secret store.
+2. First run generates private `CHEFAS_PROXY_ADMIN_TOKEN` and
+   `CHEFAS_PROXY_SECRETS_KEY` values. The launchers use `.env`; the Ubuntu
+   installer uses `/etc/chefas-proxy/chefas-proxy.env`. Existing files are
+   preserved. Keep the credentials private and back up the encryption key.
+   Never put tokens or passwords in `chefas-proxy.json`. DevFee targets 1%
+   of accepted difficulty and is locked in the operator release. Pool
+   credentials saved by the routing API use the encrypted secret store.
 3. Run `start.cmd` / `chefas-proxy.exe` (Windows) or `./start.sh` (Linux). `start.cmd`
    keeps the console open after startup errors. With `chefas-proxy.json` present
    it starts without CLI arguments. Open `http://127.0.0.1:8080`. The dashboard
@@ -61,24 +61,28 @@ Use a dedicated virtual environment:
 
 ```text
 python -m venv .venv-release
-<venv-python> -m pip install -r requirements-release.txt
+<venv-python> -m pip install -r requirements/release.txt
 ```
 
 Windows:
 
 ```powershell
-.\build_release.ps1 -Python .\.venv-release\Scripts\python.exe
+.\scripts\build.ps1 -Python .\.venv-release\Scripts\python.exe
 ```
 
 Linux:
 
 ```sh
-CHEFAS_PROXY_BUILD_PYTHON=.venv-release/bin/python ./build_release.sh
+CHEFAS_PROXY_BUILD_PYTHON=.venv-release/bin/python ./scripts/build.sh
 ```
 
-The builder compiles all `build_ext.py` modules, supplies Cython's hidden
+The builder compiles all `scripts/build_ext.py` modules, supplies Cython's hidden
 imports to PyInstaller, bundles dashboard assets, verifies native core files,
 and runs `--release-info` / `--help` with developer Python paths removed.
+Run `python scripts/verify_release.py --bundle dist/chefas-proxy-windows-x64`
+(or the Linux directory) to test first-run setup, manifest integrity, frozen
+fee-policy enforcement and farm-admin/Observer access. It works on a temporary
+copy and does not connect a real ASIC or public pool.
 It refuses existing output directories and retains staging on failure.
 Run one native/release build at a time per checkout: the C compiler's
 intermediate directory is shared by the native and standalone builders.
@@ -87,10 +91,11 @@ The default destination is `dist/chefas-proxy-windows-x64` or
 and a companion archive SHA-256 checksum. No secrets, history, control state, or compatibility
 profiles are collected from the workspace.
 
-For pools that allow worker suffixes, the public setting
+In the unlocked development runtime, for pools that allow worker suffixes, the setting
 `"devfee_worker_template": "{worker}_{slot}"` opts into stable per-session
 worker names derived from the configured `devfee_worker`. Omit it to preserve
 the exact account string; wallet and worker syntax varies by pool.
+The operator release rejects commission-worker overrides.
 
 `release-manifest.json` records dependency versions and SHA-256 file hashes.
 Pinned top-level requirements and manifests make builds inspectable, but they

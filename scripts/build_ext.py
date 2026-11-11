@@ -1,7 +1,7 @@
 """Build a source-free runtime directory; never compile extensions in place.
 
-Usage: python build_ext.py [--output dist/chefas-proxy] [--generate-only]
-Requires requirements-build.txt and a platform C compiler / Python headers.
+Usage: python scripts/build_ext.py [--output dist/chefas-proxy] [--generate-only]
+Requires requirements/build.txt and a platform C compiler / Python headers.
 """
 import argparse
 import hashlib
@@ -14,7 +14,7 @@ import platform
 import shutil
 import tempfile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 MODULES = ('proxy','router','devfee_scheduler','pow_validator','history_store','stratum_session',
            'upstream_manager','observer','dashboard_server','dashboard_control','secret_store','pilot_logging','shutdown_signals','stratum_codec','hardware_compatibility','network_io','aggregation')
 ENV_TEMPLATE = """# Set unique secrets on the machine running CHEFAS Proxy.

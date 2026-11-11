@@ -183,15 +183,15 @@ def main():
         checksum_path = Path(str(archive_path) + ".sha256")
         if output.exists() or archive_path.exists() or checksum_path.exists():
             raise ValueError("Output already exists; choose a fresh directory. Nothing is removed automatically")
-        dependencies = declared_dependencies(ROOT / "requirements-release.txt")
+        dependencies = declared_dependencies(ROOT / "requirements/release.txt")
         if any(importlib.metadata.version(name) != version for name, version in dependencies.items()):
-            raise ValueError("Install the exact pinned requirements-release.txt into the build environment")
+            raise ValueError("Install the exact pinned requirements/release.txt into the build environment")
         validate_example_environment(ROOT / ".env.example")
         build = ROOT / "build"
         build.mkdir(exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="standalone-", dir=build)).resolve()
         native = work / "native"
-        subprocess.run([sys.executable, str(ROOT / "build_ext.py"), "--output", str(native)], cwd=ROOT, check=True)
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "build_ext.py"), "--output", str(native)], cwd=ROOT, check=True)
         command, native_manifest = pyinstaller_command(native, work, work / "dist")
         # Remove developer import paths: a source fallback must not enter the bundle.
         environment = dict(os.environ)
@@ -203,7 +203,18 @@ def main():
         validate_core_archive(bundle, native_manifest["modules"])
         shutil.copyfile(native / ".env.example", bundle / ".env.example")
         shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
-        shutil.copyfile(ROOT / "docs" / "release.md", bundle / "RELEASE.md")
+        shutil.copyfile(ROOT / "README.md", bundle / "README.md")
+        shutil.copytree(ROOT / "docs", bundle / "docs")
+        (bundle / "RELEASE.md").write_text(
+            '# CHEFAS Proxy standalone pilot\n\n'
+            '[English installation](README.md) | [Русский](docs/install.ru.md) | '
+            '[简体中文](docs/install.zh-CN.md)\n\n'
+            'Keep the executable and _internal together. Python is included.\n'
+            'First run creates private credentials; never share the environment file.\n'
+            'The operator release targets a fixed 1% of pool-accepted difficulty.\n\n'
+            '[Troubleshooting and rollback](docs/quickstart.md) | '
+            '[Compatibility](docs/compatibility.md) | [Release details](docs/release.md)\n',
+            encoding='utf-8', newline='\n')
         example = {"pool_host": "stratum+tcp://POOL_HOST:3333",
                    "listen_port": 3333, "active_router": True, "aggregate": True, "validate_pow": True,
                    "dashboard_port": 8080}
@@ -212,11 +223,7 @@ def main():
         if os.name == "nt":
             (bundle / "start.cmd").write_text(
                 '@echo off\ncd /d "%~dp0" || exit /b 1\n'
-                'if not exist chefas-proxy.json (\n'
-                '  copy /y chefas-proxy.example.json chefas-proxy.json >nul || exit /b 1\n'
-                '  echo Set your BTC pool in chefas-proxy.json, save it and run start.cmd again.\n'
-                '  start "" notepad.exe chefas-proxy.json\n'
-                '  pause\n  exit /b 0\n)\n'
+                'chefas-proxy.exe --setup || (pause & exit /b 1)\n'
                 'findstr /L /C:"POOL_HOST" chefas-proxy.json >nul\n'
                 'if not errorlevel 1 (\n'
                 '  echo Replace POOL_HOST in chefas-proxy.json before starting.\n'
@@ -234,9 +241,7 @@ def main():
             starter.write_text(
                 '#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\ncd "$base"\n'
                 'if [ "$#" -eq 0 ]; then\n'
-                '  if [ ! -f chefas-proxy.json ]; then\n'
-                '    cp -n chefas-proxy.example.json chefas-proxy.json\n'
-                '  fi\n'
+                '  "$base/chefas-proxy" --setup\n'
                 '  if grep -Fq POOL_HOST chefas-proxy.json; then\n'
                 '    printf "%s\\n" "Set your BTC pool in chefas-proxy.json, then run ./start.sh again."\n'
                 '    exit 1\n'
@@ -253,7 +258,7 @@ def main():
                     "declared_dependencies": dependencies,
                     "native_build": native_manifest, "smoke_test": not args.skip_smoke_test,
                     "requirements_sha256": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-                                            for name in ("requirements.txt", "requirements-build.txt", "requirements-release.txt")},
+                                            for name in ("requirements.txt", "requirements/build.txt", "requirements/release.txt")},
                     "files": inventory(bundle)}
         (bundle / "release-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         output.parent.mkdir(parents=True, exist_ok=True)

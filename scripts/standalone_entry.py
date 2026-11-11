@@ -1,13 +1,45 @@
 """Frozen runtime bootstrap. Build injects the authoritative native module list."""
 import argparse
+import base64
 import importlib
 from importlib.machinery import EXTENSION_SUFFIXES
 import json
 import os
+import secrets
 from pathlib import Path
 import sys
 
 CORE_MODULES = ()  # Replaced in the staged entry point; never import src/ here.
+
+
+def setup_files(directory):
+    """Create public configuration and private random credentials without replacing files."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    config = directory / "chefas-proxy.json"
+    environment = directory / ".env"
+    if not config.exists():
+        example = {"pool_host": "stratum+tcp://POOL_HOST:3333", "listen_port": 3333,
+                   "active_router": True, "aggregate": True, "validate_pow": True,
+                   "dashboard_port": 8080}
+        try:
+            with config.open("x", encoding="utf-8", newline="\n") as file:
+                file.write(json.dumps(example, indent=2) + "\n")
+        except FileExistsError:
+            pass
+    if not environment.exists():
+        values = ("# Private CHEFAS credentials. Do not share this file.\n"
+                  "CHEFAS_PROXY_ADMIN_TOKEN=" + secrets.token_urlsafe(32) + "\n"
+                  "CHEFAS_PROXY_SECRETS_KEY=" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode() + "\n"
+                  "CHEFAS_PROXY_USER_PASSWORD=x\n")
+        try:
+            descriptor = os.open(environment, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
+                file.write(values)
+    return config, environment
 CONFIG_OPTIONS = {
     "tp_mode", "pool_host", "pool_port", "listen_host", "listen_port", "active_router", "aggregate",
     "aggregate_worker_mode", "aggregate_shard_size", "aggregate_vardiff", "tenant_profiles",
@@ -82,6 +114,7 @@ def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config")
     parser.add_argument("--release-info", action="store_true")
+    parser.add_argument("--setup", action="store_true")
     known, remainder = parser.parse_known_args()
     try:
         modules = native_modules()
@@ -89,6 +122,12 @@ def main():
             print(json.dumps({"frozen": True, "python": sys.version.split()[0], "native_modules": modules}, sort_keys=True))
             return
         base = Path(sys.executable).resolve().parent
+        if known.setup:
+            if known.config or remainder:
+                raise ValueError("Setup does not accept routing arguments")
+            setup_files(base)
+            print("Setup complete. Edit chefas-proxy.json with your BTC pool. Admin credentials are in .env.")
+            return
         path = Path(known.config).resolve() if known.config else base / "chefas-proxy.json"
         options = []
         if "--help" in remainder or "-h" in remainder:

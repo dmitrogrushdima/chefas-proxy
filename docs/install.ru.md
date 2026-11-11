@@ -1,71 +1,64 @@
-## Установка на ферме
+# Установка CHEFAS Proxy
 
-**1. Скачайте архив.** Откройте [Releases → Assets](https://github.com/dmitrogrushdima/chefas-proxy/releases).
+[English](../README.md#download) · [简体中文](install.zh-CN.md)
+
+## 1. Скачайте готовую сборку
+
+Откройте [Releases → Assets](https://github.com/dmitrogrushdima/chefas-proxy/releases).
 Для Windows x64 нужен `chefas-proxy-windows-x64.zip`, для Ubuntu 24.04 x64 —
-`chefas-proxy-linux-x64.tar.gz`. Если нужный файл ещё не выложен, возьмите
-готовый пилотный архив у сопровождающего проекта. Кнопка **Code → Download ZIP**
-скачивает исходники. В готовой сборке держите исполняемый файл рядом с `_internal`.
+`chefas-proxy-linux-x64.tar.gz`. Рядом лежит файл `.sha256` для проверки архива.
+**Code → Download ZIP** скачивает исходники, а не готовую программу.
 
-**2. Запустите на компьютере в сети ASIC.** На Windows откройте `start.cmd`,
-укажите адрес и порт своего пула в созданном `chefas-proxy.json` и запустите
-`start.cmd` снова после настройки секретов ниже. На Ubuntu после распаковки выполните:
+Распакуйте весь архив. Исполняемый файл должен оставаться рядом с `_internal`.
+Python уже включён. Начните с одного ASIC, сохраните прямой пул как резерв.
+
+## 2. Windows
+
+1. Распакуйте ZIP в свою папку и откройте `start.cmd`.
+2. В открывшемся `chefas-proxy.json` замените `POOL_HOST` адресом своего пула,
+   например `"pool_host": "stratum+tcp://btc.viabtc.io:3333"`. Сохраните файл.
+3. Запустите `start.cmd` снова. Скопируйте напечатанный **ASIC URL** в Pool 1
+   своего ASIC. Имя воркера и пароль оставьте прежними. Окно прокси не закрывайте.
+
+При первом запуске создаётся `.env` с вашими случайными секретами. Его не нужно
+создавать вручную или заменять образцом. Повторный запуск сохраняет настройки.
+
+## 3. Ubuntu
+
+В папке распакованной сборки выполните:
 
 ```bash
-cd chefas-proxy-linux-x64
 sudo bash install.sh
 sudoedit /etc/chefas-proxy/chefas-proxy.json
-sudoedit /etc/chefas-proxy/chefas-proxy.env
 ```
 
-Пример полей для основного пула ViaBTC:
-
-```json
-{
-  "pool_host": "btc.viabtc.io",
-  "pool_port": 3333
-}
-```
-
-До запуска задайте два разных секрета: `CHEFAS_PROXY_ADMIN_TOKEN` для входа
-в свою панель и `CHEFAS_PROXY_SECRETS_KEY` для шифрования сохранённых паролей.
-На Windows скопируйте `.env.example` в `.env` рядом с JSON; на Ubuntu используйте
-`/etc/chefas-proxy/chefas-proxy.env`. Уберите `#` перед этими двумя переменными.
-Не записывайте секреты в JSON и не публикуйте файл окружения.
-
-Для каждого значения выполните команду отдельно. Windows PowerShell:
-
-```powershell
-$bytes = New-Object byte[] 32
-$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-$rng.GetBytes($bytes)
-$rng.Dispose()
-[Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_')
-```
-
-Ubuntu:
-
-```bash
-openssl rand -base64 32 | tr '+/' '-_'
-```
-
-Сохраните завершающий `=` в каждом значении. Теперь запустите `start.cmd`
-на Windows или службу на Ubuntu:
+Укажите адрес своего BTC-пула, затем запустите службу:
 
 ```bash
 sudo systemctl enable --now chefas-proxy
 sudo journalctl -u chefas-proxy -n 30 --no-pager
 ```
 
-**3. Подключите один ASIC.** Скопируйте из консоли или журнала строку
-`ASIC URL` для вашей сети, например `stratum+tcp://192.168.1.50:3333`.
-Впишите её в `Pool 1`, оставьте своё имя воркера и пароль, а прямой адрес
-пула сохраните в `Pool 2` как резерв. Когда пул примет первую шару, можно
-подключать остальные ASIC.
+Скопируйте **ASIC URL** из журнала в Pool 1. В Pool 2 сохраните прежний прямой
+адрес пула. Установщик сам создаёт приватные секреты; служба работает без root.
 
-Внешний IP, центральный сервер и установка Python оператору не нужны.
-Панель на компьютере с прокси доступна по `http://127.0.0.1:8080`.
-Войдите с заданным `CHEFAS_PROXY_ADMIN_TOKEN`. Это управление вашей фермой;
-ставка DevFee пользовательского релиза зафиксирована на 1% принятой сложности.
-Удалённый доступ и действия при ошибках описаны в [руководстве](quickstart.md).
+## 4. Вход в свою панель
 
-[English](../README.md#install-on-your-farm) · [简体中文](install.zh-CN.md)
+На компьютере с прокси откройте **http://127.0.0.1:8080**. Нужен токен
+`CHEFAS_PROXY_ADMIN_TOKEN`: на Windows скопируйте его значение из `.env`,
+на Ubuntu выведите только токен:
+
+```bash
+sudo sed -n 's/^CHEFAS_PROXY_ADMIN_TOKEN=//p' /etc/chefas-proxy/chefas-proxy.env
+```
+
+Не передавайте `.env` другим людям и не публикуйте порт панели. Для доступа
+с другого компьютера используйте [SSH-туннель](quickstart.md#open-the-dashboard).
+
+Это панель вашей фермы. Пользовательская сборка берёт фиксированную цель
+**1% по принятой пулом сложности**; ручная ставка и приватная админка
+разработчика в неё не входят. Квантизация распределяет работу между заданиями,
+а не делит одну шару между аккаунтами. Проверьте принятие шар на своём пуле,
+прежде чем добавлять остальные ASIC.
+
+[Ошибки, настройки и откат](quickstart.md) · [Совместимость](compatibility.md)

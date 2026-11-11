@@ -32,6 +32,22 @@ finally:
 
 
 class ReleaseConfigurationTests(unittest.TestCase):
+    def test_first_run_creates_private_credentials_without_overwriting_operator_files(self):
+        from cryptography.fernet import Fernet
+        with tempfile.TemporaryDirectory() as directory:
+            config, environment = entry.setup_files(directory)
+            values = dict(line.split('=', 1) for line in environment.read_text().splitlines()
+                          if line and not line.startswith('#'))
+            self.assertGreaterEqual(len(values['CHEFAS_PROXY_ADMIN_TOKEN']), 32)
+            Fernet(values['CHEFAS_PROXY_SECRETS_KEY'].encode())
+            self.assertNotIn(values['CHEFAS_PROXY_ADMIN_TOKEN'], config.read_text())
+            config.write_text('{"pool_host": "operator.example", "pool_port": 3333}')
+            before = (config.read_bytes(), environment.read_bytes())
+            entry.setup_files(directory)
+            self.assertEqual(before, (config.read_bytes(), environment.read_bytes()))
+            if os.name != 'nt':
+                self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
+
     def config(self, value):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
