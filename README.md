@@ -17,12 +17,14 @@ keep a direct-pool fallback before connecting the rest of your farm.
 
 ## Download
 
+**Current package: [v0.1.0-rc.3](https://github.com/dmitrogrushdima/chefas-proxy/releases/tag/v0.1.0-rc.3)** — Windows and Ubuntu installation checks passed.
+
 Open **[Releases → Assets](https://github.com/dmitrogrushdima/chefas-proxy/releases)**:
 
 | System | Package |
 | --- | --- |
-| Windows x64 | `chefas-proxy-windows-x64.zip` |
-| Ubuntu 24.04 x64 | `chefas-proxy-linux-x64.tar.gz` |
+| Windows x64 | [Download ZIP](https://github.com/dmitrogrushdima/chefas-proxy/releases/download/v0.1.0-rc.3/chefas-proxy-windows-x64.zip) |
+| Ubuntu 24.04 x64 | [Download tar.gz](https://github.com/dmitrogrushdima/chefas-proxy/releases/download/v0.1.0-rc.3/chefas-proxy-linux-x64.tar.gz) |
 
 Download the matching `.sha256` file to verify the archive. Extract the whole
 package; keep the executable and `_internal` together. **Python is included.**
