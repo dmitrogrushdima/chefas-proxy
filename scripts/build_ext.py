@@ -71,7 +71,7 @@ def main():
     if args.generate_only:
         print('Cython translation complete for ' + str(len(extensions)) + ' modules; native artifacts not built')
         return
-    setup(name='chefas-proxy-core', version='0.1.0rc1', ext_modules=extensions,
+    setup(name='chefas-proxy-core', version='0.1.0rc2', ext_modules=extensions,
           script_args=['build_ext', '--build-lib', str(stage), '--build-temp', 'objects'])
     for name in MODULES:
         if not any((stage/(name+suffix)).is_file() for suffix in importlib.machinery.EXTENSION_SUFFIXES):

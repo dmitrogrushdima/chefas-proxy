@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 from generate_service import service_text
+from standalone_entry import RELEASE_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,6 +112,16 @@ def inventory(directory):
                     digest.update(chunk)
             result[path.relative_to(directory).as_posix()] = {"sha256": digest.hexdigest()}
     return result
+
+
+def source_revision():
+    try:
+        result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
+                                capture_output=True, text=True, timeout=5)
+        value = result.stdout.strip()
+        return value if result.returncode == 0 and len(value) == 40 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def validate_native_files(bundle, modules):
@@ -253,7 +264,8 @@ def main():
         if not args.skip_smoke_test:
             smoke_test(bundle)
         validate_native_files(bundle, native_manifest["modules"])
-        manifest = {"format": 1, "target": target, "python": platform.python_version(),
+        manifest = {"format": 1, "version": RELEASE_VERSION, "source_commit": source_revision(),
+                    "target": target, "python": platform.python_version(),
                     "pyinstaller": importlib.metadata.version("pyinstaller"),
                     "declared_dependencies": dependencies,
                     "native_build": native_manifest, "smoke_test": not args.skip_smoke_test,

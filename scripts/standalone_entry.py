@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 
 CORE_MODULES = ()  # Replaced in the staged entry point; never import src/ here.
+RELEASE_VERSION = '0.1.0-rc.2'
 
 
 def setup_files(directory):
@@ -119,7 +120,8 @@ def main():
     try:
         modules = native_modules()
         if known.release_info:
-            print(json.dumps({"frozen": True, "python": sys.version.split()[0], "native_modules": modules}, sort_keys=True))
+            print(json.dumps({"version": RELEASE_VERSION, "frozen": True,
+                              "python": sys.version.split()[0], "native_modules": modules}, sort_keys=True))
             return
         base = Path(sys.executable).resolve().parent
         if known.setup:

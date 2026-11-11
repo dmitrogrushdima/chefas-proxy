@@ -466,17 +466,26 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(row["accepted"] for row in workers), shards)
         self.assertEqual(sum(row["local_shares"] for row in workers), shards)
         self.assertTrue(any(row["pool_response_ms"] is not None for row in workers))
-        packet = encode({"id": None, "method": "mining.set_difficulty", "params": [DIFFICULTY]})
+        # Broadcast accounting uses canonical JSON, not the original wire's
+        # float spelling (e-08 becomes E-8). Use an integer control packet so
+        # this test measures fanout, independently of initial-job timing.
+        before_broadcast = await self.api("/api/metrics")
+        packet = encode({"id": None, "method": "mining.set_difficulty", "params": [1]})
         for writer in self.user_pool.writers:
             writer.write(packet)
             await writer.drain()
         deadline = time.monotonic() + 5
         while True:
             metrics = await self.api("/api/metrics")
-            if metrics["wan_direct_broadcast_bytes"] >= len(packet) * count:
+            if (metrics["wan_direct_broadcast_bytes"] - before_broadcast["wan_direct_broadcast_bytes"]
+                    >= len(packet) * count):
                 break
             self.assertLess(time.monotonic(), deadline)
             await asyncio.sleep(.02)
+        self.assertEqual(metrics["wan_direct_broadcast_bytes"] - before_broadcast["wan_direct_broadcast_bytes"],
+                         len(packet) * count)
+        self.assertEqual(metrics["wan_shared_broadcast_bytes"] - before_broadcast["wan_shared_broadcast_bytes"],
+                         len(packet) * shards)
         comparison = metrics["wan_comparison"]
         self.assertEqual(comparison["direct_1to1_estimated_bytes"],
                          comparison["actual_application_bytes"] + comparison["broadcast_delta_bytes"])
