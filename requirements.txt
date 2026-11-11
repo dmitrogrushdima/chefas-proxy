@@ -1,3 +1,4 @@
+# Runtime dependencies for source development. Farm packages bundle Python.
 cryptography==50.0.2
 python-dotenv==1.2.4
 aiodns==4.0.4
