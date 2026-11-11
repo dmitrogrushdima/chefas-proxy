@@ -1,6 +1,6 @@
-# Pilot hardening and native build
+# Hardening and native build
 
-This is a pilot candidate. No Antminer/Whatsminer firmware or commercial pool has been certified by the synthetic tests.
+Synthetic tests do not certify every Antminer/Whatsminer firmware or commercial pool. See the compatibility guide for the tested scope.
 
 For the current jitter, job TTL, `stratum+ssl://` addressing and private-CA option, see [long-term stability](long-term-stability.md). Preserve startup spreading for a farm rollout; the zero-delay switches in the live test fixture are laboratory settings.
 

@@ -1,4 +1,4 @@
-# Standalone pilot releases
+# Standalone releases
 
 Release builds contain an executable, a bundled Python runtime, compiled core
 modules, and the CHEFAS Proxy dashboard. Operators do not need Python or Cython.

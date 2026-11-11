@@ -99,6 +99,5 @@ own new `_internal`; do not mix libraries from different versions. Run
 The Linux installer performs first installation and refuses to overwrite an
 existing `/opt/chefas-proxy` or service unit. Do not delete the installation to
 bypass that check: keep `/etc/chefas-proxy`, `/var/lib/chefas-proxy` and the
-previous package backed up before a planned maintenance upgrade. For the first
-public pilot, prefer the direct-pool fallback during maintainer-assisted Linux
-upgrades rather than replacing files beneath a running process.
+previous package backed up before a planned maintenance upgrade. Use the direct-pool fallback during planned Linux upgrades rather than
+replacing files beneath a running process.

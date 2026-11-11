@@ -1,4 +1,4 @@
-# CHEFAS Proxy — first public pilot
+# CHEFAS Proxy — dashboard and installation update
 
 BTC / SHA-256d / Stratum V1. Packages include the native runtime and dashboard;
 Python is not required on the farm computer. Extract the full archive and keep
@@ -18,7 +18,7 @@ Each release is gated by Windows/Linux source tests, native build and frozen
 operator-policy checks. Linux additionally runs a clean installation and
 systemd start/restart/stop check. SHA-256 files accompany both archives.
 
-This is a pilot release: start with one ASIC and keep a direct-pool fallback.
+Start with one ASIC and keep a direct-pool fallback.
 Qualification is limited to the recorded tests. Model/firmware combinations,
 long-term lossy networks and large physical fleets require their own pilot.
 No fixed hashrate, perfectly flat graph, or zero-reject guarantee is made.
@@ -26,3 +26,9 @@ No fixed hashrate, perfectly flat graph, or zero-reject guarantee is made.
 See the repository README and `docs/quickstart.md` for installation, remote
 access, troubleshooting and rollback. Report reproducible issues without
 tokens, passwords or identifying network details.
+
+This update fixes dashboard links opened from installation documentation, adds
+clear sign-in and first-ASIC instructions, and simplifies the operator view.
+The 1% target and actual accepted-work percentage remain visible; connection
+and accounting details are expandable. Private fee controls remain unavailable
+in operator packages. Repeated pilot badges have been removed from the panel.

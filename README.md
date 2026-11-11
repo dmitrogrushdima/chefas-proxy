@@ -12,7 +12,7 @@ CHEFAS runs on your farm computer between your ASICs and your BTC pool. It
 provides a local dashboard, shared upstream connections, accepted-work
 statistics and a transparent **1% DevFee target**.
 
-**Public pilot.** Start with one ASIC, confirm accepted work at your pool and
+Start with one ASIC, confirm accepted work at your pool and
 keep a direct-pool fallback before connecting the rest of your farm.
 
 ## Download
