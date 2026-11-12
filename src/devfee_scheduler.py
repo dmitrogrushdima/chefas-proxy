@@ -125,7 +125,12 @@ class AcceptedWorkLedger:
     cooldowns belong to the router, which knows the miner's capabilities.
     """
 
-    def __init__(self, min_user_work=0):
+    def __init__(self, min_user_work=0, *, loss_protection=False):
+        if type(loss_protection) is not bool:
+            raise ValueError('loss_protection must be boolean')
+        self.loss_protection = loss_protection
+        self.protected_loss_work = Fraction(0)
+        self.protected_loss_shares = 0
         self.min_user_work = _difficulty(min_user_work, allow_zero=True)
         self.user_work = Fraction(0)
         self.eligible_user_work = Fraction(0)
@@ -140,9 +145,26 @@ class AcceptedWorkLedger:
 
     @property
     def outstanding(self):
-        return self.eligible_user_work * self._rate - self.fee_work - self._rate_origin
+        return (self.eligible_user_work * self._rate - self.fee_work - self._rate_origin
+                - self.protected_loss_work)
+
+    def protect_loss(self, difficulty):
+        """Forgo future fees for a unique, PoW-valid primary clean-job race.
+
+        The caller must establish provenance; malformed/duplicate submissions,
+        unknown outcomes and arbitrary pool errors are never eligible. This is
+        a fee reduction, not an accepted-share credit or a transfer of money.
+        """
+        work = _difficulty(difficulty)
+        if not self.loss_protection:
+            return False
+        self.protected_loss_work += work
+        self.protected_loss_shares += 1
+        return True
 
     def set_fee_percent(self, percent):
+        if self.loss_protection:
+            raise ValueError('loss protection requires the fixed fee policy')
         rate = Fraction(str(percent))
         if not 1 <= rate < 100:
             raise ValueError("scheduled rate must be at least 1 and below 100")
@@ -185,7 +207,10 @@ class AcceptedWorkLedger:
         eligible_total = self.eligible_user_work + self.fee_work
         # This is an observed deviation, not a promise about future in-flight
         # shares. The router can have several already accepted responses pending.
-        excess = max(Fraction(0), -self.outstanding)
+        gross_fee = max(Fraction(0), self.eligible_user_work * self._rate - self._rate_origin)
+        loss = self.protected_loss_work
+        net_fee = max(Fraction(0), gross_fee - loss)
+        excess = max(Fraction(0), self.fee_work - net_fee)
         return {
             "user_accepted_difficulty": _exact(self.user_work),
             "fee_accepted_difficulty": _exact(self.fee_work),
@@ -195,6 +220,12 @@ class AcceptedWorkLedger:
             "user_accepted_shares": self.user_shares,
             "fee_accepted_shares": self.fee_shares,
             "target_percentage": 1.0,
+            "loss_protection_enabled": self.loss_protection,
+            "protected_loss_difficulty": _exact(loss),
+            "protected_loss_shares": self.protected_loss_shares,
+            "fee_reduction_difficulty": _exact(min(loss, gross_fee)),
+            "unfunded_loss_difficulty": _exact(max(Fraction(0), loss - gross_fee)),
+            "net_fee_target_difficulty": _exact(net_fee),
             "user_percentage": float(100 * self.user_work / total) if total else None,
             "fee_percentage": float(100 * self.fee_work / total) if total else None,
             "eligible_fee_percentage": float(100 * self.fee_work / eligible_total) if eligible_total else None,

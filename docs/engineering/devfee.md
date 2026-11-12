@@ -68,3 +68,7 @@ and [release gates](roadmap.md).
 
 The [switch-window study](switch-window-study.md) records the shutdown fix,
 3333-only trial scope and the measurement limits of comparing window sizes.
+
+The opt-in [fee-funded loss qualification](fee-loss-protection.md) describes
+verified clean-job race filtering, future-fee reductions and their limits.
+It is separate from the default fixed 1% policy and excludes private fee tests.

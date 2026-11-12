@@ -241,7 +241,10 @@ class DashboardControl:
                 raise ValueError('invalid reconnect policy')
             user, fee = current_pool_routes(self.relay)
             if 'user_pool' in data:
-                user = PoolRoute.parse(data['user_pool'], user)
+                proposed = PoolRoute.parse(data['user_pool'], user)
+                if getattr(self.relay, 'fee_loss_worker', None) and proposed != user:
+                    raise ValueError('Primary route is bound to the protected fee journal')
+                user = proposed
             if 'devfee_pool' in data and getattr(self.relay, 'fee_locked', False):
                 raise ValueError('Fee route is locked')
             if 'devfee_pool' in data:

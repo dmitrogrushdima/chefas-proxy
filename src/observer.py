@@ -453,10 +453,11 @@ class Metrics:
             self._pool_telemetry = PoolTelemetry()
         self._devfee_journal = None
 
-    async def record_pool_reply(self, route, pool, outcome, difficulty, seconds=None, *, fee_eligible=False, tenant="main"):
+    async def record_pool_reply(self, route, pool, outcome, difficulty, seconds=None, *, fee_eligible=False, tenant="main", compensated_loss=False):
         self._pool_telemetry.observe(route, pool, outcome, seconds)
         if self._devfee_journal is not None:
-            if not await self._devfee_journal.record(route, pool, outcome, difficulty, fee_eligible, tenant):
+            if not await self._devfee_journal.record(route, pool, outcome, difficulty, fee_eligible, tenant,
+                                                   compensated_loss=compensated_loss):
                 self.devfee_journal_errors += 1
 
     def wan_comparison(self):

@@ -104,6 +104,8 @@ class DevFeeJournal:
             )''')
             self.database.execute('CREATE TABLE IF NOT EXISTS fee_eligible_v1 (id INTEGER PRIMARY KEY, difficulty TEXT NOT NULL)')
             self.database.execute('CREATE TABLE IF NOT EXISTS tenant_budget_v1 (tenant TEXT, route TEXT, accepted INTEGER, difficulty TEXT, eligible TEXT, PRIMARY KEY (tenant,route))')
+            self.database.execute('CREATE TABLE IF NOT EXISTS fee_loss_v1 (tenant TEXT PRIMARY KEY, difficulty TEXT NOT NULL, shares INTEGER NOT NULL)')
+            self.database.execute('CREATE TABLE IF NOT EXISTS fee_loss_scope_v1 (id INTEGER PRIMARY KEY CHECK (id=1), scope TEXT NOT NULL)')
             self.database.commit()
         except sqlite3.Error as exc:
             self.database.close()
@@ -112,10 +114,17 @@ class DevFeeJournal:
         self.error = None
         self.closed = False
 
-    def _commit(self, day, route, pool, outcome, difficulty, fee_eligible=False, tenant="main"):
+    def _commit(self, day, route, pool, outcome, difficulty, fee_eligible=False, tenant="main", compensated_loss=False):
         key = (day, route, pool)
         with self.database:
             self.database.execute('BEGIN IMMEDIATE')
+            if compensated_loss:
+                if route != 'user' or outcome != 'rejected' or Fraction(str(difficulty)) <= 0:
+                    raise ValueError('invalid protected loss')
+                row = self.database.execute('SELECT difficulty,shares FROM fee_loss_v1 WHERE tenant=?', (tenant,)).fetchone()
+                loss, count = row or ('0', 0)
+                self.database.execute('INSERT OR REPLACE INTO fee_loss_v1 VALUES (?,?,?)',
+                                      (tenant, str(Fraction(loss) + Fraction(str(difficulty))), count + 1))
             row = self.database.execute(
                 'SELECT accepted, rejected, unknown, difficulty FROM work_v1 WHERE day=? AND route=? AND pool=?',
                 key).fetchone()
@@ -138,9 +147,9 @@ class DevFeeJournal:
                                   (*key, accepted + (outcome == 'accepted'),
                                    rejected + (outcome == 'rejected'), unknown + (outcome == 'unknown'), work))
 
-    def _record(self, day, route, pool, outcome, difficulty, fee_eligible=False, tenant="main"):
+    def _record(self, day, route, pool, outcome, difficulty, fee_eligible=False, tenant="main", compensated_loss=False):
         try:
-            self._commit(day, route, pool, outcome, difficulty, fee_eligible, tenant)
+            self._commit(day, route, pool, outcome, difficulty, fee_eligible, tenant, compensated_loss)
         except (sqlite3.Error, OSError, ValueError):
             if self.error is None:
                 logging.getLogger('mining_proxy').error('DevFee journal write failed')
@@ -148,10 +157,10 @@ class DevFeeJournal:
             return False
         return True
 
-    async def record(self, route, pool, outcome, difficulty, fee_eligible=False, tenant="main"):
+    async def record(self, route, pool, outcome, difficulty, fee_eligible=False, tenant="main", *, compensated_loss=False):
         day = datetime.now(timezone.utc).date().isoformat()
         return await asyncio.shield(asyncio.get_running_loop().run_in_executor(
-            self.executor, self._record, day, route, pool, outcome, difficulty, fee_eligible, tenant))
+            self.executor, self._record, day, route, pool, outcome, difficulty, fee_eligible, tenant, compensated_loss))
 
     def restore_budget(self, ledger, tenant=None):
         if tenant is None:
@@ -170,7 +179,24 @@ class DevFeeJournal:
         row = self.database.execute('SELECT difficulty FROM fee_eligible_v1 WHERE id=1').fetchone()
         if tenant is None:
             ledger.eligible_user_work = Fraction(row[0]) if row else Fraction(0)
-        ledger._user_since_window = max(Fraction(0), ledger.eligible_user_work - 99 * ledger.fee_work)
+        # Already granted reductions remain honored when new protection is off.
+        if tenant is None:
+            rows = self.database.execute('SELECT difficulty,shares FROM fee_loss_v1')
+        else:
+            rows = self.database.execute('SELECT difficulty,shares FROM fee_loss_v1 WHERE tenant=?', (tenant,))
+        for difficulty, shares in rows:
+            ledger.protected_loss_work += Fraction(difficulty)
+            ledger.protected_loss_shares += shares
+        ledger._user_since_window = max(Fraction(0), ledger.outstanding * 99)
+
+    def bind_loss_scope(self, scope):
+        """Startup-only binding prevents transferring historical credits to another account."""
+        with self.database:
+            row = self.database.execute('SELECT scope FROM fee_loss_scope_v1 WHERE id=1').fetchone()
+            if row is not None and row[0] != scope:
+                raise ValueError('Protected fee journal belongs to another worker/pool; keep its original scope')
+            if scope is not None:
+                self.database.execute('INSERT OR IGNORE INTO fee_loss_scope_v1 VALUES (1,?)', (scope,))
 
     def _snapshot(self):
         totals = {}

@@ -1475,6 +1475,10 @@ class AggregateSession:
         worker, password = params
         if not worker or len(worker) > 128 or len(password) > 1024:
             raise ProtocolError('invalid aggregated credentials')
+        protected_worker = getattr(self.relay, 'fee_loss_worker', None)
+        if protected_worker and worker != protected_worker:
+            await self.reply(ident, False, [24, 'Worker outside protected qualification scope', None])
+            return False
         remember_secret(password)
         self.base_keys = {'user': self.user_key(self.endpoint, worker, password)}
         if self.backup_endpoint:
@@ -1615,6 +1619,7 @@ class AggregateSession:
         channel.health.submitted(outcome, time.monotonic() - sent_at, response.get('error'))
         account = 'fee' if route == 'fee' else 'user'
         fee_eligible = route == 'user' and self.fee_ready()
+        compensated_loss = False
         if outcome == 'accepted':
             metrics.accepted += 1
             if route == 'user' and self.route == route and self.binding(route)[0] is group:
@@ -1652,6 +1657,14 @@ class AggregateSession:
                 code, reason = error.get('code'), error.get('message')
             else:
                 code, reason = None, error
+            # Validation and duplicate admission happened before submit. Only
+            # a definite stale response crossing a clean-job update qualifies;
+            # arbitrary rejects and unknown outcomes cannot buy fee reductions.
+            if (route != 'fee' and self.test_fee_percent is None and type(code) is int and code == 21
+                    and channel.generation > generation_at_submit):
+                compensated_loss = self.ledger.protect_loss(difficulty)
+                if compensated_loss and self.ledger is not self.relay.ledger:
+                    self.relay.ledger.protect_loss(difficulty)
             latest_job = channel.job
             event(logging.WARNING, 'share_rejected_pool', session_id=self.session['id'],
                   target=route, pool=channel.pool_label, code=code if type(code) is int else None,
@@ -1662,6 +1675,7 @@ class AggregateSession:
                   matches_latest_pool_job=job.params[0] == latest_job['params'][0] if latest_job else None,
                   matches_latest_prevhash=job.params[1] == latest_job['params'][1] if latest_job else None,
                   submit_timing_ms={name: round(ms, 2) for name, ms in timing.items()},
+                  compensated_by_future_fee=compensated_loss,
                   reason=reason[:512] if isinstance(reason, str) else 'Pool returned false without a reason')
         else:
             metrics.unmatched += 1
@@ -1671,7 +1685,8 @@ class AggregateSession:
                                   stale=stale, route=route, timing=timing)
         if self.test_fee_percent is None:
             await self.relay.metrics.record_pool_reply(route, channel.pool_label, outcome, difficulty, latency,
-                                                      fee_eligible=fee_eligible, tenant=self.tenant)
+                                                      fee_eligible=fee_eligible, tenant=self.tenant,
+                                                      compensated_loss=compensated_loss)
         else:
             self.relay.metrics._pool_telemetry.observe(route, channel.pool_label, outcome, latency)
         await self.reply(ident, response.get('result'), response.get('error'))

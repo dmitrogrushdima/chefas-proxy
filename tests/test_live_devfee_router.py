@@ -77,6 +77,9 @@ class CheckedPool:
         self.configure_requests = []
         self.subscribe_requests = []
         self.reject_submits = False
+        self.clean_race_submits = 0
+        self.clean_race_code = 21
+        self.emit_race_clean = True
         self.submit_delay = 0
         self.extra_size = 4
         self.version_mask = '1fffe000'
@@ -145,6 +148,13 @@ class CheckedPool:
                     valid = (valid_version and not self.reject_submits and len(ex2) == self.extra_size * 2 and worker in authorized and job == "shared-job" and
                              ntime == NTIME and key not in seen and
                              meets_target(checked_header(extra, ex2, nonce, version_bits, rolling_mask), self.share_target))
+                    clean_race = valid and self.clean_race_submits > 0
+                    if clean_race:
+                        self.clean_race_submits -= 1
+                        valid = False
+                        if self.emit_race_clean:
+                            writer.write(encode({'id': None, 'method': 'mining.notify', 'params': [
+                                'shared-job', PREVHASH, COINB1, COINB2, [], VERSION, NBITS, NTIME, True]}))
                     response["result"] = valid
                     if valid:
                         seen.add(key)
@@ -153,6 +163,8 @@ class CheckedPool:
                     else:
                         self.rejected += 1
                         response["error"] = [23, "Invalid PoW or session", None]
+                        if clean_race:
+                            response['error'] = [self.clean_race_code, 'Test pool refusal', None]
                 else:
                     response["error"] = [20, "Unsupported request", None]
                 if method == "mining.submit" and self.submit_delay:
@@ -919,6 +931,90 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fee_return_with_no_nonce_padding_requests_new_subscription(self):
         await self.test_fee_return_changes_search_space_for_a_resetting_asic(no_padding=True)
+
+    async def test_clean_race_protection_forgoes_a_real_fee_share(self, *, protected=True, race_code=21, emit_clean=True):
+        from pow_validator import build_stratum_header
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8, admin_token='L' * 32,
+                          extra_args=('--fee-cooldown-seconds', '0', '--fee-overdraft', '0',
+                                      '--max-connections', '4',
+                                      *(('--fee-loss-protection', '--fee-loss-worker', 'user.worker') if protected else ())))
+        miner = await self.miner(hot=False)
+        if protected:
+            stranger = Miner(self.port, worker='other.worker', hot=False)
+            self.miners.append(stranger)
+            with self.assertRaises(AssertionError):
+                await stranger.connect()
+            self.assertNotIn('other.worker', self.user_pool.authorize_requests)
+            await self.api('/api/config', {'user_pool': {'host': '127.0.0.1',
+                'port': self.user_pool.port, 'worker': 'other.worker'}}, expected=400)
+        await asyncio.sleep(.1)
+        counters = {}
+
+        async def route(expected):
+            for _ in range(300):
+                if miner.job['params'][0].startswith(expected):
+                    return
+                await asyncio.sleep(.01)
+            self.fail(f'expected {expected}, got {miner.job}')
+
+        async def share(expect=True):
+            job = miner.job
+            key = job['params'][0]
+            ex2 = '00' * job['size']
+            nonce = next(n for n in range(counters.get(key, 0), counters.get(key, 0) + 100000)
+                         if meets_target(build_stratum_header(job['params'], job['extra'], ex2, NTIME,
+                                                              f'{n:08x}'), SHARE_TARGET))
+            counters[key] = nonce + 1
+            params = [miner.worker, key, ex2, NTIME, f'{nonce:08x}']
+            reply = await miner.submit(params)
+            self.assertIs(reply['result'], expect, reply)
+            return params
+
+        for _ in range(99):
+            await share()
+        await route('f')
+        await share()
+        await route('u')
+        self.user_pool.clean_race_submits = 1
+        self.user_pool.clean_race_code = race_code
+        self.user_pool.emit_race_clean = emit_clean
+        credited = protected and race_code == 21 and emit_clean
+        stale = await share(False)
+        # Retry of an invalidated assignment is locally filtered, not credited twice.
+        self.assertIs((await miner.submit(stale))['result'], False)
+        for _ in range(99):
+            await share()
+        if credited:
+            await asyncio.sleep(.05)
+            self.assertTrue(miner.job['params'][0].startswith('u'))
+            self.assertEqual((self.user_pool.accepted, self.fee_pool.accepted), (198, 1))
+            metrics = await self.api('/api/metrics')
+            audit = metrics['audit']
+            self.assertEqual(Fraction(audit['protected_loss_difficulty']), Fraction(str(DIFFICULTY)))
+            self.assertEqual(audit['protected_loss_shares'], 1)
+            self.assertEqual(metrics['rejected'], 1)
+            self.assertEqual(metrics['unknown_job_local'], 1)
+            for _ in range(99):
+                await share()
+        await route('f')
+        await share()
+        await route('u')
+        self.assertEqual(self.fee_pool.accepted, 2)
+        self.assertEqual(self.user_pool.accepted, 297 if credited else 198)
+        self.assertEqual(self.user_pool.rejected, 1)
+        self.assertEqual(self.user_pool.connections, 1)
+        self.assertFalse(miner.closed.is_set())
+        audit = (await self.api('/api/metrics'))['audit']
+        self.assertEqual(audit['protected_loss_shares'], int(credited))
+
+    async def test_clean_race_without_protection_retains_original_fee_policy(self):
+        await self.test_clean_race_protection_forgoes_a_real_fee_share(protected=False)
+
+    async def test_clean_race_arbitrary_pool_reject_does_not_reduce_fee(self):
+        await self.test_clean_race_protection_forgoes_a_real_fee_share(race_code=23)
+
+    async def test_stale_without_clean_update_does_not_reduce_fee(self):
+        await self.test_clean_race_protection_forgoes_a_real_fee_share(emit_clean=False)
 
     async def test_lab_fee_switch_stays_on_one_listener_and_isolates_other_worker(self):
         from pow_validator import build_stratum_header

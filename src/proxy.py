@@ -152,7 +152,7 @@ def load_tenant_profiles(path, primary_port, relay, args):
         if not isinstance(networks, list) or len(networks) > 128 or any(not isinstance(cidr, str) for cidr in networks):
             raise ValueError("invalid tenant network allowlist")
         allowed = tuple(ipaddress.ip_network(cidr, strict=True) for cidr in networks)
-        ledger = AcceptedWorkLedger(args.fee_min_work)
+        ledger = AcceptedWorkLedger(args.fee_min_work, loss_protection=getattr(args, 'fee_loss_protection', False))
         allocator = FairnessAllocator(ledger, max_active=relay.limit, max_pending=relay.limit)
         profiles[name] = dict(port=port, endpoint=(host, pool_port), backup=backup, worker=worker, allowed=allowed,
                               windows=EventFeeWindows(allocator, args.max_fee_window_seconds,
@@ -207,6 +207,7 @@ async def run(args, stop_event=None):
     relay.fee_test_port = args.listen_port
     relay.fee_test_percent = 1
     relay.fee_locked = getattr(args, "fee_locked", False)
+    relay.fee_loss_worker = getattr(args, 'fee_loss_worker', None)
     relay.fee = (args.devfee_host, args.devfee_port) if args.devfee_host else None
     relay.fee_worker = args.devfee_worker
     relay.fee_worker_template = getattr(args,'devfee_worker_template',None)
@@ -216,7 +217,7 @@ async def run(args, stop_event=None):
     relay.require_devfee = args.require_devfee
     relay.fee_grace_seconds = args.fee_grace_seconds
     relay.fee_blocked = False
-    relay.ledger = AcceptedWorkLedger(args.fee_min_work)
+    relay.ledger = AcceptedWorkLedger(args.fee_min_work, loss_protection=getattr(args, 'fee_loss_protection', False))
     relay.fee_allocator = FairnessAllocator(relay.ledger, max_active=relay.limit, max_pending=relay.limit)
     relay.fee_capacity = FeeCapacity()
     relay.fee_windows = EventFeeWindows(relay.fee_allocator, getattr(args, "max_fee_window_seconds", 60),
@@ -245,7 +246,7 @@ async def run(args, stop_event=None):
                                                        max_groups=max(128, relay.limit * 3))
     relay.route_configs = load_tenant_profiles(getattr(args, "tenant_profiles", None), args.listen_port, relay, args)
     if relay.route_configs:
-        main_ledger = AcceptedWorkLedger(args.fee_min_work)
+        main_ledger = AcceptedWorkLedger(args.fee_min_work, loss_protection=getattr(args, 'fee_loss_protection', False))
         main_allocator = FairnessAllocator(main_ledger, max_active=relay.limit, max_pending=relay.limit)
         relay.main_fee_windows = EventFeeWindows(main_allocator, args.max_fee_window_seconds,
                                                 args.fee_cooldown_seconds, args.fee_overdraft, relay.fee_capacity)
@@ -259,6 +260,13 @@ async def run(args, stop_event=None):
             journal_path = Path(args.control_state).with_name('devfee.sqlite3')
         if journal_path:
             journal = DevFeeJournal(journal_path)
+            scope = None
+            if relay.fee_loss_worker:
+                from upstream_manager import current_pool_routes
+                primary, _ = current_pool_routes(relay)
+                scope = hashlib.sha256(json.dumps([primary.host, primary.port,
+                    primary.worker, relay.fee_loss_worker], separators=(',', ':')).encode()).hexdigest()
+            journal.bind_loss_scope(scope)
             journal.restore_budget(relay.ledger)
             if relay.route_configs:
                 journal.restore_budget(relay.main_fee_windows.allocator.ledger, "main")
@@ -443,6 +451,9 @@ def main():
     parser.add_argument("--devfee-worker")
     parser.add_argument('--devfee-worker-template',help='Explicit fee session suffix, e.g. {worker}_{slot}; default preserves the account exactly')
     parser.add_argument("--fee-min-work", type=float, default=0)
+    parser.add_argument('--fee-loss-protection', action='store_true',
+                        help='Reduce future fixed fees for verified primary clean-job races (aggregate qualification)')
+    parser.add_argument('--fee-loss-worker', help='Restrict protected qualification to this ASIC worker identity')
     parser.add_argument("--max-fee-window-seconds", type=float, default=60)
     parser.add_argument("--fee-cooldown-seconds", type=float, default=5)
     parser.add_argument("--fee-overdraft", type=float, default=.02, help="Fraction of one fee share allowed beyond quota")
@@ -475,6 +486,15 @@ def main():
     parser.add_argument("--pilot-console", action="store_true")
     args = parser.parse_args()
     args.fee_locked = release_fee_locked()
+    if args.fee_loss_protection and (not args.aggregate or not args.active_router
+            or getattr(args, 'fee_test_worker', None) or not args.fee_loss_worker
+            or getattr(args, 'tenant_profiles', None) or args.backup_host):
+        parser.error('--fee-loss-protection qualification requires --fee-loss-worker with fixed-policy aggregation, without tenants, backup or private fee controls')
+    if args.fee_loss_worker and (not args.aggregate or len(args.fee_loss_worker) > 128
+            or getattr(args, 'fee_test_worker', None) or args.backup_host or args.tenant_profiles):
+        parser.error('--fee-loss-worker requires a fixed aggregate scope without tenants, backup or private fee controls')
+    if args.fee_loss_protection and args.devfee_journal == '':
+        parser.error('--fee-loss-protection requires a persistent DevFee journal')
     if args.fee_locked:
         protected = ("--devfee", "--fee-", "--require-devfee", "--max-fee-window", "--tp-mode", "--transparent")
         if any(arg.startswith(protected) for arg in sys.argv[1:]):
