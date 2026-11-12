@@ -22,6 +22,7 @@ import string
 import time
 import logging
 import ssl
+import hashlib
 from collections import OrderedDict, deque
 from decimal import Decimal
 
@@ -37,7 +38,7 @@ from stratum_codec import PacketReader
 from hardware_compatibility import (ClientCapabilities, validate_config, negotiated_mask,
                                     upstream_config, mask_value, merge_config)
 from aggregation import (AggregationJob, AggregationKey, NonceLease, NoncePartitioner,
-                         ShareTargets, virtual_subscription_job, LocalVardiff)
+                         ShareTargets, virtual_subscription_job, LocalVardiff, InsufficientNonceSpace)
 
 
 class AggregatedJobRouter:
@@ -86,16 +87,16 @@ class AggregatedJobRouter:
         if entry is None:
             raise ValueError('unknown job')
         job = entry[0]
-        # The pool identifies duplicates by upstream job and proof, not our
-        # local job alias. Ignore worker name when forming the duplicate key.
-        proof = (job.params[0], *[v.lower() for v in params[2:]])
+        decision = job.classify_submit(params[2], params[3], params[4], params[5] if len(params) == 6 else None)
+        if not decision.accept_locally:
+            raise ValueError('low difficulty')
+        # A new work suffix changes the header even when a resetting ASIC
+        # repeats the same extranonce2/nonce under another local alias.
+        proof = (job.params[0], decision.digest)
         if proof in self.shares:
             raise ValueError('duplicate share')
         if len(self.shares) >= self.max_shares:
             raise ValueError('share registry full')
-        decision = job.classify_submit(params[2], params[3], params[4], params[5] if len(params) == 6 else None)
-        if not decision.accept_locally:
-            raise ValueError('low difficulty')
         self.shares[proof] = now
         upstream = list(params)
         upstream[1] = job.params[0]
@@ -1062,6 +1063,8 @@ class AggregateSession:
         self.write_lock = asyncio.Lock()
         self.job_generation = None
         self.job_sequence = 0
+        self.work_epochs = {}
+        self.work_bases = {}
         self.backup_group = None
         self.backup_jobs = None
         self.backup_generation = None
@@ -1153,8 +1156,33 @@ class AggregateSession:
                                             target_interval=12)
             threshold = self.vardiff.new_job(difficulty)
             local = Decimal(threshold.numerator) / Decimal(threshold.denominator)
+        padding = channel.extranonce2_size - len(self.prefix) // 2 - self.width
+        epoch = self.work_epochs.get(route, -1) + 1
+        basis = hashlib.sha256(encode_packet({'params': packet['params'][1:8],
+                                              'extranonce': channel.extranonce1})).digest()
+        # Keep the separate private manual-rate listener unchanged during the
+        # fixed-policy qualification (it has a different nonce layout).
+        fresh = not bool(getattr(self.relay, 'fee_test_worker', None))
+        no_space = fresh and (padding < 0 or
+                    padding == 0 and (clean and route in self.work_epochs or self.work_bases.get(route) == basis) or
+                    padding > 0 and epoch >= 1 << (padding * 8))
+        if no_space:
+            self.relay.metrics.compatibility_fallbacks += 1
+            event(logging.WARNING, 'fresh_work_requires_reconnect', session_id=self.session['id'],
+                  target=route, suffix_bytes=padding)
+            try:
+                await asyncio.wait_for(self.send({'id': None, 'method': 'client.reconnect', 'params': []}), 1)
+            except (OSError, asyncio.TimeoutError):
+                pass
+            finally:
+                self.writer.close()
+            raise InsufficientNonceSpace('fresh subscription required for new search space')
+        suffix = (epoch.to_bytes(padding, 'big').hex() if padding else '') if fresh else None
         translated = virtual_subscription_job(packet['params'], channel.extranonce1,
-                                              channel.extranonce2_size, self.prefix, self.width)
+                                              channel.extranonce2_size, self.prefix, self.width,
+                                              extranonce2_suffix=suffix)
+        if fresh:
+            self.work_epochs[route], self.work_bases[route] = epoch, basis
         # Keep aliases unique when a pool reconnect resets its nonce space.
         jobs.sequence = self.job_sequence
         params = jobs.issue(translated, local, difficulty, forced_fee=self.test_fee_percent == 100)
@@ -1170,7 +1198,8 @@ class AggregateSession:
             self.last_local_difficulty = local
         self.session['observer'].protocol.update(
             observed_difficulty=float(local), upstream_difficulty=float(difficulty),
-            agent=self.agent, active_route=route)
+            agent=self.agent, active_route=route, work_epoch=epoch if fresh else None,
+            work_suffix_bytes=padding)
         self.relay.observe_connection(self.session, "job_sent", route, channel.pool_label)
 
     async def close_client(self):
@@ -1508,6 +1537,7 @@ class AggregateSession:
         metrics = self.session['metrics']
         metrics.submitted += 1
         route = None
+        current_assignment, job_age_ms = False, None
         try:
             if len(params) < 2 or params[0] != self.worker or not isinstance(params[1], str) or not params[1]:
                 raise ValueError('unauthorized share')
@@ -1522,6 +1552,10 @@ class AggregateSession:
                 raise ValueError('stale job')
             params = list(params)
             params[1] = params[1][1:]
+            current_assignment = route == self.route and params[1] == format(self.job_sequence, 'x')
+            captured = jobs.jobs.get(params[1])
+            if captured is not None:
+                job_age_ms = max(0, int((received_at - captured[1]) * 1000))
             _, outbound = jobs.submit(params)
             local_work = jobs.jobs[params[1]][3]
             self.relay.workers.record_local(self.session['id'], self.worker, local_work)
@@ -1545,7 +1579,8 @@ class AggregateSession:
             self.relay.workers.record(self.session['id'], self.worker, 'invalid_local',
                                       route=route or self.route)
             event(logging.WARNING, 'share_rejected_local', session_id=self.session['id'],
-                  target=route, active_route=self.route, reason=reason, category=category)
+                  target=route, active_route=self.route, reason=reason, category=category,
+                  current_assignment=current_assignment, job_age_ms=job_age_ms)
             await self.reply(ident, False, [23, 'Invalid, stale or duplicate share', None])
             return
         if outbound is None:
@@ -1554,7 +1589,8 @@ class AggregateSession:
         job, issued_at, difficulty, _, forced_fee = jobs.jobs[params[1]]
         outbound[0] = group.key.worker
         padding = channel.extranonce2_size - len(self.prefix) // 2 - self.width
-        outbound[2] = self.prefix + outbound[2] + '00' * padding
+        # The suffix belongs to the submitted job, not the latest assignment.
+        outbound[2] = self.prefix + outbound[2] + job.params[3][:padding * 2]
         allocator = self.allocator
         token = allocator.begin_submit(self.identity, difficulty) if route == 'fee' and not forced_fee else None
         self.pending_fee = token is not None

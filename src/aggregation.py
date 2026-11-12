@@ -191,7 +191,7 @@ class VirtualPrefixAllocator:
 
 
 def virtual_subscription_job(params, upstream_extranonce1, upstream_extranonce2_size,
-                             virtual_extranonce1, local_extranonce2_size):
+                             virtual_extranonce1, local_extranonce2_size, *, extranonce2_suffix=None):
     """Translate a pool job for a locally assigned subscription.
 
     The virtual extranonce is a prefix of the pool's extranonce2, so the
@@ -213,7 +213,9 @@ def virtual_subscription_job(params, upstream_extranonce1, upstream_extranonce2_
     result = list(params)
     result[2] = coinbase1 + upstream
     coinbase2 = _hex(params[3], 'coinbase suffix', maximum=32768)
-    result[3] = '00' * padding + coinbase2
+    suffix = ('00' * padding if extranonce2_suffix is None else
+              _hex(extranonce2_suffix, 'extranonce2 suffix', size=padding, maximum=32))
+    result[3] = suffix + coinbase2
     if isinstance(result[4], (list, tuple)):
         result[4] = list(result[4])
     return result

@@ -4,6 +4,19 @@ from aggregation import (virtual_subscription_job, InsufficientNonceSpace, Virtu
 from pow_validator import build_stratum_header
 
 class VirtualSubscriptionTests(unittest.TestCase):
+    def test_work_suffix_preserves_exact_pool_header(self):
+        job = ['job', '00' * 32, '010203', '040506', [], '20000000', '1d00ffff', '65000000', True]
+        translated = virtual_subscription_job(job, 'aabbccdd', 8, '17', 3,
+                                              extranonce2_suffix='00000001')
+        self.assertEqual(build_stratum_header(translated, '17', '010203', '65000000', '00000042'),
+                         build_stratum_header(job, 'aabbccdd', '1701020300000001', '65000000', '00000042'))
+        original = virtual_subscription_job(job, 'aabbccdd', 8, '17', 3)
+        self.assertNotEqual(build_stratum_header(original, '17', '010203', '65000000', '00000042'),
+                            build_stratum_header(translated, '17', '010203', '65000000', '00000042'))
+        for invalid in ('000001', '0000000001', 'zzzzzzzz'):
+            with self.assertRaises(ValueError):
+                virtual_subscription_job(job, 'aabbccdd', 8, '17', 3, extranonce2_suffix=invalid)
+
     def test_pool_size_hints_are_scoped_and_expire(self):
         now = [0]
         cache = ExtranonceSizeCache(capacity=1, ttl=10, clock=lambda: now[0])

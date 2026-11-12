@@ -461,7 +461,7 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
             await writer.drain()
             raw = await asyncio.wait_for(reader.read(), 5)
             headers, body = raw.split(b"\r\n\r\n", 1)
-            self.assertIn(str(expected).encode() + b" ", headers)
+            self.assertIn(str(expected).encode() + b" ", headers, body.decode(errors='replace'))
             if path == "/metrics":
                 self.assertIn(b"text/plain; version=0.0.4", headers)
                 return body.decode()
@@ -854,6 +854,71 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         while self.user_pool.writers and time.monotonic() < deadline:
             await asyncio.sleep(.01)
         self.assertFalse(self.user_pool.writers)
+
+    async def test_fee_return_changes_search_space_for_a_resetting_asic(self, *, no_padding=False):
+        from pow_validator import build_stratum_header
+        await self.launch(aggregate=True, user_extra_size=5 if no_padding else 8, fee_extra_size=8,
+                          extra_args=('--fee-cooldown-seconds', '0', '--fee-overdraft', '0',
+                                      '--max-connections', '4'))
+        miner = await self.miner(hot=False)
+        deadline = time.monotonic() + 5
+        while not self.fee_pool.authorize_requests and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        await asyncio.sleep(.05)
+        original = miner.job
+        socket_writer = miner.writer
+
+        async def submit_from(job, start=0):
+            extra2 = '00' * job['size']
+            nonce = next(n for n in range(start, start + 100000) if meets_target(
+                build_stratum_header(job['params'], job['extra'], extra2, NTIME, f'{n:08x}'), SHARE_TARGET))
+            result = await miner.submit([miner.worker, job['params'][0], extra2, NTIME, f'{nonce:08x}'])
+            self.assertIs(result['result'], True, result)
+            return nonce + 1
+
+        async def wait_route(route):
+            deadline = time.monotonic() + 3
+            while not miner.job['params'][0].startswith(route) and time.monotonic() < deadline:
+                await asyncio.sleep(.01)
+            self.assertTrue(miner.job['params'][0].startswith(route))
+
+        headers = set()
+        for _ in range(1 if no_padding else 3):
+            before = miner.job
+            headers.add(build_stratum_header(before['params'], before['extra'],
+                                             '00' * before['size'], NTIME, '00000000'))
+            next_nonce = 0  # Firmware starts scanning from zero on each assignment.
+            for _ in range(99):
+                next_nonce = await submit_from(before, next_nonce)
+            if before is original:
+                queued_start = next_nonce
+            await wait_route('f')
+            await submit_from(miner.job)
+            if no_padding:
+                await asyncio.wait_for(miner.closed.wait(), 3)
+                self.assertTrue(miner.reconnect.is_set())
+                metrics = await self.api('/api/metrics')
+                self.assertEqual(metrics['compatibility_fallbacks'], 1)
+                self.assertEqual((self.user_pool.accepted, self.fee_pool.accepted), (99, 1))
+                self.assertEqual(self.user_pool.rejected + self.fee_pool.rejected, 0)
+                miner = await self.miner(hot=False)
+                await submit_from(miner.job)
+                return
+            await wait_route('u')
+            after = miner.job
+            self.assertEqual(after['extra'], original['extra'])
+            new_header = build_stratum_header(after['params'], after['extra'],
+                                             '00' * after['size'], NTIME, '00000000')
+            self.assertNotIn(new_header, headers, 'A fee return must not repeat an earlier header')
+        # A queued proof for the original assignment must keep its original suffix.
+        await submit_from(original, queued_start)
+        self.assertIs(miner.writer, socket_writer)
+        self.assertEqual(self.user_pool.connections, 1)
+        self.assertEqual(self.user_pool.rejected + self.fee_pool.rejected, 0)
+        self.assertEqual((self.user_pool.accepted, self.fee_pool.accepted), (298, 3))
+
+    async def test_fee_return_with_no_nonce_padding_requests_new_subscription(self):
+        await self.test_fee_return_changes_search_space_for_a_resetting_asic(no_padding=True)
 
     async def test_lab_fee_switch_stays_on_one_listener_and_isolates_other_worker(self):
         from pow_validator import build_stratum_header

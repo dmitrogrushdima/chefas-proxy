@@ -116,3 +116,41 @@ with the validated statistics/diagnostic patches. The service restart took
 0.123 s; no SIGKILL was needed. The 1% accepted-difficulty policy and shutdown
 fix were preserved, and 3334 was unchanged. This rollback removes an unproven
 configuration; it does not establish that the 120-second cooldown caused the dip.
+
+## Fresh search space on returning to primary
+
+Further diagnostics caught six duplicate proofs 0.12–0.91 seconds after a fee
+return. Those packets alone cannot distinguish queued retransmission from
+recomputation. A separate regression did establish an architectural defect:
+returning to the same pool job issued a new local alias with the identical
+80-byte header. A miner restarting its nonce counters could repeat searched work.
+
+Fixed-policy aggregate sessions now allocate a monotonically increasing suffix
+in spare upstream extranonce2 bytes on each assignment. The ASIC subscription
+stays stable; each returned assignment has a fresh header domain. Submissions
+use the suffix captured in their original immutable job, so outstanding proofs
+are not rewritten with the latest assignment. Duplicate detection keys the
+actual proof digest and pool job, rather than an incomplete nonce tuple.
+
+The measured ViaBTC subscription has eight upstream extranonce2 bytes; the
+fixed listener uses one prefix byte and four local bytes, leaving three suffix
+bytes. Exhaustion or a repeated assignment without spare nonce space requests
+a fresh subscription instead of silently wrapping. This is an explicit
+compatibility fallback, not a claim of uninterrupted compatibility with every
+pool. The private manual-rate listener is excluded from this qualification.
+
+The resetting-miner regression covers three fee returns, distinct headers,
+stable subscription, accepted old queued work and the 99:1 policy. A separate
+zero-padding regression checks the reconnect fallback. Full local verification
+passed 270 tests with three skips and 131 subtests; the final reconnect packet
+was additionally checked in focused tests. Twelve tests against an isolated
+copy of the installed Linux tree passed, including main/fee shutdown and manual
+rate isolation. After the final reconnect addition, both search-space tests
+passed again on that tree.
+
+The two-file fix was deployed to private 3333 at 16:09 UTC with a temporary
+rollback watchdog. Restart took 0.166 seconds. The 45-second cooldown and fixed
+1% policy remain; 3334 retained its original process. Live qualification results
+must be assessed separately from the deterministic regression: neither unique
+headers nor a short trial establishes physical ASIC power or eliminates all
+pool clean-job races.
