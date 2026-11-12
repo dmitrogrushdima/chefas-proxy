@@ -33,3 +33,26 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}
           path: test-results.xml
+  linux-shutdown:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pytest
+      - name: Stop with connected miners and dashboard streams
+        run: >-
+          python -m pytest -q --junitxml=shutdown-results.xml
+          tests/test_shutdown_signals.py
+          tests/test_live_devfee_router.py::LiveDevFeeRouterTests::test_sigterm_closes_live_aggregate_miner_and_dashboard_stream
+          tests/test_live_devfee_router.py::LiveDevFeeRouterTests::test_sigterm_closes_during_fee_window
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shutdown-results-python312
+          path: shutdown-results.xml

@@ -8,6 +8,7 @@ import json
 import hashlib
 import os
 import socket
+import signal
 import ssl
 import subprocess
 import sys
@@ -299,6 +300,54 @@ class Miner:
 
 
 class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipIf(os.name == 'nt', 'SIGTERM process lifecycle is exercised on Linux')
+    async def test_sigterm_closes_live_aggregate_miner_and_dashboard_stream(self, *, stop_on_fee=False):
+        await self.launch(aggregate=True, user_extra_size=8, fee_extra_size=8, admin_token='S' * 32)
+        miner = await self.miner(hot=False)
+        from pow_validator import build_stratum_header
+        job = miner.job
+        ex2 = '00' * job['size']
+        nonce = next(f'{n:08x}' for n in range(100000) if meets_target(
+            build_stratum_header(job['params'], job['extra'], ex2, NTIME, f'{n:08x}'), SHARE_TARGET))
+        self.assertTrue((await miner.submit([miner.worker, job['params'][0], ex2, NTIME, nonce]))['result'])
+        expected = 99 if stop_on_fee else 1
+        for _ in range(expected - 1):
+            start = int(nonce, 16) + 1
+            nonce = next(f'{n:08x}' for n in range(start, start + 100000) if meets_target(
+                build_stratum_header(job['params'], job['extra'], ex2, NTIME, f'{n:08x}'), SHARE_TARGET))
+            self.assertTrue((await miner.submit([miner.worker, job['params'][0], ex2, NTIME, nonce]))['result'])
+        if stop_on_fee:
+            deadline = time.monotonic() + 5
+            while not miner.job['params'][0].startswith('f') and time.monotonic() < deadline:
+                await asyncio.sleep(.01)
+            self.assertTrue(miner.job['params'][0].startswith('f'))
+        reader, writer = await asyncio.open_connection('127.0.0.1', self.dashboard)
+        try:
+            writer.write((f'GET /api/stream HTTP/1.1\r\nHost: 127.0.0.1:{self.dashboard}\r\n'
+                          f'Authorization: Bearer {self.admin_token}\r\n\r\n').encode())
+            await writer.drain()
+            headers = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 3)
+            self.assertIn(b'200 OK', headers)
+            self.process.send_signal(signal.SIGTERM)
+            code = await asyncio.wait_for(asyncio.to_thread(self.process.wait), 8)
+            self.assertEqual(code, 0)
+            await asyncio.wait_for(miner.closed.wait(), 2)
+            await asyncio.wait_for(reader.read(), 2)
+            log = (Path(self.history.name) / 'logs' / 'proxy.log').read_text()
+            self.assertIn('shutdown_requested', log)
+            self.assertIn('proxy_stopped', log)
+            history = json.loads((Path(self.history.name) / 'history.json').read_text())
+            self.assertEqual(self.user_pool.accepted, expected)
+            self.assertEqual(history['workers'][0]['name'], miner.worker)
+            self.assertEqual(history['workers'][0]['accepted'], expected)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    @unittest.skipIf(os.name == 'nt', 'SIGTERM process lifecycle is exercised on Linux')
+    async def test_sigterm_closes_during_fee_window(self):
+        await self.test_sigterm_closes_live_aggregate_miner_and_dashboard_stream(stop_on_fee=True)
+
     async def asyncSetUp(self):
         self.pools = []
         self.miners = []

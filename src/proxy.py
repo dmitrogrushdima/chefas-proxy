@@ -332,31 +332,28 @@ async def run(args, stop_event=None):
     summary = asyncio.create_task(summaries())
     fleet = asyncio.create_task(relay.reconcile_idle_fee_sessions())
     try:
-        async with server, dashboard:
-            if stop_event is None:
-                await server.serve_forever()
-            else:
-                await stop_event.wait()
+        if stop_event is None:
+            await server.serve_forever()
+        else:
+            await stop_event.wait()
     finally:
+        # Python 3.12 Server.wait_closed() also waits for accepted transports.
+        # Stop admission first, then close miners and SSE clients before waiting
+        # for the listeners. An async-with exit here deadlocks on live clients.
+        for listener in (server, dashboard, *tenant_servers):
+            listener.close()
         summary.cancel()
         fleet.cancel()
         if pilot_task is not None:
             pilot_task.cancel()
         await asyncio.gather(summary, fleet, *((pilot_task,) if pilot_task else ()), return_exceptions=True)
-        for listener in tenant_servers:
-            listener.close()
-            await listener.wait_closed()
-        server.close()
-        dashboard.close()
-        await server.wait_closed()
-        await dashboard.wait_closed()
-        if history:
-            await history.checkpoint()
         await asyncio.gather(*(control._reconnect(session) for session in list(relay.sessions.values())))
         await stream.close()
         await control.observer_stream.close()
         await control.public_stream.close()
         await relay.shutdown()
+        for listener in (server, dashboard, *tenant_servers):
+            await listener.wait_closed()
         if journal is not None:
             await journal.close()
         if history:

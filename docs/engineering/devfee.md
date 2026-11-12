@@ -65,3 +65,6 @@ difficulty by route, rejects/stale and reconnects. A smooth chart, successful
 compilation or a short two-ASIC pilot does not establish universal firmware
 compatibility or improved hashrate. See [compatibility](../compatibility.md)
 and [release gates](roadmap.md).
+
+The [switch-window study](switch-window-study.md) records the shutdown fix,
+3333-only trial scope and the measurement limits of comparing window sizes.
