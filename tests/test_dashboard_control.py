@@ -46,6 +46,7 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_operator_release_cannot_override_fee_through_dashboard_or_state(self):
         self.relay.fee_locked = self.relay.active_router = True
         self.relay.fee_test_worker = 'private.test'
+        self.assertIsNone(self.relay.status_snapshot()['fee_test'])
         self.relay.fee = ('stratum+ssl://fee.example', 551)
         self.relay.fee_worker = 'release.worker'
         self.control._probe = AsyncMock()

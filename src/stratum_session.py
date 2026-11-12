@@ -404,6 +404,10 @@ class Relay:
                 "tp_mode": self.tp_mode,
                 "require_devfee": getattr(self, "require_devfee", False),
                 "fee_policy_blocked": getattr(self, "fee_blocked", False),
+                "fee_test": ({"worker": self.fee_test_worker,
+                              "listen_port": self.fee_test_port,
+                              "percent": self.fee_test_percent, "rate_step": 0.01}
+                             if getattr(self, 'fee_test_worker', None) and not getattr(self, 'fee_locked', False) else None),
                 "backup": {"host": self.backup[0], "port": self.backup[1],
                            "tls": self.tls or parse_endpoint(*self.backup)[2]} if self.backup else None,
                 "tls": self.tls, "limit": self.limit,

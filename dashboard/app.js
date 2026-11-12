@@ -10,6 +10,8 @@ let connectionEvents = [];
 let renderedConnectionHistory = "";
 let renderedAttention = "";
 let feeTestBusy = false;
+let selectedFeeTestPort = null;
+let renderedFeeTestPorts = "";
 let snapshotTime = NaN;
 let streamConnected = false;
 let observerToken = new URLSearchParams(location.hash.slice(1)).get("observer") || "";
@@ -177,13 +179,14 @@ async function refreshPilotSnapshot() {
     const snapshot = reply.ok ? await reply.json() : null;
     const workers = snapshot?.registry?.workers ?? snapshot?.workers;
     pilotSnapshot = Array.isArray(snapshot?.sessions) && Array.isArray(workers)
-      ? {sessions: snapshot.sessions, workers} : null;
+      ? {sessions: snapshot.sessions, workers, fee_test: snapshot.status?.fee_test} : null;
     pilotSeen ||= !!pilotSnapshot;
   } catch (_) {
     pilotSnapshot = null;
   } finally {
     pilotRefreshing = false;
     renderSnapshot();
+    renderFeeTest();
   }
 }
 setInterval(refreshPilotSnapshot, 3000);
@@ -262,10 +265,10 @@ function renderSnapshot() {
   const totalRate = estimates.length ? estimates.reduce((sum, estimate) => sum + estimate.hashrate_hs, 0) : null;
   $("kpi-hashrate").textContent = hashrate(totalRate) + (estimates.length && (estimates.length !== onlineWorkers.length || estimates.some(estimate => estimate.warmup)) ? " *" : "");
   $("kpi-workers").textContent = number(onlineWorkers.length);
-  const feeShare = routeFeeShare((pilot?.workers || []).filter(worker => worker.status === "online"));
+  const feeShare = routeFeeShare(onlineWorkers);
   const actualFee = Number.isFinite(audit?.fee_percentage) ? number(Math.round(audit.fee_percentage * 100) / 100) + "%" : "—";
   $("kpi-fee-label").textContent = t(combined ? "DevFee share 1h" : feePolicyLocked ? "Fixed DevFee target" : "DevFee share of difficulty");
-  $("kpi-fee-hint").textContent = combined ? "3333 · " + t("Accepted difficulty · target 1%") : t("Measured by pool-accepted difficulty");
+  $("kpi-fee-hint").textContent = combined ? feeTargetSummary() : t("Measured by pool-accepted difficulty");
   $("kpi-fee-debt").textContent = combined ? formatFeeShare(feeShare) : feePolicyLocked ? "1%" : actualFee;
   $("kpi-fee-debt").title = "";
   $("fee-policy-hint").textContent = feePolicyLocked ? t("Fixed target: 1%. The rate cannot be changed in this release.") : "";
@@ -275,6 +278,9 @@ function renderSnapshot() {
   $("audit-user").textContent = audit ? audit.user_accepted_difficulty + " / " + number(audit.user_accepted_shares) : "—";
   $("audit-fee").textContent = audit ? audit.fee_accepted_difficulty + " / " + number(audit.fee_accepted_shares) : "—";
   $("audit-percent").textContent = audit && Number.isFinite(audit.fee_percentage) ? number(Math.round(audit.fee_percentage * 10000) / 10000) + "%" : "—";
+  // The fixed-policy ledger excludes private manual-fee work. Its historical
+  // percentage must not be presented as the current manual test percentage.
+  $("audit-percent").closest(".note-card").hidden = serviceAdmin();
   const localRates = latestRegistry.workers.filter(worker => worker.status === "online")
     .map(worker => worker.hashrate_windows?.["15m"]).filter(window => Number.isFinite(window?.hashrate_hs));
   $("audit-hashrate").textContent = hashrate(localRates.length ? localRates.reduce((sum, window) => sum + window.hashrate_hs, 0) : null) +
@@ -455,7 +461,7 @@ function renderWorkers() {
   const persistence = latestRegistry.persistence;
   $("history-status").textContent = (pilot ? "3334 · " : "") +
     t(persistence?.error ? "History checkpoint failed" : persistence?.loaded ? "History restored" : persistence?.enabled ? "History persistence enabled" : "History in memory") +
-    (pilot ? " · " + t("Port 3333: fixed 1% DevFee") : "");
+    (pilot ? " · " + feeTargetSummary() : "");
   $("worker-count").textContent = number(shown.length);
   $("workers-empty").hidden = shown.length > 0;
   $("worker-limit").hidden = !(latestRegistry.dropped_observations > 0);
@@ -575,29 +581,72 @@ async function runStream(controller) {
   }
 }
 
+function feeTestChoices() {
+  if (!serviceAdmin()) return [];
+  const own = {test: routeConfig.fee_test, sessions: latestSessions, path: "/api/fee-test"};
+  const peer = pilotSnapshot?.fee_test
+    ? {test: pilotSnapshot.fee_test, sessions: pilotSnapshot.sessions, path: "/api/pilot-3333/fee-test"} : null;
+  return peer && peer.test.listen_port !== own.test.listen_port ? [peer, own] : [own];
+}
+
+function feeTargetSummary() {
+  return feeTestChoices().map(({test}) => ":" + test.listen_port + " DevFee " + number(test.percent) + "%").join(" · ");
+}
+
+function selectedFeeTest() {
+  const choices = feeTestChoices();
+  return selectedFeeTestPort == null ? choices.at(-1)
+    : choices.find(({test}) => String(test.listen_port) === String(selectedFeeTestPort));
+}
+
 function renderFeeTest() {
-  const test = serviceAdmin() ? routeConfig.fee_test : null;
+  const choices = feeTestChoices();
+  const choice = selectedFeeTest();
+  const test = choice?.test;
   $("fee-test-controls").hidden = !test;
   if (!test) return;
+  selectedFeeTestPort = String(test.listen_port);
+  const optionsKey = JSON.stringify(choices.map(({test}) => test.listen_port));
+  if (optionsKey !== renderedFeeTestPorts) {
+    $("fee-test-port").replaceChildren(...choices.map(({test}) => {
+      const option = document.createElement("option");
+      option.value = String(test.listen_port); option.textContent = ":" + test.listen_port;
+      return option;
+    }));
+    renderedFeeTestPorts = optionsKey;
+  }
+  $("fee-test-port").value = selectedFeeTestPort;
+  $("fee-test-port").disabled = feeTestBusy;
+  $("fee-test-port-label").hidden = choices.length < 2;
   $("fee-test-percent").step = test.rate_step ?? "99";
   $("fee-test-percent").placeholder = test.rate_step ? "1–100" : "1 or 100";
-  const sessions = latestSessions.filter(session => session.worker === test.worker && session.test_fee_percent != null);
+  const sessions = choice.sessions.filter(session => session.worker === test.worker && session.test_fee_percent != null);
   const percent = sessions.length === 1 ? sessions[0].test_fee_percent : null;
   const listener = test.listen_port ? "Stratum :" + test.listen_port + " · " : "";
   $("fee-test-state").textContent = listener + test.worker + " · " + (percent == null ? t("Waiting for one test session") : percent + "%");
   $("fee-test-apply").disabled = feeTestBusy || percent == null;
 }
 
+$("fee-test-port").addEventListener("change", () => {
+  selectedFeeTestPort = $("fee-test-port").value;
+  $("fee-test-percent").value = "";
+  $("fee-test-result").textContent = "";
+  renderFeeTest();
+});
+
 $("fee-test-controls").addEventListener("submit", async (event) => {
     event.preventDefault();
     if ($("fee-test-apply").disabled) return;
+    const choice = selectedFeeTest();
+    if (!choice) return;
     const percent = $("fee-test-percent").valueAsNumber;
     feeTestBusy = true;
     renderFeeTest();
     try {
-      await api("/api/fee-test", {worker: routeConfig.fee_test.worker, percent});
+      await api(choice.path, {worker: choice.test.worker, percent});
       $("fee-test-result").textContent = t("Applied");
       await refresh();
+      await refreshPilotSnapshot();
     } catch (error) {
       $("fee-test-result").textContent = error.message;
     } finally {
