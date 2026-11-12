@@ -817,6 +817,31 @@ class LiveDevFeeRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(result['result'] is True for result in results))
         self.assertEqual(self.user_pool.accepted, 3)
         self.assertEqual(self.user_pool.rejected, 0)
+        self.assertFalse((await miners[1].submit(shares[1]))['result'])
+        unknown = list(shares[1])
+        unknown[1] = 'uunknown'
+        self.assertFalse((await miners[1].submit(unknown))['result'])
+        malformed = list(shares[1])
+        malformed[4] = 'nothex_secret_marker'
+        self.assertFalse((await miners[1].submit(malformed))['result'])
+        job = miners[1].job['params']
+        ex2 = '00' * miners[1].extra_size
+        local_target = compact_target(0x1D00FFFF) // Fraction(str(miners[1].difficulty))
+        bad_nonce = next(f'{n:08x}' for n in range(100000) if not meets_target(
+            build_stratum_header(job, miners[1].extra, ex2, NTIME, f'{n:08x}'), local_target))
+        self.assertFalse((await miners[1].submit(['user.worker', job[0], ex2, NTIME, bad_nonce]))['result'])
+        metrics = await self.api('/api/metrics')
+        self.assertEqual(metrics['invalid_local'], 4)
+        self.assertEqual(metrics['duplicate_local'], 1)
+        self.assertEqual(metrics['unknown_job_local'], 1)
+        self.assertEqual(metrics['malformed_local'], 1)
+        self.assertEqual(metrics['low_diff_local'], 1)
+        workers = await self.api('/api/workers')
+        self.assertEqual(workers['workers'][0]['invalid_local'], 4)
+        log = (Path(self.history.name) / 'logs' / 'proxy.log').read_text()
+        for reason in ('duplicate_proof', 'unknown_job', 'invalid_share_encoding', 'below_local_target'):
+            self.assertIn(reason, log)
+        self.assertNotIn('nothex_secret_marker', log)
         await miners[0].close()
         extra_share = proof(miners[1], pool_valid=True, start=int(shares[1][4], 16) + 1)
         self.assertIs((await miners[1].submit(extra_share))['result'], True)

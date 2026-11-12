@@ -1,8 +1,25 @@
 import unittest
-from observer import WorkerRegistry
+from observer import WorkerRegistry, DeviceWork
 
 
 class WorkerRegistryTests(unittest.TestCase):
+    def test_constant_work_is_not_underestimated_at_minute_boundaries(self):
+        now = [0.0]
+        work = DeviceWork(clock=lambda: now[0])
+        for second in range(3700):
+            now[0] = float(second)
+            work.record(1)
+            now[0] += 1
+            if second < 3599:
+                continue
+            for label, requested in [('15m', 900), ('1h', 3600)]:
+                window = work.snapshot()[label]
+                self.assertAlmostEqual(window['hashrate_hs'], 2**32)
+                self.assertEqual(window['requested_seconds'], requested)
+                self.assertGreater(window['measured_seconds'], requested - 60 - 1)
+                self.assertLessEqual(window['measured_seconds'], requested)
+                self.assertFalse(window['warmup'])
+
     def test_reconnect_identity_and_source_ip_isolation(self):
         now = [1000.0]
         registry = WorkerRegistry(clock=lambda: now[0])

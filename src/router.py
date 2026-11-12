@@ -1168,6 +1168,9 @@ class AggregateSession:
         else:
             await self.send({'id': None, 'method': 'mining.set_difficulty', 'params': [local]}, notify)
             self.last_local_difficulty = local
+        self.session['observer'].protocol.update(
+            observed_difficulty=float(local), upstream_difficulty=float(difficulty),
+            agent=self.agent, active_route=route)
         self.relay.observe_connection(self.session, "job_sent", route, channel.pool_label)
 
     async def close_client(self):
@@ -1504,6 +1507,7 @@ class AggregateSession:
         received_at = time.monotonic()
         metrics = self.session['metrics']
         metrics.submitted += 1
+        route = None
         try:
             if len(params) < 2 or params[0] != self.worker or not isinstance(params[1], str) or not params[1]:
                 raise ValueError('unauthorized share')
@@ -1523,8 +1527,25 @@ class AggregateSession:
             self.relay.workers.record_local(self.session['id'], self.worker, local_work)
             if self.vardiff is not None:
                 self.vardiff.record_valid_share(time.monotonic(), local_work)
-        except ValueError:
+        except ValueError as exc:
             metrics.invalid_local += 1
+            reasons = {
+                'unauthorized share': ('malformed_local', 'unauthorized_worker'),
+                'unknown route': ('unknown_job_local', 'unknown_route'),
+                'unknown job': ('unknown_job_local', 'unknown_job'),
+                'stale job': ('unknown_job_local', 'stale_job_context'),
+                'malformed share': ('malformed_local', 'malformed_share'),
+                'duplicate share': ('duplicate_local', 'duplicate_proof'),
+                'low difficulty': ('low_diff_local', 'below_local_target'),
+                'share registry full': (None, 'proof_registry_capacity'),
+            }
+            category, reason = reasons.get(str(exc), ('malformed_local', 'invalid_share_encoding'))
+            if category is not None:
+                setattr(metrics, category, getattr(metrics, category) + 1)
+            self.relay.workers.record(self.session['id'], self.worker, 'invalid_local',
+                                      route=route or self.route)
+            event(logging.WARNING, 'share_rejected_local', session_id=self.session['id'],
+                  target=route, active_route=self.route, reason=reason, category=category)
             await self.reply(ident, False, [23, 'Invalid, stale or duplicate share', None])
             return
         if outbound is None:

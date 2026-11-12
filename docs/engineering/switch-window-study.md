@@ -80,3 +80,39 @@ does not demonstrate a lower rare-stale probability or universal compatibility.
 Both main-route and active-fee SIGTERM regressions passed against an isolated
 copy of the installed tree. GitHub CI run 43233949672 passed Ubuntu, Windows
 and the dedicated Python 3.12 shutdown job for source commit `adac2be`.
+
+## Later decline and conservative rollback
+
+The successful hour did not establish sustained improvement. At 15:11 UTC,
+the same process showed about 212 TH/s accepted over one hour and 192 TH/s
+over 15 minutes. No new pool rejects, reconnects, transport errors or journal
+errors accompanied the decline. The next half-hour after the original trial
+averaged 201.33 TH/s primary work. Return delay was 10.53 s versus 9.91 s for
+ordinary primary gaps; that observed difference does not explain the whole dip.
+The 15-minute estimate recovered to about 225 TH/s before any production change.
+
+Two confirmed observability defects were fixed separately from routing:
+
+- `DeviceWork` discarded the boundary minute but divided by the full requested
+  period. A constant-rate regression reproduced a 6.67% low 15-minute estimate
+  at a boundary. The corrected divisor is the actual retained bucket coverage,
+  also returned as `measured_seconds`; `requested_seconds` preserves the nominal
+  horizon. A nominal 15-minute estimate thus covers 14–15 minutes, not an exact
+  second-resolution window. The second-resolution `WorkAudit` was unaffected.
+- Aggregate local refusals lacked cause logs and worker counters. They now
+  distinguish duplicate, unknown/stale context, low target and malformed proof
+  without logging raw submitted values. Protocol diagnostics expose the local
+  and upstream difficulty and the miner-reported agent.
+
+The problem half-hour contained 158 primary accepts at difficulty 524288.
+For constant 230 TH/s and independent proofs at that difficulty, expected
+counts are about 92 per 15 minutes or 368 per hour. A normal approximation to
+Poisson variation gives roughly 183–277 TH/s over 15 minutes and 206–254 TH/s
+over one hour. These are conditional estimates, not evidence that the physical
+ASIC maintained constant power. ASIC firmware telemetry was unavailable.
+
+At 15:31:53 UTC, private 3333 was conservatively returned to a 45-second cooldown
+with the validated statistics/diagnostic patches. The service restart took
+0.123 s; no SIGKILL was needed. The 1% accepted-difficulty policy and shutdown
+fix were preserved, and 3334 was unchanged. This rollback removes an unproven
+configuration; it does not establish that the 120-second cooldown caused the dip.

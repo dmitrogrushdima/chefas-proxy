@@ -152,7 +152,13 @@ class DeviceWork:
         self._trim(minute)
         result = {}
         for label, (seconds, _) in self.windows.items():
-            measured = min(max(0, now - self.started), seconds)
+            elapsed = max(0, now - self.started)
+            # Only complete minute labels inside the requested horizon are
+            # retained. Their actual coverage is 14–15 minutes for "15m",
+            # for example; dividing that work by a full 900 seconds biases
+            # a constant hashrate down at every minute boundary.
+            covered_from = max(self.started, (minute - seconds // 60 + 1) * 60)
+            measured = max(0, now - covered_from)
             work = self.totals[label]
             try:
                 rate = float(work * 2 ** 32) / measured if measured else None
@@ -161,7 +167,8 @@ class DeviceWork:
             except OverflowError:
                 rate = None
             result[label] = {"hashrate_hs": rate, "measured_seconds": measured,
-                             "warmup": measured < seconds, "bucket_seconds": 60}
+                             "warmup": elapsed < seconds, "bucket_seconds": 60,
+                             "requested_seconds": seconds}
         return result
 
 
