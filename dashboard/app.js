@@ -267,9 +267,9 @@ function renderSnapshot() {
   $("kpi-workers").textContent = number(onlineWorkers.length);
   const feeShare = routeFeeShare(onlineWorkers);
   const actualFee = Number.isFinite(audit?.fee_percentage) ? number(Math.round(audit.fee_percentage * 100) / 100) + "%" : "—";
-  $("kpi-fee-label").textContent = t(combined ? "DevFee share 1h" : feePolicyLocked ? "Fixed DevFee target" : "DevFee share of difficulty");
-  $("kpi-fee-hint").textContent = combined ? feeTargetSummary() : t("Measured by pool-accepted difficulty");
-  $("kpi-fee-debt").textContent = combined ? formatFeeShare(feeShare) : feePolicyLocked ? "1%" : actualFee;
+  $("kpi-fee-label").textContent = t(serviceAdmin() ? "DevFee share 1h" : feePolicyLocked ? "Fixed DevFee target" : "DevFee share of difficulty");
+  $("kpi-fee-hint").textContent = serviceAdmin() ? feeTargetSummary() : t("Measured by pool-accepted difficulty");
+  $("kpi-fee-debt").textContent = serviceAdmin() ? formatFeeShare(feeShare) : feePolicyLocked ? "1%" : actualFee;
   $("kpi-fee-debt").title = "";
   $("fee-policy-hint").textContent = feePolicyLocked ? t("Fixed target: 1%. The rate cannot be changed in this release.") : "";
   $("getting-started").hidden = !(accessRole === "admin" && feePolicyLocked && !latestRegistry.workers.length);
